@@ -290,7 +290,7 @@ func TestCHNetHealthSummary(t *testing.T) {
 	d.netState(ModelDefinition{}, 1)
 	d.exec(BuildNetResultsTableDDL("r"))
 	for _, mt := range []ModelType{ModelTypeBeacon, ModelTypeLongConnection} {
-		rows := d.rows(healthSummarySQL(mt, ModelDefinition{}, "r", "s", "f1", time.Now()))
+		rows := d.rows(healthSummarySQL(mt, ModelDefinition{}, "r", "s", "f1", "", time.Now()))
 		if len(rows) != 1 {
 			t.Fatalf("%s: %v", mt, rows)
 		}
@@ -434,6 +434,61 @@ SELECT 'f1', 'h', v, 1, toDate(now(), 'UTC') - n FROM (
 	}
 	if _, ok := got["oldonly"]; ok {
 		t.Error("a pair seen only before the window was scored")
+	}
+}
+
+// A rarity model with no group scores each value across every host: percent is the
+// value's share of all days, coverage is one figure for the whole model, and the
+// lookup returns one row per log, not one per value and host.
+func TestCHRarityWithoutGroup(t *testing.T) {
+	d := newCHDB(t)
+	def := ModelDefinition{ValueKey: "rmm"}
+	ddl, _ := GenerateDDL(def, ModelTypeRarity, "r1")
+	d.exec("ALTER TABLE logs ADD COLUMN log_id String", ddl, `INSERT INTO logs (fractal_id, timestamp, ingest_timestamp, fields, log_id)
+SELECT 'f1', now64(3, 'UTC') - toIntervalDay(n), now64(3, 'UTC'), concat('{"rmm":"', v, '","host":"', h, '"}'), toString(rowNumberInAllBlocks()) FROM (
+    SELECT 'common' AS v, number AS n, concat('h', toString(number % 3)) AS h FROM numbers(10)
+    UNION ALL SELECT 'rare', 3, 'h1'
+    UNION ALL SELECT '', 4, 'h2')`)
+	ins, err := BuildBackfillInsert(def, ModelTypeRarity, "r1", "logs", "", "f1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.exec(ins)
+
+	got := map[string]map[string]interface{}{}
+	for _, r := range d.rows("SELECT * FROM (" + buildRarityScoredSQL("`r1`", "f1", 0) + ")") {
+		got[getString(r, "value_val")] = r
+	}
+	if len(got) != 2 {
+		t.Fatalf("scored %v, want common and rare only", got)
+	}
+	for v, wantCount := range map[string]uint64{"common": 10, "rare": 1} {
+		r := got[v]
+		if getUint64(r, "model_count") != wantCount || getUint64(r, "model_total") != 10 {
+			t.Errorf("%s: %v", v, r)
+		}
+		// One value of eleven value-days was seen on a single day.
+		if c := r["coverage"].(float64); c != 0.9091 {
+			t.Errorf("%s: coverage %v, want 0.9091", v, c)
+		}
+	}
+	if p := got["rare"]["percent"].(float64); p != 10 {
+		t.Errorf("rare percent %v, want 10", p)
+	}
+
+	now := time.Now().UTC()
+	opts := parser.QueryOptions{StartTime: now.Add(-30 * 24 * time.Hour), EndTime: now.Add(time.Minute), MaxRows: 100, FractalID: "f1",
+		Models: map[string]parser.AnalyticsModelInfo{"r1": {TableName: "r1", ModelType: "rarity", Keys: def.LookupKeys(ModelTypeRarity), MinSample: 1, FractalID: "f1"}}}
+	rows := d.lookupRows(`* | model_lookup(model="r1", key=[rmm]) | coverage > 0.9 | percent < 50 | table(rmm, host, percent)`, opts)
+	if want := []string{"rare|h1|10"}; !slices.Equal(rows, want) {
+		t.Errorf("lookup rows %v, want %v", rows, want)
+	}
+
+	// A grouped row a rebuild left behind must not return the value twice.
+	d.exec(`INSERT INTO r1 (fractal_id, partition_val, value_val, event_count, days)
+SELECT 'f1', 'stale_host', 'rare', 1, groupUniqArrayState(365)(today())`)
+	if rows := d.lookupRows(`* | model_lookup(model="r1", key=[rmm]) | percent < 50 | table(rmm, host, percent)`, opts); !slices.Equal(rows, []string{"rare|h1|10"}) {
+		t.Errorf("with a stray row: lookup rows %v", rows)
 	}
 }
 
@@ -690,7 +745,7 @@ FROM numbers(200)`)
 			}
 			d.exec(ins)
 		}
-		models[m.name] = parser.AnalyticsModelInfo{TableName: m.name, ModelType: string(m.mt), MinSample: 1,
+		models[m.name] = parser.AnalyticsModelInfo{TableName: m.name, ModelType: string(m.mt), Keys: m.def.LookupKeys(m.mt), MinSample: 1,
 			HistoryDays: m.def.HistoryDays, FractalID: "f1"}
 	}
 	// u12 was recorded two hours ago: new only to an alert reaching back that far.
@@ -709,7 +764,7 @@ SELECT 'f1', 'u12', t, t, 1, t%s FROM (SELECT now64(3, 'UTC') - INTERVAL 2 HOUR 
 	for part := 0; part < 2; part++ {
 		d.exec(fmt.Sprintf(`INSERT INTO vol SELECT 'f1', concat('u', toString(number %% 10)), today() - intDiv(number, 10), 1 + number %% 7 + %d FROM numbers(100)`, part))
 	}
-	models["vol"] = parser.AnalyticsModelInfo{TableName: "vol", ModelType: "volume_baseline", TimeBucket: "day", MinSample: 3, FractalID: "f1"}
+	models["vol"] = parser.AnalyticsModelInfo{TableName: "vol", ModelType: "volume_baseline", Keys: []string{"user"}, TimeBucket: "day", MinSample: 3, FractalID: "f1"}
 	return models
 }
 

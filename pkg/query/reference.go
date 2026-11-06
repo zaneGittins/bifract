@@ -381,7 +381,7 @@ var bqlFunctionDocs = []FunctionDoc{
 		Syntax:      `| modelLookup(model="name", key=[field1, field2, ...], require=true)`,
 		Parameters: []Param{
 			{Name: "model", Type: "string", Required: true, Description: "Name of an active model from the Analytics page"},
-			{Name: "key", Type: "array", Required: true, Description: "Log fields matched against the model's key, in order. rarity: [partition_key, value_key]; first_seen and volume_baseline: [entity]; beacon and long_connection: [src_ip, dst_ip, dst_port]"},
+			{Name: "key", Type: "array", Required: true, Description: "Log fields matched against the model's key, in order. The count must match the model. rarity: [partition_key, value_key], or [value_key] with no group; first_seen and volume_baseline: its key fields; beacon and long_connection: [src_ip, dst_ip, dst_port]"},
 			{Name: "require", Type: "boolean", Required: false, Description: "true (default) returns only rows the model scored; false keeps unscored rows with empty enrichment"},
 		},
 		Examples: []string{

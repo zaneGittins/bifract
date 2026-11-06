@@ -119,6 +119,28 @@ func TestFirstSeenFindingsAreNewToModel(t *testing.T) {
 	}
 }
 
+// A picked sort can tie on every row of a rarity model with no group, so it is
+// always followed by the row's key: pages of a tied sort must not overlap.
+func TestDataPlanBreaksTiesOnTheRowKey(t *testing.T) {
+	cases := []struct {
+		mt   ModelType
+		sort string
+		want string
+	}{
+		{ModelTypeRarity, "coverage", "coverage DESC, percent ASC, partition_val, value_val"},
+		{ModelTypeFirstSeen, "first_seen", "first_seen DESC, entity_key"},
+		{ModelTypeVolumeBaseline, "z_score", "z_score DESC, entity_val"},
+		{ModelTypeBeacon, "final_score", "final_score DESC, src_ip, dst_ip, dst_port"},
+		{ModelTypeTLSH, "first_seen", "first_seen DESC, digest"},
+	}
+	for _, c := range cases {
+		_, order, _ := dataPlan(DataQuery{View: DataViewAll}, map[string]bool{}, c.sort, findingsRuleFor(c.mt, ModelDefinition{}), plainSort)
+		if order != c.want {
+			t.Errorf("%s: order %q, want %q", c.mt, order, c.want)
+		}
+	}
+}
+
 func TestDataPlan(t *testing.T) {
 	allowed := map[string]bool{"z_score": true, "entity_val": true}
 	rule := findingsRule{Where: "z_score > 3.5", Order: "z_score DESC, entity_val"}

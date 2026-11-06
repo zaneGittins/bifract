@@ -23,7 +23,12 @@ the shape Bifract exports, published elsewhere (such as a GitHub release), and l
 `url` (https), `sha256`, `bytes`, `logs` and `start`/`end` event times. Installs check the
 size, hash and log count before importing into a new fractal named after the dataset's id,
 which opens on the `start`/`end` range. Compress with at most `zstd --long=27`. A dataset
-takes no `path`, is not part of a bundle, and nothing can require it.
+takes no `path`, and nothing can require it.
+
+A bundle can list one dataset among its items. Its other items are then added to the
+dataset's fractal before the logs are imported, so detections fire on them and models build
+from them. A model with `history_days` drops state older than twice that, so leave it unset
+in a lab's models, or they will empty as the dataset ages. Older installs skip such a bundle.
 
 Installs read this index from `main` and skip items they do not understand. Add new
 fields or kinds freely, but do not change what an existing field means.

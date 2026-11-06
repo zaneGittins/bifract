@@ -7,7 +7,7 @@ The Exchange is a shared catalog of content for Bifract. Open **Exchange** in th
 | Kind | Adds | Who can add it |
 |---|---|---|
 | **Dataset** | A new fractal named after the dataset, filled with its logs in the background. See [Datasets](#datasets) | Tenant admins |
-| **Bundle** | Each of its items not already present, requirements first | Whoever can add each item |
+| **Bundle** | Each of its items not already present, requirements first. With a dataset, see [Bundles with a dataset](#bundles-with-a-dataset) | Whoever can add each item |
 | **Lookup** | A [lookup filled from a URL](../features/dictionaries.md#fill-a-lookup-from-a-url), named after the item. Rows stay upstream and refresh on the item's schedule | Tenant admins |
 | **Model** | An [analytics model](../features/models.md), named after the item. It builds from new logs; run a backfill for stored ones. Fractals only | Analysts |
 | **Detection** | An alert, or a draft in your name when the scope reviews alert changes. Sigma rules map fields through the normalizer the item requires | Analysts |
@@ -22,7 +22,7 @@ Click an item's name to see exactly what it adds before you add it. Added items 
 
 An item can require others, such as a detection that reads a model built from a lookup. **Add** adds whatever it requires first, skipping what is already present, and says what it will add in the button's tooltip and the item's preview.
 
-A bundle groups the items of one use case. **Add all** adds every member that is missing, in order, and stops at the first failure so nothing is added without what it needs. Each member can also be added on its own.
+A bundle groups the items of one use case. **Add all** adds every member that is missing, in order, and skips anything that needs a member that failed. From its own page, each member can also be added on its own to the current fractal.
 
 ## Datasets
 
@@ -35,6 +35,26 @@ A dataset is a recorded set of logs, such as a simulated intrusion, for training
 The fractal opens on the dataset's time range, and the time picker offers it as **Dataset range** while you are in it. **Retry** runs a failed import again, and an import cut off by a server restart starts over on its own a few minutes after the server is back. Either way the fractal is emptied first, so it never holds part of a dataset twice. With the Exchange turned off, no imports run.
 
 To load a dataset into an existing fractal instead, use the [CLI](../ingestion/cli-tool.md#load-an-exchange-dataset).
+
+### Bundles with a dataset
+
+A bundle can hold one dataset, so a lab arrives with the detections, models, dashboards and searches that go with it. Adding the bundle needs a tenant admin. **Add all** creates the dataset's fractal, switches to it, adds the bundle's other items there, then imports the logs:
+
+- Lookups load first. The import waits for them, and fails naming the lookup if one does not load.
+- Detections fire as the logs land, and Rarity and First / Last Seen models build from them, as they would for live logs.
+- Beacon and Long Connection models are scored over the dataset's range once every log is stored. The import shows **Scoring models** while this runs. A model that cannot be scored leaves a warning on the finished import; use [Score range](../features/models.md#score-a-past-range-beacon-long-connection) on it.
+- Volume Baseline models in the fractal score the bucket holding the dataset's last log, which may be partial, rather than today's.
+- `modelLookup()` reads as of now and as logs arrive, so a detection that reads a Volume Baseline or network model finds nothing to match on during the import. These models' results are in **Findings**.
+
+Model alerts stay paused, as they do for any new model; results show under **Findings**. Activating a First / Last Seen alert before an import fires once for every entity, since the whole dataset is new to the model.
+
+If an item cannot be added, the logs wait. The bundle and dataset show **Not started**, and **Continue** on the bundle adds what is missing and starts the import. **Start import** on the dataset starts it with what is there.
+
+If the dataset was added first on its own, or another bundle holds the same dataset, open its fractal: the bundle offers **Add** for what is missing there. Those items see only what comes after, so run a [backfill](../features/models.md#seed-history-backfill) for their models. Detections do not read logs already stored.
+
+Keep the fractal for its dataset. Its models read as of the dataset's end, so logs sent to it later go unscored by Volume Baseline.
+
+**Retry**, and a restart that runs an import again, also empty the fractal's models and clear the execution history and throttles of its alerts, so nothing counts twice. Alerts fire again as the logs land, including any actions you added to them. Copies an alert already wrote to another fractal or lookup stay, and alerts on a prism holding the fractal are not cleared.
 
 ## Where it comes from
 

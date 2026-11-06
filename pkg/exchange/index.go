@@ -69,7 +69,8 @@ type Item struct {
 	// Requires lists the items this one needs present first. A Sigma detection's
 	// fields map through the normalizer it requires.
 	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
-	// Items are a bundle's members.
+	// Items are a bundle's members. With a dataset among them, the rest are added
+	// to its fractal before its logs are imported.
 	Items   []string `yaml:"items,omitempty" json:"items,omitempty"`
 	Lookup  *Lookup  `yaml:"lookup,omitempty" json:"lookup,omitempty"`
 	Dataset *Dataset `yaml:"dataset,omitempty" json:"dataset,omitempty"`
@@ -218,6 +219,7 @@ func (idx *Index) check() []error {
 	var errs []error
 	kept := make([]Item, 0, len(idx.Items))
 	seen := make(map[string]bool, len(idx.Items))
+	lostDatasets := map[string]bool{}
 	for _, it := range idx.Items {
 		var err error
 		switch {
@@ -232,6 +234,7 @@ func (idx *Index) check() []error {
 		}
 		if err != nil {
 			errs = append(errs, err)
+			lostDatasets[it.ID] = it.Kind == KindDataset
 			continue
 		}
 		seen[it.ID] = true
@@ -244,7 +247,7 @@ func (idx *Index) check() []error {
 		dropped := false
 		kept = make([]Item, 0, len(idx.Items))
 		for _, it := range idx.Items {
-			if err := idx.checkRefs(&it); err != nil {
+			if err := idx.checkRefs(&it, lostDatasets); err != nil {
 				errs = append(errs, fmt.Errorf("item %q: %w", it.ID, err))
 				dropped = true
 				continue
@@ -268,7 +271,9 @@ func (idx *Index) check() []error {
 
 // checkRefs checks what an item refers to. A bundle keeps the members still listed
 // and fails only when none are left; anything else fails on a missing requirement.
-func (idx *Index) checkRefs(it *Item) error {
+// A bundle that lost its dataset fails too: its items are meant for that dataset's
+// fractal, and would otherwise be added to whichever one is open.
+func (idx *Index) checkRefs(it *Item, lostDatasets map[string]bool) error {
 	normalizers := 0
 	for _, r := range it.Requires {
 		req := idx.Find(r)
@@ -293,14 +298,20 @@ func (idx *Index) checkRefs(it *Item) error {
 	}
 	var members []string
 	var missing error
+	datasets := 0
 	for _, m := range it.Items {
 		switch mem := idx.Find(m); {
+		case lostDatasets[m]:
+			return fmt.Errorf("bundle member %q is a dataset that is not valid", m)
 		case mem == nil:
 			missing = fmt.Errorf("bundle member %q is not in this index", m)
 		case mem.Kind == KindBundle:
 			return fmt.Errorf("bundle member %q is a bundle; list its items instead", m)
 		case mem.Kind == KindDataset:
-			return fmt.Errorf("bundle member %q is a dataset, which is added as a fractal of its own", m)
+			if datasets++; datasets > 1 {
+				return fmt.Errorf("a bundle holds one dataset, whose fractal its other items go into")
+			}
+			members = append(members, m)
 		default:
 			members = append(members, m)
 		}

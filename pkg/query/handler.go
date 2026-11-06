@@ -1060,19 +1060,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 			infos, err = h.modelManager.ListModelInfos(r.Context(), selectedIndex)
 		}
 		if err == nil {
-			modelInfos = make(map[string]parser.AnalyticsModelInfo, len(infos))
-			for name, mi := range infos {
-				modelInfos[name] = parser.AnalyticsModelInfo{
-					ID:          mi.ID,
-					TableName:   mi.TableName,
-					ModelType:   string(mi.ModelType),
-					MinSample:   mi.MinSample,
-					TimeBucket:  mi.TimeBucket,
-					HistoryDays: mi.HistoryDays,
-					FractalID:   mi.FractalID,
-					Distributed: mi.Distributed,
-				}
-			}
+			modelInfos = models.ParserInfos(infos)
 		}
 	}
 
@@ -1545,19 +1533,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 			unavailable("models", err)
 			return
 		}
-		modelInfos = make(map[string]parser.AnalyticsModelInfo, len(infos))
-		for name, mi := range infos {
-			modelInfos[name] = parser.AnalyticsModelInfo{
-				ID:          mi.ID,
-				TableName:   mi.TableName,
-				ModelType:   string(mi.ModelType),
-				MinSample:   mi.MinSample,
-				TimeBucket:  mi.TimeBucket,
-				HistoryDays: mi.HistoryDays,
-				FractalID:   mi.FractalID,
-				Distributed: mi.Distributed,
-			}
-		}
+		modelInfos = models.ParserInfos(infos)
 	}
 
 	// Time range affects only the generated WHERE clause, which we discard; fall

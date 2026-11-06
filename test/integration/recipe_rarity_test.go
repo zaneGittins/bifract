@@ -194,6 +194,130 @@ func TestRarityScoring(t *testing.T) {
 	}
 }
 
+// A rarity model with no group scores each value across every host. Editing a
+// grouped model into one drops its per-host rows, so nothing stale joins back in.
+func TestRarityWithoutGroup(t *testing.T) {
+	t.Parallel()
+	c := New(t)
+
+	fractalID, scoped := newFractal(t, c, "rarity-global")
+	shipper := newShipper(t, scoped, fractalID)
+
+	// Port 443 on each of 10 days, from a different host each day. Port 22 on two
+	// days, and port 3389 on one: 13 value-days, one of them a one-day value.
+	const days = 10
+	marker := fmt.Sprintf("rarity-global-%d", time.Now().UnixNano())
+	noon := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
+	var logs []map[string]any
+	add := func(host, port string, daysAgo int) {
+		logs = append(logs, map[string]any{
+			"timestamp":     noon.AddDate(0, 0, -daysAgo).Format(time.RFC3339),
+			"computer_name": host, "dst_port": port, "suite_marker": marker,
+		})
+	}
+	for d := 1; d <= days; d++ {
+		add(fmt.Sprintf("WS%02d", d), "443", d)
+	}
+	add("WS01", "22", 1)
+	add("WS02", "22", 2)
+	add("WS03", "3389", 3)
+	shipper.DoRaw(t, "POST", "/ingest", logs, nil)
+
+	search := func(query string, out any) {
+		c.DoRaw(t, "POST", "/query", map[string]any{
+			"query":      query,
+			"fractal_id": fractalID,
+			"start":      noon.AddDate(0, 0, -days-1).Format(time.RFC3339),
+			"end":        time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
+		}, out)
+	}
+	Eventually(t, "the ingested logs to become queryable", 120*time.Second, func() bool {
+		var rows struct {
+			Results []map[string]any `json:"results"`
+		}
+		search(fmt.Sprintf("suite_marker=%q | count()", marker), &rows)
+		return len(rows.Results) == 1 && fmt.Sprint(rows.Results[0]["_count"]) == fmt.Sprint(len(logs))
+	})
+
+	definition := func(extra map[string]any) map[string]any {
+		def := map[string]any{
+			"source_bql": fmt.Sprintf("suite_marker=%q", marker),
+			"value_key":  "dst_port",
+			"min_sample": 1,
+			"alert":      map[string]any{"coverage_threshold": 0.9, "percent_threshold": 15},
+		}
+		for k, v := range extra {
+			def[k] = v
+		}
+		return def
+	}
+	var model struct {
+		ID string `json:"id"`
+	}
+	modelName := "suite_rarity_global_" + fmt.Sprint(time.Now().UnixNano())
+	scoped.Do(t, "POST", "/models", map[string]any{
+		"name": modelName, "model_type": "rarity", "alert_mode": "none",
+		"definition": definition(map[string]any{"partition_key": "computer_name"}),
+	}, &model)
+	t.Cleanup(func() { scoped.Status(t, "DELETE", "/models/"+model.ID, nil) })
+	active := func() {
+		Eventually(t, "the model to become active", 60*time.Second, func() bool {
+			var m struct {
+				Status string `json:"status"`
+			}
+			scoped.Do(t, "GET", "/models/"+model.ID, nil, &m)
+			return m.Status == "active"
+		})
+	}
+	active()
+	scoped.Do(t, "POST", "/models/"+model.ID+"/backfill", map[string]any{"window": "30d"}, nil)
+	waitBackfill(t, scoped, model.ID)
+
+	scoped.Do(t, "PUT", "/models/"+model.ID, map[string]any{"name": modelName, "alert_mode": "none", "definition": definition(nil)}, nil)
+	active()
+	scoped.Do(t, "POST", "/models/"+model.ID+"/backfill", map[string]any{"window": "30d"}, nil)
+	waitBackfill(t, scoped, model.ID)
+
+	var rows []map[string]any
+	scoped.Do(t, "GET", "/models/"+model.ID+"/data?limit=100", nil, &rows)
+	if len(rows) != 3 {
+		t.Fatalf("data view has %d rows, want one per port: %v", len(rows), rows)
+	}
+	byValue := map[string]map[string]any{}
+	for _, r := range rows {
+		byValue[fmt.Sprint(r["value_val"])] = r
+		if fmt.Sprint(r["partition_val"]) != "" {
+			t.Errorf("row kept a group: %v", r)
+		}
+	}
+	const coverage = 1 - 1.0/13
+	expectRarity(t, byValue, "443", days, days, 100, coverage)
+	expectRarity(t, byValue, "22", 2, days, 20, coverage)
+	expectRarity(t, byValue, "3389", 1, days, 10, coverage)
+
+	if findings, total := modelFindings(t, scoped, model.ID, ""); total != 1 || fmt.Sprint(findings[0]["value_val"]) != "3389" {
+		t.Errorf("findings = %v (total %d), want port 3389 alone", findings, total)
+	}
+
+	// The alert's lookup takes the value alone and keeps one row per log.
+	var res struct {
+		Results []map[string]any `json:"results"`
+	}
+	search(fmt.Sprintf("suite_marker=%q | modelLookup(model=%q, key=[dst_port]) | coverage > 0.9 | percent < 15 | table(computer_name, dst_port, percent)", marker, modelName), &res)
+	if len(res.Results) != 1 || fmt.Sprint(res.Results[0]["dst_port"]) != "3389" || fmt.Sprint(res.Results[0]["computer_name"]) != "WS03" {
+		t.Errorf("lookup = %v, want WS03 on port 3389", res.Results)
+	}
+
+	// Naming the old group as well is refused, not an empty result.
+	code, body := c.call(t, "POST", "/query", map[string]any{
+		"query":      fmt.Sprintf("* | modelLookup(model=%q, key=[computer_name, dst_port])", modelName),
+		"fractal_id": fractalID,
+	})
+	if code != 400 || !strings.Contains(string(body), "is keyed on") {
+		t.Errorf("a two-field lookup on a one-key model answered %d: %s", code, body)
+	}
+}
+
 // modelFindings reads a model's Findings view: the rows its alert would raise,
 // in the order the view ranks them, and the view's total.
 // waitBackfill waits for a model's backfill to finish. A server runs one

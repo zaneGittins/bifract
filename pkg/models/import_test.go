@@ -23,7 +23,7 @@ definition:
 
 	bad := map[string]string{
 		"no name":            "model_type: rarity\ndefinition: {partition_key: user, value_key: x}\n",
-		"no partition key":   "name: m\nmodel_type: rarity\ndefinition: {value_key: x}\n",
+		"no value key":       "name: m\nmodel_type: rarity\ndefinition: {partition_key: user}\n",
 		"unknown field":      "name: m\nmodel_type: rarity\ncolour: red\ndefinition: {partition_key: user, value_key: x}\n",
 		"invalid source":     "name: m\nmodel_type: rarity\ndefinition: {partition_key: user, value_key: x, source_bql: '| | |'}\n",
 		"tlsh with two keys": "name: m\nmodel_type: tlsh\ndefinition: {key_fields: [a, b]}\n",

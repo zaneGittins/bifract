@@ -5611,7 +5611,7 @@ func TestModelLookupKeyResolvesAComputedColumn(t *testing.T) {
 		Dictionaries:       map[string]map[string]string{"rmm": {"path": "dict_rmm"}},
 		PatternDicts:       map[string]bool{"dict_rmm": true},
 		Models: map[string]AnalyticsModelInfo{
-			"m": {ID: "m1", TableName: "model_m1", ModelType: "first_seen", FractalID: "f1"},
+			"m": {ID: "m1", TableName: "model_m1", ModelType: "first_seen", FractalID: "f1", Keys: []string{"user", "tool"}},
 		},
 	})
 	if err != nil {

@@ -164,17 +164,7 @@ func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[str
 		if distributed {
 			tableName = chModelDistName(id)
 		}
-
-		result[name] = ModelInfo{
-			ID:          id,
-			TableName:   tableName,
-			ModelType:   ModelType(modelType),
-			MinSample:   def.MinSample,
-			TimeBucket:  def.TimeBucket,
-			HistoryDays: def.HistoryDaysFor(ModelType(modelType)),
-			FractalID:   fractalID,
-			Distributed: distributed,
-		}
+		result[name] = newModelInfo(id, ModelType(modelType), def, fractalID, tableName, distributed)
 	}
 	return result, rows.Err()
 }
@@ -220,17 +210,7 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 		if distributed {
 			tableName = chModelDistName(id)
 		}
-
-		result[name] = ModelInfo{
-			ID:          id,
-			TableName:   tableName,
-			ModelType:   ModelType(modelType),
-			MinSample:   def.MinSample,
-			TimeBucket:  def.TimeBucket,
-			HistoryDays: def.HistoryDaysFor(ModelType(modelType)),
-			FractalID:   ownerFractalID,
-			Distributed: distributed,
-		}
+		result[name] = newModelInfo(id, ModelType(modelType), def, ownerFractalID, tableName, distributed)
 	}
 	return result, rows.Err()
 }
@@ -994,7 +974,7 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID string, q
 	case ModelTypeTLSH:
 		return m.getFirstSeenData(ctx, tableName, fractalID, q, rule, "digest", false, 0)
 	case ModelTypeVolumeBaseline:
-		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, q, rule)
+		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, volumeAsOf(model), q, rule)
 	case ModelTypeBeacon, ModelTypeLongConnection:
 		return m.getNetworkData(ctx, tableName, fractalID, q, rule)
 	default:
@@ -1057,12 +1037,13 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID str
 }
 
 // buildVolumeScoredSQL scores a volume_baseline model's entities with the shared
-// definition (see parser.VolumeScoredSQL). fidEsc must already be CH-escaped.
-func buildVolumeScoredSQL(source, fidEsc string, def ModelDefinition, lower string) string {
-	return parser.VolumeScoredSQL(source, fidScope(fidEsc), def.TimeBucket, def.MinSample, lower, true)
+// definition (see parser.VolumeScoredSQL), as of asOf (see volumeAsOf). fidEsc must
+// already be CH-escaped.
+func buildVolumeScoredSQL(source, fidEsc string, def ModelDefinition, asOf string) string {
+	return parser.VolumeScoredSQLAt(source, fidScope(fidEsc), def.TimeBucket, def.MinSample, "", asOf, true)
 }
 
-func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalID string, def ModelDefinition, q DataQuery, rule findingsRule) ([]map[string]interface{}, uint64, error) {
+func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalID string, def ModelDefinition, asOf string, q DataQuery, rule findingsRule) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{"entity_val": true, "latest_count": true, "baseline_median": true, "mad": true, "z_score": true, "n_buckets": true, "latest_bucket": true}
 	// Sort by absolute z-score so the largest anomalies (high or low) surface first.
 	where, order, none := dataPlan(q, allowed, "z_score", rule, func(col string) string {
@@ -1075,7 +1056,7 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 		return nil, 0, nil
 	}
 
-	baseQuery := buildVolumeScoredSQL("`"+tableName+"`", storage.EscCHStr(fractalID), def, "")
+	baseQuery := buildVolumeScoredSQL("`"+tableName+"`", storage.EscCHStr(fractalID), def, asOf)
 	if q.Search != "" {
 		baseQuery += fmt.Sprintf("\nAND entity_val ILIKE '%%%s%%'", storage.EscCHStr(q.Search))
 	}
@@ -1175,7 +1156,7 @@ func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) 
 	case ModelTypeTLSH:
 		return m.getFirstSeenStats(ctx, qt, fid, "digest", 0)
 	case ModelTypeVolumeBaseline:
-		result, err = m.getVolumeBaselineStats(ctx, tableName, model.Definition, fid, rule)
+		result, err = m.getVolumeBaselineStats(ctx, tableName, model.Definition, fid, volumeAsOf(model), rule)
 	case ModelTypeBeacon, ModelTypeLongConnection:
 		result, err = m.getNetworkStats(ctx, qt, fid, rule)
 	default:
@@ -1276,8 +1257,8 @@ FROM (%s
 	return result, nil
 }
 
-func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, def ModelDefinition, fid string, rule findingsRule) (map[string]interface{}, error) {
-	scoring := buildVolumeScoredSQL("`"+tableName+"`", fid, def, "")
+func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, def ModelDefinition, fid, asOf string, rule findingsRule) (map[string]interface{}, error) {
+	scoring := buildVolumeScoredSQL("`"+tableName+"`", fid, def, asOf)
 	q := fmt.Sprintf(`SELECT count() AS total_entities,
        countIf(abs(z_score) > %g) AS anomalous,
        countIf(%s) AS findings,
@@ -1323,7 +1304,7 @@ func (m *Manager) GetHistogram(ctx context.Context, model *Model, fractalID stri
 		// knowing, and an empty panel collapses.
 		return nil, nil
 	case ModelTypeVolumeBaseline:
-		return m.getVolumeBaselineHistogram(ctx, tableName, model.Definition, fid)
+		return m.getVolumeBaselineHistogram(ctx, tableName, model.Definition, fid, volumeAsOf(model))
 	case ModelTypeBeacon, ModelTypeLongConnection:
 		return m.getNetworkHistogram(ctx, qt, fid)
 	default:
@@ -1456,7 +1437,11 @@ func rarityFlagPredicates(def ModelDefinition) rarityFlags {
 	}
 	f := rarityFlags{sql: []string{fmt.Sprintf("model_total >= %d", minSample)}}
 	if minSample > 1 {
-		f.words = append(f.words, fmt.Sprintf("group seen on %d+ day%s", minSample, plural(minSample)))
+		word := "group seen on %d+ day%s"
+		if def.PartitionKey == "" {
+			word = "%d+ day%s of history"
+		}
+		f.words = append(f.words, fmt.Sprintf(word, minSample, plural(minSample)))
 	}
 	if def.Alert != nil {
 		if t := def.Alert.CoverageThreshold; t > 0 {
@@ -1498,8 +1483,8 @@ GROUP BY day ORDER BY day`, firstSeenAgg(qt, fidScope(fid), keyCol, historyDays,
 	return map[string]interface{}{"metric": "new_per_day", "series": series}, nil
 }
 
-func (m *Manager) getVolumeBaselineHistogram(ctx context.Context, tableName string, def ModelDefinition, fid string) (map[string]interface{}, error) {
-	inner := buildVolumeScoredSQL("`"+tableName+"`", fid, def, "")
+func (m *Manager) getVolumeBaselineHistogram(ctx context.Context, tableName string, def ModelDefinition, fid, asOf string) (map[string]interface{}, error) {
+	inner := buildVolumeScoredSQL("`"+tableName+"`", fid, def, asOf)
 	buckets, err := m.runHistogram(ctx, inner, volumeHistBucketExpr, volumeHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("volume_baseline histogram: %w", err)
@@ -1613,7 +1598,8 @@ const modelColumns = `id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text
 	       backfill_status, backfill_window, backfill_total, backfill_done,
 	       backfill_started_at, backfill_from, backfill_to, backfill_error, state_watermark,
 	       (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id),
-	       (SELECT al.last_triggered FROM alerts al WHERE al.id = analytics_models.linked_alert_id)`
+	       (SELECT al.last_triggered FROM alerts al WHERE al.id = analytics_models.linked_alert_id),
+	       (SELECT f.default_range_end FROM fractals f WHERE f.id = analytics_models.fractal_id)`
 
 func scanModelRow(row modelScannable) (*Model, error) {
 	var mo Model
@@ -1631,6 +1617,7 @@ func scanModelRow(row modelScannable) (*Model, error) {
 		&mo.StateWatermark,
 		&alertEnabled,
 		&lastTriggered,
+		&mo.DatasetEnd,
 	)
 	if err != nil {
 		return nil, err
@@ -1674,9 +1661,6 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 	}
 	switch mt {
 	case ModelTypeRarity:
-		if def.PartitionKey == "" {
-			return fmt.Errorf("partition_key is required for rarity models")
-		}
 		if def.ValueKey == "" {
 			return fmt.Errorf("value_key is required for rarity models")
 		}
@@ -1763,7 +1747,7 @@ func validateHistoryDays(mt ModelType, def ModelDefinition) error {
 	}
 	if mt == ModelTypeRarity {
 		if need := rarityAlertHistory(def); d < need {
-			return fmt.Errorf("a %d-day history window is shorter than the %d days a group needs before its values can alert (min history, or more than 100 / share threshold days); use at least %d",
+			return fmt.Errorf("a %d-day history window is shorter than the %d days of data needed before values can alert (min history, or more than 100 / share threshold days); use at least %d",
 				d, need, need)
 		}
 	}

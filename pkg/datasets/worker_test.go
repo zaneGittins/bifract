@@ -116,6 +116,80 @@ func (l *fakeLogs) CountFractalLogs(_ context.Context, id string) (uint64, error
 	return uint64(max(len(l.queue.entries)-l.lose, 0)), nil
 }
 
+var (
+	testStart = time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+	testEnd   = time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
+)
+
+// fakeContent records what the worker does to a fractal's models, alerts and
+// lookups in the same order as its logs.
+type fakeContent struct {
+	events   *[]string
+	resetErr error
+	warnings []string
+	// building answers each model check in turn, then repeats the last.
+	building [][]string
+	// loads answers each lookup check in turn, then repeats the last.
+	loads []lookupLoads
+	// onScore runs as scoring starts.
+	onScore func()
+}
+
+type lookupLoads struct {
+	loading, failed []string
+	err             error
+}
+
+func (c *fakeContent) BuildingModels(context.Context, string) ([]string, error) {
+	*c.events = append(*c.events, "models built")
+	if len(c.building) == 0 {
+		return nil, nil
+	}
+	b := c.building[0]
+	if len(c.building) > 1 {
+		c.building = c.building[1:]
+	}
+	return b, nil
+}
+
+func (c *fakeContent) ResetFractal(_ context.Context, id string) error {
+	if id != testFractal {
+		return fmt.Errorf("reset %q", id)
+	}
+	*c.events = append(*c.events, "reset models")
+	return c.resetErr
+}
+
+func (c *fakeContent) ClearFractalHistory(_ context.Context, id string) error {
+	if id != testFractal {
+		return fmt.Errorf("cleared %q", id)
+	}
+	*c.events = append(*c.events, "clear alerts")
+	return nil
+}
+
+func (c *fakeContent) FractalSourceLoads(context.Context, string) ([]string, []string, error) {
+	*c.events = append(*c.events, "lookups")
+	if len(c.loads) == 0 {
+		return nil, nil, nil
+	}
+	l := c.loads[0]
+	if len(c.loads) > 1 {
+		c.loads = c.loads[1:]
+	}
+	return l.loading, l.failed, l.err
+}
+
+func (c *fakeContent) ScoreFractal(_ context.Context, id string, start, end time.Time) []string {
+	if id == testFractal && start.Equal(testStart) && end.Equal(testEnd) {
+		*c.events = append(*c.events, "score")
+	}
+	if c.onScore != nil {
+		c.onScore()
+	}
+	return c.warnings
+}
+
 type fakeHub struct {
 	mu     sync.Mutex
 	events []sse.Event
@@ -140,12 +214,13 @@ func exportedLines(n int) string {
 }
 
 type workerRig struct {
-	w      *Worker
-	pg     *fakedb.PG
-	queue  *fakeQueue
-	logs   *fakeLogs
-	hub    *fakeHub
-	events []string
+	w       *Worker
+	pg      *fakedb.PG
+	queue   *fakeQueue
+	logs    *fakeLogs
+	hub     *fakeHub
+	content *fakeContent
+	events  []string
 }
 
 // newRig serves file and scripts Postgres with one claimable import of it.
@@ -162,13 +237,15 @@ func newRig(t *testing.T, file []byte, sha string, logs int64) *workerRig {
 	now := started
 	pg.OnOnce("UPDATE dataset_imports\n\t\tSET status = 'downloading'", fakedb.Row(int64(7)))
 	pg.On("WHERE i.id = $1", fakedb.Row(int64(7), "bifract-labs-001", testFractal, "bifract-labs-001",
-		srv.URL+"/d.jsonl.zst", sha, int64(len(file)), logs, StatusDownloading, int64(0), int64(0), "", "admin",
-		now, started, nil, now))
+		srv.URL+"/d.jsonl.zst", sha, int64(len(file)), logs, StatusDownloading, int64(0), int64(0), "", "", "admin",
+		now, started, nil, now, testStart, testEnd))
 	pg.On("UPDATE dataset_imports SET status = $3", fakedb.Affected(1))
 	r := &workerRig{pg: pg, hub: &fakeHub{}}
 	r.queue = &fakeQueue{events: &r.events}
 	r.logs = &fakeLogs{queue: r.queue, events: &r.events}
-	r.w = NewWorker(NewStore(pgc), testClient, r.queue, r.logs, r.hub, testMaxDepth, t.TempDir())
+	r.content = &fakeContent{events: &r.events}
+	r.w = NewWorker(NewStore(pgc), testClient, r.queue, r.logs,
+		Content{Models: r.content, Alerts: r.content, Lookups: r.content}, r.hub, testMaxDepth, t.TempDir())
 	return r
 }
 
@@ -182,6 +259,10 @@ func (r *workerRig) finish(t *testing.T) []driver.Value {
 	return calls[0].Args[2:]
 }
 
+// emptied is what every attempt starts with: logs first, so nothing reading them
+// can rebuild what is reset after.
+const emptied = "drop,reset models,clear alerts"
+
 func TestWorkerImports(t *testing.T) {
 	r := newRig(t, compress(t, exportedLines(3)), "", 3)
 	if !r.w.RunOnce(context.Background()) {
@@ -190,8 +271,8 @@ func TestWorkerImports(t *testing.T) {
 	if got := r.finish(t); got[0] != StatusSucceeded || got[1] != "" || got[3] != int64(3) {
 		t.Fatalf("finish = %v", got)
 	}
-	if strings.Join(r.events, ",") != "drop,enqueue,count" {
-		t.Errorf("events %v: the fractal must be emptied first, and the import checked as stored", r.events)
+	if strings.Join(r.events, ",") != "models built,"+emptied+",lookups,enqueue,count,score" {
+		t.Errorf("events %v: the fractal must be emptied first, logs wait for lookups, and scoring for every log", r.events)
 	}
 	if len(r.queue.entries) != 3 {
 		t.Fatalf("%d entries enqueued", len(r.queue.entries))
@@ -231,10 +312,157 @@ func TestWorkerRefusesMismatchedFile(t *testing.T) {
 				t.Errorf("%d entries enqueued from a mismatched file", len(r.queue.entries))
 			}
 			// A failure empties the fractal again, after whatever was enqueued.
-			if r.events[len(r.events)-1] != "drop" {
+			if !strings.HasSuffix(strings.Join(r.events, ","), emptied) {
 				t.Errorf("events %v: a failed import must empty the fractal", r.events)
 			}
 		})
+	}
+}
+
+// Each attempt re-ingests every log, so a retry that kept model state would double
+// its counts. An import that cannot empty its models must not go on.
+func TestWorkerStopsWhenModelsCannotBeEmptied(t *testing.T) {
+	r := newRig(t, compress(t, exportedLines(3)), "", 3)
+	r.content.resetErr = errors.New("no space on ch-0.int")
+	r.w.RunOnce(context.Background())
+	got := r.finish(t)
+	if got[0] != StatusFailed || strings.Contains(got[1].(string), "ch-0.int") {
+		t.Fatalf("finish = %v", got)
+	}
+	if len(r.queue.entries) != 0 {
+		t.Errorf("%d logs imported over stale model state", len(r.queue.entries))
+	}
+}
+
+// A model records only what is stamped after it is built, so an import added right
+// behind its models waits for them before touching anything.
+func TestWorkerWaitsForModels(t *testing.T) {
+	old := contentPoll
+	contentPoll = time.Millisecond
+	t.Cleanup(func() { contentPoll = old })
+	r := newRig(t, compress(t, exportedLines(3)), "", 3)
+	r.content.building = [][]string{{"beacons"}, {"beacons"}, nil}
+	r.w.RunOnce(context.Background())
+	if got := r.finish(t); got[0] != StatusSucceeded {
+		t.Fatalf("finish = %v", got)
+	}
+	if got := strings.Join(r.events, ","); !strings.HasPrefix(got, "models built,models built,models built,drop") {
+		t.Errorf("events %s", got)
+	}
+}
+
+// A model stuck building must not pass as one that saw the logs.
+func TestWorkerFailsOnAModelThatNeverBuilds(t *testing.T) {
+	oldPoll, oldTimeout := contentPoll, contentTimeout
+	contentPoll, contentTimeout = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { contentPoll, contentTimeout = oldPoll, oldTimeout })
+	r := newRig(t, compress(t, exportedLines(3)), "", 3)
+	r.content.building = [][]string{{"beacons"}}
+	r.w.RunOnce(context.Background())
+	got := r.finish(t)
+	if got[0] != StatusFailed || !strings.Contains(got[1].(string), "beacons") {
+		t.Fatalf("finish = %v", got)
+	}
+	if len(r.queue.entries) != 0 {
+		t.Errorf("%d logs imported ahead of a model", len(r.queue.entries))
+	}
+}
+
+// A model reads each log once, so logs wait for the lookups it matches them with.
+func TestWorkerWaitsForLookups(t *testing.T) {
+	old := contentPoll
+	contentPoll = time.Millisecond
+	t.Cleanup(func() { contentPoll = old })
+	r := newRig(t, compress(t, exportedLines(3)), "", 3)
+	r.content.loads = []lookupLoads{{loading: []string{"lolrmm"}}, {loading: []string{"lolrmm"}}, {}}
+	r.w.RunOnce(context.Background())
+	if got := r.finish(t); got[0] != StatusSucceeded {
+		t.Fatalf("finish = %v", got)
+	}
+	if got := strings.Join(r.events, ","); !strings.Contains(got, "lookups,lookups,lookups,enqueue") {
+		t.Errorf("events %s", got)
+	}
+}
+
+func TestWorkerFailsOnALookup(t *testing.T) {
+	oldPoll, oldTimeout := contentPoll, contentTimeout
+	contentPoll, contentTimeout = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { contentPoll, contentTimeout = oldPoll, oldTimeout })
+	for name, c := range map[string]struct {
+		loads lookupLoads
+		want  string
+	}{
+		"failed": {lookupLoads{failed: []string{"lolrmm: status 404"}}, "lolrmm: status 404"},
+		"slow":   {lookupLoads{loading: []string{"lolrmm"}}, "still loading"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t, compress(t, exportedLines(3)), "", 3)
+			r.content.loads = []lookupLoads{c.loads}
+			r.w.RunOnce(context.Background())
+			got := r.finish(t)
+			if got[0] != StatusFailed || !strings.Contains(got[1].(string), c.want) {
+				t.Fatalf("finish = %v", got)
+			}
+			if len(r.queue.entries) != 0 {
+				t.Errorf("%d logs imported without their lookup", len(r.queue.entries))
+			}
+		})
+	}
+}
+
+// The logs are in, so a model left unscored warns rather than fails: running the
+// import again would redo all of it for what Score range can do alone.
+func TestWorkerWarnsOfUnscoredModels(t *testing.T) {
+	r := newRig(t, compress(t, exportedLines(3)), "", 3)
+	r.content.warnings = []string{"beacons was not scored.", "conns was not scored."}
+	r.w.RunOnce(context.Background())
+	got := r.finish(t)
+	if got[0] != StatusSucceeded || got[4] != "beacons was not scored. conns was not scored." {
+		t.Fatalf("finish = %v", got)
+	}
+	last := r.hub.events[len(r.hub.events)-1].Data.(*Import)
+	if last.Warning == "" {
+		t.Errorf("last broadcast = %+v", last)
+	}
+}
+
+// Scoring keeps the claim alive like the steps before it, and a server stopping
+// during it records no outcome, so the import is run again.
+func TestWorkerReportsScoringAndKeepsTheClaim(t *testing.T) {
+	old := reportInterval
+	reportInterval = time.Millisecond
+	t.Cleanup(func() { reportInterval = old })
+	r := newRig(t, compress(t, exportedLines(3)), "", 3)
+	ctx, cancel := context.WithCancel(context.Background())
+	r.content.onScore = func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, c := range r.pg.Matching("SET status = $3, bytes_done") {
+				if c.Args[2] == StatusScoring {
+					cancel()
+					return
+				}
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Error("scoring was never reported")
+		cancel()
+	}
+	r.w.RunOnce(ctx)
+	if n := len(r.pg.Matching("finished_at = NOW()")); n != 0 {
+		t.Errorf("a stopped import recorded an outcome (%d Finish calls)", n)
+	}
+}
+
+// A held import waits for Start, and a stale scoring run is taken over.
+func TestClaimQuery(t *testing.T) {
+	pgc, pg := storagetest.Postgres()
+	if imp, err := NewStore(pgc).Claim(context.Background(), time.Minute); err != nil || imp != nil {
+		t.Fatalf("claim = %v, %v", imp, err)
+	}
+	q := pg.Matching("UPDATE dataset_imports")[0].Query
+	if strings.Contains(q, "held") || !strings.Contains(q, "'scoring'") {
+		t.Errorf("claim: %s", q)
 	}
 }
 
@@ -285,7 +513,7 @@ func TestWorkerStopsWhenClaimIsLost(t *testing.T) {
 	if n := len(r.pg.Matching("finished_at = NOW()")); n != 0 {
 		t.Errorf("a lost import recorded an outcome (%d Finish calls)", n)
 	}
-	if strings.Join(r.events, ",") != "drop" {
+	if strings.Join(r.events, ",") != "models built,"+emptied+",lookups" {
 		t.Errorf("events %v: a lost claim must not empty the fractal again", r.events)
 	}
 }
@@ -302,7 +530,7 @@ func TestWorkerFailsWhenLogsAreNotStored(t *testing.T) {
 	if got := r.finish(t); got[0] != StatusFailed || got[1] != "only 2 of 3 logs were stored" {
 		t.Fatalf("finish = %v", got)
 	}
-	if r.events[len(r.events)-1] != "drop" {
+	if !strings.HasSuffix(strings.Join(r.events, ","), emptied) {
 		t.Errorf("events %v: a failed import must empty the fractal", r.events)
 	}
 }
@@ -315,7 +543,7 @@ func TestWorkerSettlesBeforeDropping(t *testing.T) {
 	if got := r.finish(t); got[0] != StatusFailed {
 		t.Fatalf("finish = %v", got)
 	}
-	if got := strings.Join(r.events, ","); got != "drop,enqueue,count,drop" {
+	if got := strings.Join(r.events, ","); got != "models built,"+emptied+",lookups,enqueue,count,"+emptied {
 		t.Errorf("events %s", got)
 	}
 }

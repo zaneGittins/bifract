@@ -215,13 +215,18 @@ func resolveModelKeySet(cmd CommandNode, ctx *CommandContext) (*modelKeySet, err
 
 	switch info.ModelType {
 	case "rarity":
-		if len(keyFields) != 2 {
-			return nil, fmt.Errorf("modelLookup() for rarity models requires exactly 2 key fields: [partition_key, value_key]")
-		}
-		ks.scoringSQL = RarityScoredSQL("`"+info.TableName+"`",
-			fractalIDInClause(fractalIDs), info.MinSample, info.HistoryDays, false)
+		scope := fractalIDInClause(fractalIDs)
 		ks.rightCols = []string{"partition_val", "value_val"}
 		ks.rawWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
+		if len(info.Keys) == 1 {
+			// The value alone keys a model with no group. Reading only its constant
+			// partition keeps one row per value, so a row a rebuild left behind
+			// cannot multiply the join.
+			scope += " AND partition_val = ''"
+			ks.rightCols = []string{"value_val"}
+			ks.rawWhere = strings.TrimSuffix(modelPrefilterAlias+".partition_val = '' AND "+ks.rawWhere, " AND ")
+		}
+		ks.scoringSQL = RarityScoredSQL("`"+info.TableName+"`", scope, info.MinSample, info.HistoryDays, false)
 		// Partitions still learning are scored away, so the raw key set is a superset.
 		ks.exact = info.MinSample <= 1
 
@@ -240,9 +245,6 @@ func resolveModelKeySet(cmd CommandNode, ctx *CommandContext) (*modelKeySet, err
 		ks.exact = true // the predicate admits exactly the entities with enough history
 
 	case "beacon", "long_connection":
-		if len(keyFields) != 3 {
-			return nil, fmt.Errorf("modelLookup() for %s models requires exactly 3 key fields: [src_ip, dst_ip, dst_port]", info.ModelType)
-		}
 		if info.ModelType == "beacon" {
 			ks.scoringSQL = buildBeaconScoringSQL(info.TableName, fractalIDs)
 		} else {
@@ -254,6 +256,10 @@ func resolveModelKeySet(cmd CommandNode, ctx *CommandContext) (*modelKeySet, err
 
 	default:
 		return nil, fmt.Errorf("unknown model type %q for model %q", info.ModelType, modelName)
+	}
+	if len(keyFields) != len(info.Keys) {
+		return nil, fmt.Errorf("modelLookup(): model %q is keyed on [%s], so key= needs %d field(s), got %d",
+			modelName, strings.Join(info.Keys, ", "), len(info.Keys), len(keyFields))
 	}
 	return ks, nil
 }

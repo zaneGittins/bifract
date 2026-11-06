@@ -398,6 +398,9 @@ LIMIT 25`, scored, minSample)
 	}
 	res.Top = top
 	res.TopColumns = []string{"partition_val", "value_val", "model_count", "percent", "coverage"}
+	if def.PartitionKey == "" {
+		res.TopColumns = res.TopColumns[1:]
+	}
 	res.WouldFlag = numToUint64(metrics["would_flag"])
 	res.Stats = sanitizeStats(map[string]interface{}{
 		"scored_values": metrics["scored_values"],

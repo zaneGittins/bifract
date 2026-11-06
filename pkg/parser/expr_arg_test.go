@@ -15,7 +15,7 @@ func listOpts() QueryOptions {
 		DictionaryDatabase: "bifract",
 		Dictionaries:       map[string]map[string]string{"d": {"k": "dict_d_k"}},
 		Models: map[string]AnalyticsModelInfo{
-			"m": {ID: "i", TableName: "model_m", ModelType: "rarity", MinSample: 1, FractalID: "f1"},
+			"m": {ID: "i", TableName: "model_m", ModelType: "rarity", MinSample: 1, FractalID: "f1", Keys: []string{"image", "hash"}},
 		},
 		GeoIPEnabled: true,
 	}

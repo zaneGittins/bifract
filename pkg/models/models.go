@@ -154,12 +154,13 @@ func (a *AlertConfig) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type ModelDefinition struct {
-	Filter       []FilterCondition `json:"filter" yaml:"filter,omitempty"`
-	Extractions  []ExtractionStep  `json:"extractions" yaml:"extractions,omitempty"`
-	PartitionKey string            `json:"partition_key" yaml:"partition_key,omitempty"`
-	ValueKey     string            `json:"value_key" yaml:"value_key,omitempty"`
-	MinSample    int               `json:"min_sample" yaml:"min_sample,omitempty"`
-	KeyFields    []string          `json:"key_fields" yaml:"key_fields,omitempty"`
+	Filter      []FilterCondition `json:"filter" yaml:"filter,omitempty"`
+	Extractions []ExtractionStep  `json:"extractions" yaml:"extractions,omitempty"`
+	// PartitionKey is a rarity model's group; empty scores each value across all logs.
+	PartitionKey string   `json:"partition_key,omitempty" yaml:"partition_key,omitempty"`
+	ValueKey     string   `json:"value_key" yaml:"value_key,omitempty"`
+	MinSample    int      `json:"min_sample" yaml:"min_sample,omitempty"`
+	KeyFields    []string `json:"key_fields" yaml:"key_fields,omitempty"`
 	// TimeBucket is the volume_baseline aggregation window: "day" (default) or "hour".
 	TimeBucket string `json:"time_bucket" yaml:"time_bucket,omitempty"`
 	// HistoryDays is a rarity or first_seen model's window in days, 0 for all
@@ -195,6 +196,24 @@ type ModelDefinition struct {
 	Beacon    *BeaconParams    `json:"beacon,omitempty" yaml:"beacon,omitempty"`
 	LongConn  *LongConnParams  `json:"long_conn,omitempty" yaml:"long_conn,omitempty"`
 	Modifiers *ModifierParams  `json:"modifiers,omitempty" yaml:"modifiers,omitempty"`
+}
+
+// LookupKeys are the log fields modelLookup() takes for this model, nil for a type
+// with no lookup.
+func (d ModelDefinition) LookupKeys(mt ModelType) []string {
+	switch mt {
+	case ModelTypeRarity:
+		if d.PartitionKey == "" {
+			return []string{d.ValueKey}
+		}
+		return []string{d.PartitionKey, d.ValueKey}
+	case ModelTypeFirstSeen, ModelTypeVolumeBaseline:
+		return d.KeyFields
+	case ModelTypeBeacon, ModelTypeLongConnection:
+		nf := d.Network.WithDefaults()
+		return []string{nf.SrcField, nf.DstField, nf.PortField}
+	}
+	return nil
 }
 
 // NetworkFieldMap maps model-agnostic roles to the log fields that carry them, so
@@ -389,6 +408,8 @@ func (def ModelDefinition) WindowDays() int {
 }
 
 type Model struct {
+	// DatasetEnd is where the logs of a dataset's fractal end, nil in any other.
+	DatasetEnd    *time.Time      `json:"-"`
 	ID            string          `json:"id"`
 	FractalID     string          `json:"fractal_id"`
 	PrismID       string          `json:"prism_id"`
@@ -468,6 +489,7 @@ type ModelInfo struct {
 	ID         string
 	TableName  string // distributed table name in cluster mode, local otherwise
 	ModelType  ModelType
+	Keys       []string // the fields modelLookup() must name, see LookupKeys
 	MinSample  int
 	TimeBucket string // volume_baseline bucket granularity ("day"/"hour")
 	// HistoryDays is the window a rarity or first_seen model scores over, 0 for
@@ -477,6 +499,39 @@ type ModelInfo struct {
 	// Distributed is true when TableName is the cluster-mode Distributed table, which
 	// a query joining against it must reach with GLOBAL.
 	Distributed bool
+}
+
+func newModelInfo(id string, mt ModelType, def ModelDefinition, fractalID, tableName string, distributed bool) ModelInfo {
+	return ModelInfo{
+		ID:          id,
+		TableName:   tableName,
+		ModelType:   mt,
+		Keys:        def.LookupKeys(mt),
+		MinSample:   def.MinSample,
+		TimeBucket:  def.TimeBucket,
+		HistoryDays: def.HistoryDaysFor(mt),
+		FractalID:   fractalID,
+		Distributed: distributed,
+	}
+}
+
+// ParserInfos converts model infos to the form QueryOptions.Models takes.
+func ParserInfos(infos map[string]ModelInfo) map[string]parser.AnalyticsModelInfo {
+	out := make(map[string]parser.AnalyticsModelInfo, len(infos))
+	for name, mi := range infos {
+		out[name] = parser.AnalyticsModelInfo{
+			ID:          mi.ID,
+			TableName:   mi.TableName,
+			ModelType:   string(mi.ModelType),
+			Keys:        mi.Keys,
+			MinSample:   mi.MinSample,
+			TimeBucket:  mi.TimeBucket,
+			HistoryDays: mi.HistoryDays,
+			FractalID:   mi.FractalID,
+			Distributed: mi.Distributed,
+		}
+	}
+	return out
 }
 
 type CreateRequest struct {
