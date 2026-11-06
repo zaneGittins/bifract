@@ -1,7 +1,9 @@
 package query
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -480,3 +482,47 @@ func TestChunkingSurvivesExtremeRanges(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeFloatsTypedSlices(t *testing.T) {
+	row := map[string]interface{}{
+		"f64":   []float64{1.5, math.NaN()},
+		"f32":   []float32{float32(math.Inf(1)), 2},
+		"clean": []float64{1, 2},
+		"list":  []interface{}{[]float64{math.Inf(-1)}},
+	}
+	sanitizeFloats(row)
+	if _, err := json.Marshal(row); err != nil {
+		t.Fatalf("row not encodable: %v", err)
+	}
+	if got := row["f64"].([]interface{}); got[0] != 1.5 || got[1] != nil {
+		t.Errorf("f64: %v", got)
+	}
+	if _, kept := row["clean"].([]float64); !kept {
+		t.Errorf("finite slice should keep its type: %T", row["clean"])
+	}
+}
+
+func TestWriteNDJSONFrame(t *testing.T) {
+	var ok bytes.Buffer
+	if !writeNDJSONFrame(&ok, map[string]interface{}{"type": "done"}) || ok.String() != "{\"type\":\"done\"}\n" {
+		t.Fatalf("frame: %q", ok.String())
+	}
+
+	// An unencodable frame must reach the client as an error, not as silence.
+	var bad bytes.Buffer
+	if writeNDJSONFrame(&bad, map[string]interface{}{"type": "rows", "data": math.NaN()}) {
+		t.Fatal("unencodable frame reported as written")
+	}
+	var frame map[string]interface{}
+	if err := json.Unmarshal(bad.Bytes(), &frame); err != nil || frame["type"] != "error" {
+		t.Fatalf("want an error frame, got %q (%v)", bad.String(), err)
+	}
+
+	if writeNDJSONFrame(failingWriter{}, map[string]interface{}{"type": "done"}) {
+		t.Fatal("failed write reported as written")
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("client gone") }

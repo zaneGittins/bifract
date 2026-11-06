@@ -193,6 +193,7 @@ const QueryExecutor = {
     },
 
     async _fetchRecentLogs(elements) {
+        const controller = this.currentRequest;
         try {
             const queryStart = performance.now();
             const data = await HttpUtils.safeFetch(`/api/v1/logs/recent?t=${Date.now()}`, {
@@ -253,7 +254,7 @@ const QueryExecutor = {
             this.showError('Failed to load recent logs: ' + error.message);
             if (elements.resultsTable) elements.resultsTable.innerHTML = '';
         } finally {
-            this.currentRequest = null;
+            if (this.currentRequest === controller) this.currentRequest = null;
         }
     },
 
@@ -589,7 +590,7 @@ const QueryExecutor = {
                                 '<div class="stream-searching"><span>Searching, newest first…</span>' +
                                 '<button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
                         }
-                    } else if (elements && elements.resultsTable) {
+                    } else if (!this._loadingChrome.gotRows && elements && elements.resultsTable) {
                         elements.resultsTable.innerHTML =
                             '<div class="loading-spinner"><span class="spinner"></span>' +
                             '<button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
@@ -625,16 +626,26 @@ const QueryExecutor = {
     },
 
     // Consume an NDJSON stream of query result frames, rendering rows newest-first
-    // as they arrive. Frames: meta, histogram, rows, progress, error, done.
+    // as they arrive. Frames: meta, histogram, histogram_end, rows, progress, error, done.
     async _consumeQueryStream(res, elements) {
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
         let pendingRender = false;
         let failed = false;
         let finished = false;
         let timeRange = this.currentTimeRange;
         let histogram = null;
+        let histogramOpen = false;
+
+        // The scan ended without covering the range. Keep what was counted, but stop
+        // implying the rest is still coming.
+        const endHistogram = () => {
+            if (!histogramOpen) return;
+            histogramOpen = false;
+            if (this._histogramChunks === 0) {
+                if (window.Timeline) Timeline.hide();
+            } else if (histogram) {
+                this._applyHistogram(histogram, null, { pendingLabel: 'not scanned' });
+            }
+        };
 
         let lastPageKey = '';
         const scheduleRender = () => {
@@ -718,6 +729,7 @@ const QueryExecutor = {
                             covered_from: hm.bucket_count
                         });
                         this._histogramApplied = false;
+                        histogramOpen = true;
                     } else if (window.Timeline) {
                         Timeline.hide();
                     }
@@ -728,16 +740,11 @@ const QueryExecutor = {
                     // full range. Frames keep arriving after 'done'.
                     histogram = frame;
                     this._histogramChunks++;
+                    if (frame.complete) histogramOpen = false;
                     this._applyHistogram(frame);
                     break;
                 case 'histogram_end':
-                    // Scan ended without covering the range. Keep what was counted, but
-                    // stop implying the rest is still coming.
-                    if (this._histogramChunks === 0) {
-                        if (window.Timeline) Timeline.hide();
-                    } else if (histogram) {
-                        this._applyHistogram(histogram, null, { pendingLabel: 'not scanned' });
-                    }
+                    endHistogram();
                     break;
                 case 'rows':
                     if (frame.data && frame.data.length) {
@@ -754,11 +761,16 @@ const QueryExecutor = {
                     break;
                 case 'error':
                     failed = true;
+                    histogramOpen = false;
                     this._failQuery(frame.error || 'Query failed', frame.error_type, frame.error_pos);
                     break;
                 case 'done':
                     finished = true;
                     this._streamingActive = false;
+                    // The indicator can still fire during the histogram drain; it must
+                    // offer Cancel without painting over this answer, even an empty one.
+                    this._chrome().markRows();
+                    this._stopHistogramDrain = endHistogram;
                     this._renderCurrentResults(elements, { preservePage: true });
                     this._finalizeQuery({
                         has_more: frame.has_more,
@@ -775,19 +787,13 @@ const QueryExecutor = {
             }
         };
 
-        for (;;) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buf += decoder.decode(value, { stream: true });
-            let nl;
-            while ((nl = buf.indexOf('\n')) >= 0) {
-                const line = buf.slice(0, nl).trim();
-                buf = buf.slice(nl + 1);
-                if (!line) continue;
-                let frame;
-                try { frame = JSON.parse(line); } catch (e) { continue; }
-                handleFrame(frame);
-            }
+        try {
+            await QueryStream.read(res, handleFrame);
+            endHistogram();
+        } finally {
+            // A render still queued must not repaint over whatever ended the run.
+            finished = true;
+            if (this._stopHistogramDrain === endHistogram) this._stopHistogramDrain = null;
         }
     },
 
@@ -1072,6 +1078,12 @@ const QueryExecutor = {
         if (this.currentRequest) {
             this.currentRequest.abort();
             this.currentRequest = null;
+            if (this._stopHistogramDrain) {
+                // The answer is already on screen; only the timeline stops.
+                this._stopHistogramDrain();
+                this._endLoadingIndicator();
+                return;
+            }
             this.currentCursor = null;
             this._streamingActive = false;
             this._endLoadingIndicator();
@@ -1946,6 +1958,7 @@ const QueryExecutor = {
     _failQuery(message, errorType, errorPos) {
         // A failed Live run would fail the same way on every tick.
         if (window.LiveSearch && LiveSearch.active) LiveSearch.stop();
+        this._clearLoadingTimer();
         this.currentResults = [];
         this.chartType = '';
         this._columnsKey = null;
