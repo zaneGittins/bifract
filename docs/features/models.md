@@ -8,8 +8,8 @@ An analytics model turns a BQL query into a baseline that updates as logs arrive
 
 | Type | Answers | Shape |
 |------|---------|-------|
-| **Rarity** | How unusual is a value within its group? | **Group by** (e.g. host), **Value** (e.g. port), **Min history (days)** |
-| **First / Last Seen** | When was an entity first and last observed? | One or more key fields |
+| **Rarity** | How unusual is a value, overall or within its group? | **Value** (e.g. port), optional **Group by** (e.g. host), **Min history (days)** |
+| **First / Last Seen** | When was a value first and last observed, overall or per group? | **Value**, optional **Group by** fields |
 | **Volume Baseline** | Does an entity's volume deviate from its own history? | Entity fields, **Bucket** (per day or per hour), min history |
 | **TLSH Index** | Which fuzzy-hash digests exist here? | One digest field. Not a detection on its own: it is what [`tlsh()`](../bql/enrichment.md#tlsh) probes instead of scanning every row |
 | **Beacon** | Is this pair talking on a suspiciously regular interval? | Source, destination and port fields, bytes field, rolling window |
@@ -37,7 +37,7 @@ Templates:
 
 | Template | Type | Shape |
 |---|---|---|
-| New programs per host | First / Last Seen | `computer_name`, `image` |
+| New programs per host | First / Last Seen | `image` per `computer_name` |
 | Rare child of Office apps | Rarity | `image` per `parent_image` |
 | New outbound ports per host | Rarity | `dst_port` per `computer_name` |
 | Network volume spike per host | Volume Baseline, per hour | `computer_name` |
@@ -45,17 +45,17 @@ Templates:
 
 ### Rarity
 
-1. Set **Group by** to the field that gets its own baseline, e.g. `computer_name`.
-2. Set **Value** to what is rare or common within a group, e.g. `dst_port`.
-3. Set **Min history (days)**: days a group must be seen before its values can alert (default 14).
+1. Set **Value** to what is rare or common, e.g. `dst_port`.
+2. Optionally set **Group by** to the field that gets its own baseline, e.g. `computer_name`. Leave it empty to score each value across all matching logs, e.g. how rare an RMM tool is anywhere rather than for each user.
+3. Set **Min history (days)**: days of data needed before values can alert, counted per group if there is one (default 14).
 4. Optionally pick a **History window** (see [History window](#history-window)).
 5. Under **Detection**, set **Min coverage** (default 0.9) and **Max % of days** (default 10).
 
 ### First / Last Seen
 
-1. Add one or more fields under **Key Fields (entity to track)**, e.g. `computer_name` and `image`.
+1. Set **Value** to what to track, e.g. `image`, and optionally add **Group by** fields, e.g. `computer_name`. With no group, a value is new only the first time it appears anywhere; with one, it is new once per group.
 2. Optionally pick a **History window**.
-3. Leave **Alert on new entities only** checked to alert on each new entity.
+3. Leave **Alert on new values only** checked to alert on each new value.
 
 ### Volume Baseline
 
@@ -144,7 +144,7 @@ The **State** column shows the worst state that applies; hover for the reason.
 | **Backfill n%** | History is being seeded |
 | **Stale** | Newest recorded event is over 2 days old (3 hours for an hourly Volume Baseline) |
 | **Scored date** | A network model whose rolling state is empty but holds scores from **Score range**, through that date |
-| **Learning k/n** | Not enough history yet: Rarity its learning period per group, Volume Baseline its min history, First / Last Seen 7 days, network models one full window |
+| **Learning k/n** | Not enough history yet: Rarity its learning period (per group, if it has one), Volume Baseline its min history, First / Last Seen 7 days, network models one full window |
 | **Healthy** | Recording and scoring normally |
 
 **Findings 7d** counts what the model surfaced in the last 7 days, with a daily sparkline for Rarity and First / Last Seen. **Last alert** is when the linked alert last fired. Both come from the model's own tables and are cached for two minutes.
@@ -172,13 +172,13 @@ Rarity counts **days**, not events: a value seen 10,000 times on one day counts 
 | Output | Meaning |
 |---|---|
 | `model_count` | Days the value was seen |
-| `model_total` | Days the group was seen with any value |
-| `percent` | `model_count / model_total`, the value's share of the group's days |
-| `coverage` | Good-Turing coverage: 1 minus (values seen on only one day / total value-days). Near 1 means the group rarely produces new values |
+| `model_total` | Days the group was seen with any value. With no group, days the model saw any value, and every figure here covers the whole model |
+| `percent` | `model_count / model_total`, the value's share of those days |
+| `coverage` | Good-Turing coverage: 1 minus (values seen on only one day / total value-days). Near 1 means new values are uncommon |
 
 The alert fires when `percent` is below **Max % of days** and `coverage` is above **Min coverage**. Example: port 22 seen once on a host that used ports 80, 443 and 8080 every day for 30 days scores `percent` 3.3 and `coverage` 0.99, so it alerts. On a host that uses a new port most days, `coverage` stays low and nothing alerts.
 
-Learning period: a group must reach **Min history** days, and a value seen once only drops below the share threshold after more than 100 / threshold days (10% needs more than 10). The longer of the two applies.
+Learning period: a group, or the model if it has no group, must reach **Min history** days, and a value seen once only drops below the share threshold after more than 100 / threshold days (10% needs more than 10). The longer of the two applies.
 
 ### How volume is scored
 
@@ -209,7 +209,7 @@ Hourly models compare an hour only with the same hour on the same kind of day (U
 
 By default Rarity and First / Last Seen remember everything they ever recorded. A **History window** (30, 90, 180 or 365 days in the editor; `history_days` 7 to 365 in the API) limits that:
 
-- **Rarity** counts only days inside the window. A value the group stopped using ages out and is rare again when it returns. The window must be at least the learning period.
+- **Rarity** counts only days inside the window. A value no longer in use ages out and is rare again when it returns. The window must be at least the learning period.
 - **First / Last Seen** treats an entity as new again after N whole days without a sighting (7-day window: seen on the 1st, new again on the 9th). `first_seen`, `last_seen` and `event_count` describe the window. In the **Data** view, `since` is the day it returned.
 
 !!! note

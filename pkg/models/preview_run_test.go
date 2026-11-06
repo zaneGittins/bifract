@@ -260,6 +260,22 @@ func TestPreviewNetworkFailures(t *testing.T) {
 	}
 }
 
+// With no group there is no group column to show.
+func TestPreviewRarityWithoutGroupDropsTheGroupColumn(t *testing.T) {
+	env := newEnv(t)
+	env.ch.On("AS would_flag", fakedb.CHResult{
+		Cols: cols("scored_values", "UInt64", "partitions", "UInt64", "avg_coverage", "Float64", "max_coverage", "Float64", "would_flag", "UInt64"),
+		Rows: [][]any{{uint64(1), uint64(1), 0.9, 0.9, uint64(0)}},
+	})
+	res, err := env.mgr.Preview(context.Background(), fracA, ModelTypeRarity, ModelDefinition{ValueKey: "image"}, lastDay())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"value_val", "model_count", "percent", "coverage"}; !reflect.DeepEqual(res.TopColumns, want) {
+		t.Errorf("top columns %v, want %v", res.TopColumns, want)
+	}
+}
+
 // A windowed model counts only its window, so a preview over a longer range
 // scores the window's last days, and says so in its start.
 func TestPreviewWindowedRarityScoresTheWindow(t *testing.T) {

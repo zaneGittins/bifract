@@ -347,6 +347,9 @@ func findingsBasis(m *Model) string {
 	case ModelTypeFirstSeen:
 		return "Would alert: " + rule + ". Trend: entities first recorded per day."
 	case ModelTypeRarity:
+		if m.Definition.PartitionKey == "" {
+			return "Would alert: " + rule + ". Trend: new values per day."
+		}
 		return "Would alert: " + rule + ". Trend: new value pairs per day."
 	}
 	return "Would alert: " + rule + "."

@@ -109,7 +109,7 @@ func TestPrepareQueryResolvesDictionariesForScope(t *testing.T) {
 // against every member's (models have no prism of their own), keeping the owner.
 func TestPrepareQueryResolvesModelsForScope(t *testing.T) {
 	const q = `* | model_lookup(model="beacons", key=[src_ip])`
-	model := []driver.Value{"m1", "beacons", "first_seen", []byte(`{"min_sample":5}`), "f2"}
+	model := []driver.Value{"m1", "beacons", "first_seen", []byte(`{"min_sample":5,"key_fields":["src_ip"]}`), "f2"}
 	for _, tc := range []struct {
 		name      string
 		vals      ctxVals

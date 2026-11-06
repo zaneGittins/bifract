@@ -366,8 +366,8 @@ const AnalyticsModels = {
         return `${Math.floor(s / 86400)}d`;
     },
 
-    // min_sample is the learning period: days a rarity group must have been seen
-    // before its values are scored, or buckets of history a volume entity needs.
+    // min_sample is the learning period: days of data a rarity model (per group, if
+    // it has one) needs before its values are scored, or buckets of history a volume entity needs.
     // An hourly volume model counts past samples of the same hour (one a day), so
     // its default is lower than a daily model's days.
     _defaultMinSample(modelType, timeBucket) {
@@ -504,9 +504,9 @@ const AnalyticsModels = {
     // is resolved against the definition, so a column stored as partition_val
     // reads as the field the model was built from. Columns the table omits are
     // still shown in the row drawer. { why: true } places the fact-chip column.
-    COVERAGE_TIP: "How much of this group's normal you have already seen (Good-Turing coverage). " +
-        'Near 1: the group is stable and rarely does anything new, so a new value stands out. ' +
-        'Low: new values are routine there, so one more means little.',
+    COVERAGE_TIP: 'How much of normal you have already seen (Good-Turing coverage), per group when the model has one. ' +
+        'Near 1: stable, new values are uncommon, so one stands out. ' +
+        'Low: new values are routine, so one more means little.',
 
     VIEW_SPEC: {
         rarity: {
@@ -515,7 +515,7 @@ const AnalyticsModels = {
             score: { col: 'coverage', threshold: d => d.alert?.coverage_threshold ?? 0.8 },
             cols: [
                 { col: 'coverage', label: 'Coverage', fmt: 'meter', align: 'num', tip: () => AnalyticsModels.COVERAGE_TIP },
-                { col: 'partition_val', label: d => d.partition_key || 'Partition' },
+                { col: 'partition_val', label: d => d.partition_key, when: d => !!d.partition_key },
                 { col: 'value_val', label: d => d.value_key || 'Value' },
                 { why: true },
                 { col: 'percent', label: 'Share of days', fmt: 'pct100', align: 'num' },
@@ -604,6 +604,7 @@ const AnalyticsModels = {
         const def = model?.definition || {};
         const out = [];
         for (const c of spec.cols) {
+            if (c.when && !c.when(def)) continue;
             if (c.why) {
                 out.push({ why: true, col: '_why', label: 'Why', sortable: false });
                 continue;
@@ -929,16 +930,19 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
         const rule = st.findings_rule ? 'Alert rule: ' + st.findings_rule : '';
         const newest = v => (v && !this._isEpochZero(v)) ? { label: 'newest seen ' + (Utils.timeAgo(v) || ''), tone: 'muted' } : null;
         switch (m.model_type) {
-            case 'rarity':
+            case 'rarity': {
+                const noun = def.partition_key ? 'pair' : 'value';
+                const counted = c => noun + (Number(c) === 1 ? '' : 's');
                 return {
                     facts: [
                         st.findings_rule ? lead : { label: 'No alert thresholds set', tone: 'muted' },
-                        { value: n(st.new_week), label: 'new pairs this week', title: 'Pairs first seen in the last 7 days' },
-                        { value: n(st.total_rows), label: 'pairs', tone: 'muted' },
-                        { value: n(st.distinct_partitions), label: (def.partition_key || 'partition') + ' values', tone: 'muted' },
-                    ],
-                    rule, series: st.series, seriesLabel: 'New pairs per day',
+                        { value: n(st.new_week), label: `new ${counted(st.new_week)} this week`, title: `${noun === 'pair' ? 'Pairs' : 'Values'} first seen in the last 7 days` },
+                        { value: n(st.total_rows), label: counted(st.total_rows), tone: 'muted' },
+                        def.partition_key ? { value: n(st.distinct_partitions), label: def.partition_key + ' values', tone: 'muted' } : null,
+                    ].filter(Boolean),
+                    rule, series: st.series, seriesLabel: `New ${noun}s per day`,
                 };
+            }
             case 'first_seen': {
                 const alertOn = def.alert?.alert_on_new !== false;
                 return {
@@ -1025,7 +1029,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
         if (mt === 'rarity') {
             const minHist = def.min_sample || 1;
             const conf = Number(def.alert?.coverage_threshold), share = Number(def.alert?.percent_threshold);
-            rows.push(['Min history', `${minHist} day${minHist === 1 ? '' : 's'} per group`]);
+            rows.push(['Min history', `${minHist} day${minHist === 1 ? '' : 's'}${def.partition_key ? ' per group' : ''}`]);
             rows.push(['Coverage threshold', conf > 0 ? conf.toFixed(2) : 'Not set', AnalyticsModels.COVERAGE_TIP]);
             rows.push(['Max share of days', share > 0 ? share + '%' : 'Not set']);
             rows.push(['History', this._historyLabel(def)]);
@@ -1047,13 +1051,12 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             rows.push(['History', this._historyLabel(def)]);
         }
 
+        const shape = this._shapeParts(mt, def);
         let keyLabel = 'Keys', keys = [];
-        if (mt === 'rarity') {
-            keyLabel = '';
-        } else if (mt === 'beacon' || mt === 'long_connection') {
+        if (mt === 'beacon' || mt === 'long_connection') {
             keyLabel = 'Connection fields';
             keys = this._connectionFields(mt, def);
-        } else {
+        } else if (!shape) {
             keys = Array.isArray(def.key_fields) ? def.key_fields.filter(Boolean) : [];
         }
 
@@ -1066,12 +1069,14 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
     <dl class="mv-kv">${rows.map(([k, val, tip]) =>
         `<dt${tip ? ` title="${_esc(tip)}"` : ''}>${_esc(k)}</dt><dd>${_esc(String(val))}</dd>`).join('')}</dl>
 </div>
-${mt === 'rarity' ? `<div class="me-sec">
-    <div class="me-sec-label">Group by</div>
-    <div class="mv-chips"><span class="mv-chip">${_esc(def.partition_key || '')}</span></div>
-    <div class="me-sec-label" style="margin-top:10px">Value</div>
-    <div class="mv-chips"><span class="mv-chip">${_esc(def.value_key || '')}</span></div>
-    <p class="mv-desc">How rare each ${_esc(def.value_key || 'value')} is for its ${_esc(def.partition_key || 'group')}, counted in days.</p>
+${shape ? `<div class="me-sec">
+    <div class="me-sec-label">Value</div>
+    <div class="mv-chips"><span class="mv-chip">${_esc(shape.value)}</span></div>
+    <div class="me-sec-label" style="margin-top:10px">Group by</div>
+    ${shape.groups.length
+        ? `<div class="mv-chips">${shape.groups.map(g => `<span class="mv-chip">${_esc(g)}</span>`).join('')}</div>`
+        : '<div class="mv-desc">None</div>'}
+    <p class="mv-desc mv-shape-summary">${this._shapeSummary(mt, shape)}</p>
 </div>` : ''}
 ${keys.length ? `<div class="me-sec">
     <div class="me-sec-label">${_esc(keyLabel)}</div>
@@ -1142,6 +1147,7 @@ ${m.description ? `<div class="me-sec">
         // which prints as a control character when dumped raw.
         const packed = new Set(['entity_key', 'entity_val']);
         const skip = new Set(['days', 'fractal_id', ...Utils.HIDDEN_ROW_FIELDS]);
+        if (m.model_type === 'rarity' && !m.definition?.partition_key) skip.add('partition_val');
         const fields = Object.keys(row).filter(k => !skip.has(k)).map(k => {
             const val = packed.has(k)
                 ? _esc(String(row[k] ?? '').split('\x1e').join(' / '))
@@ -1215,7 +1221,7 @@ ${m.description ? `<div class="me-sec">
         if (mt === 'beacon' || mt === 'long_connection') {
             return `${row.src_ip} \u2192 ${row.dst_ip}:${row.dst_port}`;
         }
-        if (mt === 'rarity') return `${row.partition_val} / ${row.value_val}`;
+        if (mt === 'rarity') return row.partition_val ? `${row.partition_val} / ${row.value_val}` : String(row.value_val ?? '');
         const raw = mt === 'first_seen' ? row.entity_key : row.entity_val;
         return String(raw ?? '').split('\x1e').join(' / ');
     },
@@ -1799,13 +1805,14 @@ ${m.description ? `<div class="me-sec">
             const conf = Number(row.coverage);
             const minHist = Number(def.min_sample) || 1;
             const learning = Number(row.model_total) < minHist;
+            const grouped = !!def.partition_key;
             return pick([
-                learning ? { label: 'Group learning', value: `${FactChips.of(row.model_total, minHist)} days`, tone: 'warn',
-                  title: `${row.partition_val} has ${int(row.model_total)} days of history; its values can alert after ${int(minHist)}.` } : null,
+                learning ? { label: grouped ? 'Group learning' : 'Learning', value: `${FactChips.of(row.model_total, minHist)} days`, tone: 'warn',
+                  title: `${grouped ? row.partition_val : 'This model'} has ${int(row.model_total)} days of history; its values can alert after ${int(minHist)}.` } : null,
                 { label: 'Seen on', value: `${FactChips.of(row.model_count, row.model_total)} days`,
                   tone: pctThr > 0 && pct < pctThr ? 'alert' : '',
-                  title: `${fix(pct, 1)}% of the days ${row.partition_val} was seen. Click to search them.`, query: pivot() },
-                { label: 'Group coverage', value: fix(conf),
+                  title: `${fix(pct, 1)}% of the days ${grouped ? `${row.partition_val} was seen` : 'the model saw any value'}. Click to search them.`, query: pivot() },
+                { label: grouped ? 'Group coverage' : 'Coverage', value: fix(conf),
                   tone: confThr > 0 && !(conf > confThr) ? 'muted' : '',
                   title: AnalyticsModels.COVERAGE_TIP },
                 days.length ? { label: 'First seen', value: FactChips.ago(days[0]) || days[0], title: days[0] } : null,
@@ -1959,8 +1966,8 @@ ${m.description ? `<div class="me-sec">
     // Editor (split-panel, BQL-first)
     // ============================
     MODEL_TYPES: [
-        { id: 'rarity', label: 'Rarity', desc: 'How unusual a value is for its group, e.g. a port for a host. Learns each group first and stays quiet where new values are routine.' },
-        { id: 'first_seen', label: 'First / Last Seen', desc: 'Alerts the first time anything new appears, with no learning period. Use it to never miss a new program, domain or hash.' },
+        { id: 'rarity', label: 'Rarity', desc: 'How unusual a value is, overall or per group, e.g. a port for a host. Learns first and stays quiet where new values are routine.' },
+        { id: 'first_seen', label: 'First / Last Seen', desc: 'Alerts the first time anything new appears, overall or per group, with no learning period. Use it to never miss a new program, domain or hash.' },
         { id: 'volume_baseline', label: 'Volume Baseline', desc: 'Flags entities whose volume deviates from their own history, by modified z-score.' },
         { id: 'tlsh', label: 'TLSH Index', desc: 'Indexes the distinct fuzzy-hash digests in a field so tlsh() can match similar files. Not a detection on its own.' },
         { id: 'beacon', label: 'Beacon', desc: 'Finds regular, automated check-ins (C2 beaconing) in network connection logs.' },
@@ -2272,7 +2279,8 @@ ${m.description ? `<div class="me-sec">
     _templateGalleryHTML() {
         const keys = t => {
             const sh = t.shape || {};
-            if (sh.partitionKey) return `${sh.partitionKey} → ${sh.valueKey}`;
+            if (t.type === 'rarity') return this._shapeLabel(this._shapeParts(t.type, { partition_key: sh.partitionKey, value_key: sh.valueKey }));
+            if (t.type === 'first_seen') return this._shapeLabel(this._shapeParts(t.type, { key_fields: sh.keyFields }));
             if (sh.keyFields) return sh.keyFields.join(', ') + (sh.timeBucket ? ` per ${sh.timeBucket}` : '');
             if (sh.network) return `${sh.network.src_field} → ${sh.network.dst_field}:${sh.network.port_field}`;
             return '';
@@ -2354,6 +2362,27 @@ ${m.description ? `<div class="me-sec">
 </button>`).join('');
     },
 
+    // Fits the shape to a type switch. Rarity and first seen share a value and group,
+    // but a type only inherits into blank fields, so a round trip loses nothing.
+    _carryShape(e, prevType) {
+        const blank = !e.keyFields.some(Boolean);
+        if (prevType === 'rarity' && e.modelType === 'first_seen' && blank && (e.valueKey || e.partitionKey)) {
+            e.keyFields = e.partitionKey ? [e.partitionKey, e.valueKey] : [e.valueKey];
+        } else if (prevType === 'first_seen' && e.modelType === 'rarity' && !e.valueKey && !e.partitionKey) {
+            const { groups, value } = this._shapeParts('first_seen', { key_fields: e.keyFields });
+            e.valueKey = value;
+            e.partitionKey = groups[0] || '';
+        }
+        // A tlsh model takes exactly one digest field, and its shape editor renders
+        // only the first row with no remove button. Extra fields carried over from
+        // another type would be invisible but still submitted, leaving the form
+        // permanently unsavable. A first seen key's value is its last entry.
+        if (e.modelType === 'tlsh' && e.keyFields.length > 1) {
+            const fields = prevType === 'first_seen' ? [...e.keyFields].reverse() : e.keyFields;
+            e.keyFields = [fields.find(Boolean) || ''];
+        }
+    },
+
     _bindTypeCards() {
         if (this.editor.editId) return;
         document.querySelectorAll('#modelTypeCards .me-type-card').forEach(card => {
@@ -2366,13 +2395,7 @@ ${m.description ? `<div class="me-sec">
                 if (e.minSample === this._defaultMinSample(prevType, e.timeBucket)) {
                     e.minSample = this._defaultMinSample(e.modelType, e.timeBucket);
                 }
-                // A tlsh model takes exactly one digest field, and its shape editor
-                // renders only the first row with no remove button. Extra fields
-                // carried over from another type would be invisible here but still
-                // submitted, leaving the form permanently unsavable.
-                if (e.modelType === 'tlsh' && e.keyFields.length > 1) {
-                    e.keyFields = [e.keyFields.find(Boolean) || ''];
-                }
+                this._carryShape(e, prevType);
                 document.querySelectorAll('#modelTypeCards .me-type-card').forEach(c => c.classList.toggle('active', c === card));
                 const help = document.getElementById('modelTypeHelp');
                 if (help) help.textContent = this._typeDesc(e.modelType);
@@ -2623,21 +2646,22 @@ ${this._modifierLinksHTML(e)}`;
         if (e.modelType === 'rarity') {
             return `
 <div class="field-group">
-    <label>Group by</label>
-    ${this._fieldInput('shapePartKey', e.partitionKey, 'e.g. computer_name')}
-    <p class="config-hint">Each group gets its own baseline, e.g. one per host.</p>
-</div>
-<div class="field-group" style="margin-top:10px">
     <label>Value</label>
     ${this._fieldInput('shapeValKey', e.valueKey, 'e.g. dst_port')}
-    <p class="config-hint">What is rare or not within a group, e.g. the ports a host connects to.</p>
+    <p class="config-hint">What is scored as rare or common, e.g. a destination port.</p>
 </div>
+<div class="field-group" style="margin-top:10px">
+    <label>Group by (optional)</label>
+    ${this._fieldInput('shapePartKey', e.partitionKey, 'e.g. computer_name')}
+    <p class="config-hint">Gives each group its own baseline, e.g. one per host. Leave empty to score each value across all matching logs.</p>
+</div>
+<p class="config-hint me-shape-summary" id="shapeSummary">${this._editorShapeSummary()}</p>
 <div class="field-group" style="margin-top:10px">
     <label>Min history (days)</label>
     <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
-    <p class="config-hint">Days a group must have been seen before its values can alert. 14 covers two weeks of normal.</p>
+    <p class="config-hint">Days of data needed before values can alert, counted per group if you set one. 14 covers two weeks of normal.</p>
 </div>
-${this._historyWindowHTML(e, 'A value counts as rare when it is rare within this window. Values the group stopped using age out, so one returning after the window looks rare again.')}`;
+${this._historyWindowHTML(e, 'A value counts as rare when it is rare within this window. Values no longer in use age out, so one returning after the window looks rare again.')}`;
         }
         if (e.modelType === 'volume_baseline') {
             return `
@@ -2678,18 +2702,67 @@ ${this._historyWindowHTML(e, 'A value counts as rare when it is rare within this
 </div>
 <p class="config-hint">Indexes the distinct TLSH digests in this field so <em>tlsh()</em> can match against them. Only well-formed digests are indexed, so absent and truncated values never enter the index. Seed it with a backfill to cover existing history.</p>`;
         }
+        // keyFields is [...groups, value]: the value is always the last entry.
+        const last = e.keyFields.length - 1;
         return `
 <div class="field-group">
-    <label>Key Fields (entity to track)</label>
-    <div id="keyFieldsList">${e.keyFields.map((kf, i) => `
+    <label>Value</label>
+    ${this._fieldInput('shapeValKey', e.keyFields[last], 'e.g. image')}
+    <p class="config-hint">What to track first and last sightings of, e.g. a program.</p>
+</div>
+<div class="field-group" style="margin-top:10px">
+    <label>Group by (optional)</label>
+    <div id="keyFieldsList">${e.keyFields.slice(0, last).map((kf, i) => `
 <div class="key-field-row" data-idx="${i}">
-    ${this._fieldInput('keyField' + i, kf, 'e.g. src_ip')}
+    ${this._fieldInput('keyField' + i, kf, 'e.g. computer_name')}
     <button class="btn-remove-row" data-idx="${i}">×</button>
 </div>`).join('')}</div>
-    <button class="btn-add-row" id="addKeyField">+ Add Key Field</button>
+    <button class="btn-add-row" id="addKeyField">+ Add Group Field</button>
+    <p class="config-hint">A value is new once per group, e.g. per host. Leave empty and it is new only the first time it appears anywhere.</p>
 </div>
-<p class="config-hint">Example: Key=<em>src_ip</em> tracks when each IP was first and last seen.</p>
-${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as new when it returns.')}`;
+<p class="config-hint me-shape-summary" id="shapeSummary">${this._editorShapeSummary()}</p>
+${this._historyWindowHTML(e, 'A value absent for the whole window alerts as new when it returns.')}`;
+    },
+
+    // Rarity and first seen both score a value, overall or within groups. A first
+    // seen key is [...groups, value]. Null for types without that shape.
+    _shapeParts(mt, def) {
+        if (mt === 'rarity') {
+            return { groups: def.partition_key ? [def.partition_key] : [], value: def.value_key || '' };
+        }
+        if (mt === 'first_seen') {
+            const keys = def.key_fields || [];
+            return { groups: keys.slice(0, -1).filter(Boolean), value: keys[keys.length - 1] || '' };
+        }
+        return null;
+    },
+
+    _shapeLabel(shape) {
+        return shape.groups.length ? `${shape.value} per ${shape.groups.join(' + ')}` : shape.value;
+    },
+
+    // The shape as a sentence, already escaped for HTML.
+    _shapeSummary(mt, shape) {
+        const code = f => `<code>${_esc(f)}</code>`;
+        const value = shape.value ? code(shape.value) : 'value';
+        const scope = shape.groups.length
+            ? `for each ${shape.groups.map(code).join(' + ')}`
+            : 'across all matching logs';
+        return mt === 'rarity'
+            ? `Scores how rare each ${value} is ${scope}, counted in days.`
+            : `Tracks when each ${value} was first and last seen ${scope}.`;
+    },
+
+    _editorShapeSummary() {
+        const e = this.editor;
+        return this._shapeSummary(e.modelType, this._shapeParts(e.modelType, {
+            partition_key: e.partitionKey, value_key: e.valueKey, key_fields: e.keyFields,
+        }));
+    },
+
+    _refreshShapeSummary() {
+        const el = document.getElementById('shapeSummary');
+        if (el) el.innerHTML = this._editorShapeSummary();
     },
 
     // The history window select shared by rarity and first/last seen. A window
@@ -2739,16 +2812,13 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
         if (e.modelType === 'rarity') {
             const pSel = document.getElementById('shapePartKey');
             const vSel = document.getElementById('shapeValKey');
-            if (pSel) pSel.addEventListener('input', ev => { e.partitionKey = ev.target.value.trim(); this._schedulePreview(); });
-            if (vSel) vSel.addEventListener('input', ev => { e.valueKey = ev.target.value.trim(); this._schedulePreview(); });
+            if (pSel) pSel.addEventListener('input', ev => { e.partitionKey = ev.target.value.trim(); this._refreshShapeSummary(); this._schedulePreview(); });
+            if (vSel) vSel.addEventListener('input', ev => { e.valueKey = ev.target.value.trim(); this._refreshShapeSummary(); this._schedulePreview(); });
             document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 1; this._schedulePreview(); });
             this._bindHistoryWindow();
         } else {
             this._bindKeyFieldEvents();
-            document.getElementById('addKeyField')?.addEventListener('click', () => {
-                e.keyFields.push('');
-                this._renderEditorShape();
-            });
+            document.getElementById('addKeyField')?.addEventListener('click', () => this._addKeyField());
             if (e.modelType === 'volume_baseline') {
                 document.getElementById('shapeTimeBucket')?.addEventListener('change', ev => {
                     // Min history means samples of an hour, not days, once hourly, so a
@@ -2762,8 +2832,31 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
                 });
                 document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 7; this._schedulePreview(); });
             }
-            if (e.modelType === 'first_seen') this._bindHistoryWindow();
+            if (e.modelType === 'first_seen') {
+                document.getElementById('shapeValKey')?.addEventListener('input', ev => {
+                    e.keyFields[e.keyFields.length - 1] = ev.target.value.trim();
+                    this._refreshShapeSummary();
+                    this._schedulePreview();
+                });
+                this._bindHistoryWindow();
+            }
         }
+    },
+
+    _addKeyField() {
+        const e = this.editor;
+        // A first seen key ends with its value, so a new group goes before it.
+        e.keyFields.splice(e.modelType === 'first_seen' ? e.keyFields.length - 1 : e.keyFields.length, 0, '');
+        this._renderEditorShape();
+    },
+
+    _removeKeyField(i) {
+        const e = this.editor;
+        e.keyFields.splice(i, 1);
+        if (!e.keyFields.length) e.keyFields = [''];
+        this._renderEditorShape();
+        this._markDirty();
+        this._schedulePreview();
     },
 
     _bindHistoryWindow() {
@@ -2778,14 +2871,10 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
         document.querySelectorAll('#keyFieldsList .key-field-row').forEach(row => {
             const i = parseInt(row.dataset.idx);
             const sel = row.querySelector('.model-field-input');
-            sel?.addEventListener('input', ev => { e.keyFields[i] = ev.target.value.trim(); this._schedulePreview(); });
+            sel?.addEventListener('input', ev => { e.keyFields[i] = ev.target.value.trim(); this._refreshShapeSummary(); this._schedulePreview(); });
             // A tlsh model has exactly one digest field, so its row carries no
             // remove button. Every other type renders one.
-            row.querySelector('.btn-remove-row')?.addEventListener('click', () => {
-                e.keyFields.splice(i, 1);
-                if (!e.keyFields.length) e.keyFields = [''];
-                this._renderEditorShape();
-            });
+            row.querySelector('.btn-remove-row')?.addEventListener('click', () => this._removeKeyField(i));
         });
     },
 
@@ -2823,7 +2912,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
             <input type="number" id="alertPercent" class="model-num-input" value="${c.percent_threshold}" min="0.1" max="100" step="0.5">
         </div>
     </div>
-    <p class="config-hint">Flags values seen on under this share of their group's days, in groups where new values are rare. A value seen once needs more than 100 ÷ share days of group history, so the learning period is the longer of that and Min history.</p>`;
+    <p class="config-hint">Flags values seen on under this share of days, counted per group if the model has one, where new values are rare. A value seen once needs more than 100 ÷ share days of history, so the learning period is the longer of that and Min history.</p>`;
         } else if (mt === 'volume_baseline') {
             typeFields = `
     <div class="field-group" style="margin-top:10px">
@@ -2834,7 +2923,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
         } else {
             typeFields = `
     <label class="toggle-label" style="margin-top:10px">
-        <input type="checkbox" class="themed-checkbox" id="alertOnNew" ${c.alert_on_new ? 'checked' : ''}> Alert on new entities only
+        <input type="checkbox" class="themed-checkbox" id="alertOnNew" ${c.alert_on_new ? 'checked' : ''}> Alert on new values only
     </label>`;
         }
         return `
@@ -3097,7 +3186,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
                 e.results = results;
                 e.fieldOrder = queryData.field_order || null;
                 e.resultFields = this._collectResultFields(queryData);
-                // Refresh shape datalists so partition/value keys suggest the fields
+                // Refresh shape datalists so group and value inputs suggest the fields
                 // actually present in the freshly searched data.
                 this._renderEditorShape();
                 this._setResultCount(`${results.length} result${results.length === 1 ? '' : 's'}`);
@@ -3133,7 +3222,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
     },
 
     // Collect the column names present in a query response so they can be
-    // offered as partition/value/key field suggestions.
+    // offered as group, value and key field suggestions.
     _collectResultFields(queryData) {
         const fields = [];
         const seen = new Set();
@@ -3208,13 +3297,12 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
     // Returns an error message if the shape is incomplete, else null.
     _validateShape() {
         const e = this.editor;
-        if (e.modelType === 'rarity' && (!e.partitionKey || !e.valueKey)) return 'Select a partition key and a value key';
+        if (e.modelType === 'rarity' && !e.valueKey) return 'Set a value field';
+        if (e.modelType === 'first_seen' && !e.keyFields[e.keyFields.length - 1]) return 'Set a value field';
         if (e.modelType === 'tlsh' && e.keyFields.filter(Boolean).length !== 1) {
             return 'Set the log field that holds the TLSH digest';
         }
-        if ((e.modelType === 'first_seen' || e.modelType === 'volume_baseline') && !e.keyFields.filter(Boolean).length) {
-            return e.modelType === 'volume_baseline' ? 'Add at least one entity field' : 'Add at least one key field';
-        }
+        if (e.modelType === 'volume_baseline' && !e.keyFields.filter(Boolean).length) return 'Add at least one entity field';
         if (this._isNetworkType(e.modelType) && (!e.network.src_field || !e.network.dst_field)) {
             return 'Set a source and destination field';
         }
@@ -3409,7 +3497,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
         if (p.model_type === 'rarity') {
             chips = [
                 [num(s.scored_values), 'values'],
-                [num(s.partitions), 'partitions'],
+                ...((p.top_columns || []).includes('partition_val') ? [[num(s.partitions), 'groups']] : []),
                 [Number(s.max_coverage || 0).toFixed(2), 'max coverage'],
                 [Number(s.avg_coverage || 0).toFixed(2), 'avg coverage'],
             ];
@@ -3529,7 +3617,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
     _scoreThresholdsHTML(mt) {
         const c = this.editor.alertConfig;
         if (mt === 'first_seen') {
-            return `<div class="score-thresholds"><label class="toggle-label"><input type="checkbox" class="themed-checkbox" id="scoreAlertOnNew" ${c.alert_on_new ? 'checked' : ''}> Alert on new entities only</label></div>`;
+            return `<div class="score-thresholds"><label class="toggle-label"><input type="checkbox" class="themed-checkbox" id="scoreAlertOnNew" ${c.alert_on_new ? 'checked' : ''}> Alert on new values only</label></div>`;
         }
         const fields = this.THRESHOLD_FIELDS[mt];
         if (!fields) return '';
@@ -3674,7 +3762,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
 
     _colLabel(c) {
         const map = {
-            partition_val: 'Partition', value_val: 'Value', model_count: 'Days seen', percent: '%', coverage: 'Coverage',
+            partition_val: 'Group', value_val: 'Value', model_count: 'Days seen', percent: '%', coverage: 'Coverage',
             entity_key: 'Entity', entity_val: 'Entity', first_seen: 'First seen', last_seen: 'Last seen', event_count: 'Events',
             latest_count: 'Latest', baseline_median: 'Median', mad: 'MAD', n_buckets: 'History', z_score: 'z-score',
             src_ip: 'Source', dst_ip: 'Destination', dst_port: 'Port', final_score: 'Score', score: 'Score',

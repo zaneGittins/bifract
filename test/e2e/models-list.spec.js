@@ -77,7 +77,7 @@ test.describe('Models listing', () => {
     await expect(page.locator('#modelTypeTagValue')).toHaveText('First / Last Seen');
     await expect(page.locator('#modelTypeCards .me-type-card.active')).toHaveAttribute('data-type', 'first_seen');
     await expect(page.locator('#keyField0')).toHaveValue('computer_name');
-    await expect(page.locator('#keyField1')).toHaveValue('image');
+    await expect(page.locator('#shapeValKey')).toHaveValue('image');
     await expect(page.locator('#modelDesc')).not.toHaveValue('');
 
     // Choosing a template runs the score preview.

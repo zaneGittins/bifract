@@ -125,7 +125,7 @@ func TestHandleGetData(t *testing.T) {
 	if page.Page.Total != 120 || page.Page.Limit != 20 || page.Page.Offset != 0 || len(page.Data) != 1 {
 		t.Errorf("page: %+v", page)
 	}
-	if q := env.ch.QueriedMatching(" ORDER BY "); len(q) != 1 || !strings.HasSuffix(q[0], "ORDER BY percent ASC LIMIT 20 OFFSET 0") {
+	if q := env.ch.QueriedMatching(" ORDER BY "); len(q) != 1 || !strings.HasSuffix(q[0], "ORDER BY percent ASC, percent ASC, partition_val, value_val LIMIT 20 OFFSET 0") {
 		t.Errorf("query: %v", q)
 	}
 	if w := callModel(t, h.HandleGetData, "/?view=everything", "", r.id, analystA); w.Code != http.StatusBadRequest {

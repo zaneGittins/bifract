@@ -17,9 +17,9 @@ func mlookupOpts() QueryOptions {
 		MaxRows:   1000,
 		FractalID: "f1",
 		Models: map[string]AnalyticsModelInfo{
-			"rare":   {ID: "1", TableName: "model_rare", ModelType: "rarity", MinSample: 1, FractalID: "f1"},
-			"fs":     {ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1"},
-			"beacon": {ID: "3", TableName: "model_beacon", ModelType: "beacon", FractalID: "f1"},
+			"rare":   {ID: "1", TableName: "model_rare", ModelType: "rarity", MinSample: 1, FractalID: "f1", Keys: []string{"image", "hash"}},
+			"fs":     {ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", Keys: []string{"user"}},
+			"beacon": {ID: "3", TableName: "model_beacon", ModelType: "beacon", FractalID: "f1", Keys: []string{"src_ip", "dst_ip", "dst_port"}},
 		},
 	}
 }
@@ -89,6 +89,76 @@ func TestModelLookup_RarityJoinShape(t *testing.T) {
 	sql := translateML(t, `* | model_lookup(model="rare", key=[image, hash]) | coverage > 0.9`)
 	if !strings.Contains(sql, "ON fields.`image`::String = _mlookup.partition_val AND fields.`hash`::String = _mlookup.value_val") {
 		t.Errorf("unexpected rarity ON clause, got:\n%s", sql)
+	}
+}
+
+// A rarity model with no group stores one constant partition, so its lookup takes
+// the value alone and joins on it.
+func TestModelLookup_RarityWithoutGroupJoinsOnValue(t *testing.T) {
+	opts := mlookupOpts()
+	opts.Models["rare1"] = AnalyticsModelInfo{ID: "7", TableName: "model_rare1", ModelType: "rarity", MinSample: 1, FractalID: "f1", Keys: []string{"rmm_name"}}
+	sql := translateMLWith(t, `* | model_lookup(model="rare1", key=[rmm_name]) | coverage > 0.9`, opts)
+	if !strings.Contains(sql, "ON fields.`rmm_name`::String = _mlookup.value_val") || strings.Contains(sql, "_mlookup.partition_val") {
+		t.Errorf("expected a join on value_val alone, got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "coverage > 0.9") {
+		t.Errorf("expected the coverage threshold, got:\n%s", sql)
+	}
+}
+
+// Every form of the lookup reads only the constant partition, on both the raw and
+// the scored key set, so a stray grouped row cannot return a value twice.
+func TestModelLookup_RarityWithoutGroupReadsOnlyItsPartition(t *testing.T) {
+	opts := mlookupOpts()
+	rare := func(minSample, historyDays int) AnalyticsModelInfo {
+		return AnalyticsModelInfo{ID: "7", TableName: "model_rare1", ModelType: "rarity", MinSample: minSample, HistoryDays: historyDays, FractalID: "f1", Keys: []string{"rmm_name"}}
+	}
+	const scored = "WHERE fractal_id IN ('f1') AND partition_val = ''"
+	const raw = "fields.`rmm_name`::String IN (SELECT _mlk_src.value_val FROM `model_rare1` AS _mlk_src WHERE _mlk_src.fractal_id IN ('f1') AND _mlk_src.partition_val = ''"
+	cases := []struct {
+		name  string
+		info  AnalyticsModelInfo
+		query string
+		want  []string
+	}{
+		{"raw prefilter", rare(1, 0), `* | model_lookup(model="r", key=[rmm_name])`, []string{scored, raw + ")"}},
+		{"windowed prefilter", rare(1, 30), `* | model_lookup(model="r", key=[rmm_name])`, []string{raw + " AND "}},
+		{"scored prefilter", rare(5, 0), `* | model_lookup(model="r", key=[rmm_name])`, []string{scored, "fields.`rmm_name`::String IN (SELECT value_val FROM ("}},
+		{"negated", rare(1, 0), `* | NOT model_lookup(model="r", key=[rmm_name])`, []string{"NOT", raw + ")"}},
+		{"after an aggregation", rare(1, 0), `* | groupby(rmm_name) | model_lookup(model="r", key=[rmm_name])`, []string{scored, "= _mlookup.value_val"}},
+	}
+	for _, c := range cases {
+		opts.Models["r"] = c.info
+		sql := translateMLWith(t, c.query, opts)
+		for _, want := range c.want {
+			if !strings.Contains(sql, want) {
+				t.Errorf("%s: expected %q, got:\n%s", c.name, want, sql)
+			}
+		}
+		if strings.Contains(sql, "_mlookup.partition_val") {
+			t.Errorf("%s: joined on the partition:\n%s", c.name, sql)
+		}
+	}
+}
+
+// A lookup naming a different number of fields than the model was built on
+// would compare against the wrong columns and match nothing, so it is refused.
+func TestModelLookup_KeyCountMustMatchModel(t *testing.T) {
+	opts := mlookupOpts()
+	opts.Models["rare1"] = AnalyticsModelInfo{ID: "7", TableName: "model_rare1", ModelType: "rarity", MinSample: 1, FractalID: "f1", Keys: []string{"rmm_name"}}
+	for _, q := range []string{
+		`* | model_lookup(model="rare1", key=[user, rmm_name])`,
+		`* | model_lookup(model="rare", key=[hash])`,
+		`* | model_lookup(model="fs", key=[user, computer_name])`,
+		`* | model_lookup(model="beacon", key=[src_ip, dst_ip])`,
+	} {
+		p, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := TranslateToSQLWithOrder(p, opts); err == nil || !strings.Contains(err.Error(), "is keyed on") {
+			t.Errorf("%s: error %v, want a key count error", q, err)
+		}
 	}
 }
 
@@ -448,8 +518,8 @@ func TestModelLookup_FirstSeenIsNewCoversAlertWindow(t *testing.T) {
 // would, so they read the state as it lies.
 func TestModelLookup_ScoringSkipsFinal(t *testing.T) {
 	opts := mlookupOpts()
-	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 7, TimeBucket: "day", FractalID: "f1"}
-	opts.Models["fsw"] = AnalyticsModelInfo{ID: "6", TableName: "model_fsw", ModelType: "first_seen", HistoryDays: 7, FractalID: "f1"}
+	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 7, TimeBucket: "day", FractalID: "f1", Keys: []string{"user"}}
+	opts.Models["fsw"] = AnalyticsModelInfo{ID: "6", TableName: "model_fsw", ModelType: "first_seen", HistoryDays: 7, FractalID: "f1", Keys: []string{"user"}}
 	for _, q := range []string{
 		`* | model_lookup(model="rare", key=[image, hash])`,
 		`* | model_lookup(model="fs", key=[user])`,
@@ -466,7 +536,7 @@ func TestModelLookup_ScoringSkipsFinal(t *testing.T) {
 // so only those keys are scored, by the join and its prefilter alike.
 func TestModelLookup_IsNewScoresOnlyRecentKeys(t *testing.T) {
 	opts := mlookupOpts()
-	opts.Models["fsw"] = AnalyticsModelInfo{ID: "6", TableName: "model_fs", ModelType: "first_seen", HistoryDays: 7, FractalID: "f1"}
+	opts.Models["fsw"] = AnalyticsModelInfo{ID: "6", TableName: "model_fs", ModelType: "first_seen", HistoryDays: 7, FractalID: "f1", Keys: []string{"user"}}
 	const narrow = "entity_key IN (SELECT entity_key FROM `model_fs` WHERE fractal_id IN ('f1') AND first_recorded >= now() - INTERVAL 1 HOUR - INTERVAL 1 MINUTE)"
 	for _, q := range []string{
 		`* | model_lookup(model="fs", key=[user]) | is_new="1"`,
@@ -503,7 +573,7 @@ func TestModelLookup_IsNewScoresOnlyRecentKeys(t *testing.T) {
 
 	opts = mlookupOpts()
 	opts.TableName = "logs_distributed"
-	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs_dist", ModelType: "first_seen", FractalID: "f1", Distributed: true}
+	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs_dist", ModelType: "first_seen", FractalID: "f1", Distributed: true, Keys: []string{"user"}}
 	sql = translateMLWith(t, `* | model_lookup(model="fs", key=[user]) | is_new="1"`, opts)
 	mustHaveML(t, sql, "entity_key GLOBAL IN (SELECT entity_key FROM `model_fs_dist` WHERE")
 }
@@ -598,7 +668,7 @@ func TestModelLookup_PrefilterKeysMatchProjectedKeys(t *testing.T) {
 // join then drops nothing the scan kept, and the scan keeps its LIMIT.
 func TestModelLookup_ScoredSetPrefilterKeepsScanLimit(t *testing.T) {
 	opts := mlookupOpts()
-	opts.Models["rare5"] = AnalyticsModelInfo{ID: "4", TableName: "model_rare5", ModelType: "rarity", MinSample: 5, FractalID: "f1"}
+	opts.Models["rare5"] = AnalyticsModelInfo{ID: "4", TableName: "model_rare5", ModelType: "rarity", MinSample: 5, FractalID: "f1", Keys: []string{"image", "hash"}}
 	sql := translateMLWith(t, `* | model_lookup(model="rare5", key=[image, hash])`, opts)
 
 	c := scanCap(sql)
@@ -643,7 +713,7 @@ func TestModelLookup_PrefilterCoversPrismMembers(t *testing.T) {
 func TestModelLookup_ClusterUsesGlobal(t *testing.T) {
 	opts := mlookupOpts()
 	opts.TableName = "logs_distributed"
-	opts.Models["beacon"] = AnalyticsModelInfo{ID: "3", TableName: "model_beacon_dist", ModelType: "beacon", FractalID: "f1", Distributed: true}
+	opts.Models["beacon"] = AnalyticsModelInfo{ID: "3", TableName: "model_beacon_dist", ModelType: "beacon", FractalID: "f1", Distributed: true, Keys: []string{"src_ip", "dst_ip", "dst_port"}}
 	sql := translateMLWith(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port])`, opts)
 
 	if !strings.Contains(sql, "GLOBAL INNER JOIN") {
@@ -684,7 +754,7 @@ func TestModelLookup_NetworkScoringIsOneRowPerPair(t *testing.T) {
 // with a bucket that far back and the scan keeps its LIMIT.
 func TestModelLookup_VolumePrefilterCarriesBucketBounds(t *testing.T) {
 	opts := mlookupOpts()
-	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 7, TimeBucket: "day", FractalID: "f1"}
+	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 7, TimeBucket: "day", FractalID: "f1", Keys: []string{"user"}}
 	sql := translateMLWith(t, `* | model_lookup(model="vol", key=[user])`, opts)
 
 	const want = "fields.`user`::String IN (SELECT _mlk_src.entity_val FROM `model_vol` AS _mlk_src " +
@@ -704,7 +774,9 @@ func TestModelLookup_VolumePrefilterCarriesBucketBounds(t *testing.T) {
 // filter and a LIMIT lifted above it: a full-range scan on the most common
 // multi-field first_seen shape.
 func TestModelLookup_CompositeKeyPrefilters(t *testing.T) {
-	sql := translateML(t, `* | model_lookup(model="fs", key=[user, computer_name])`)
+	opts := mlookupOpts()
+	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", Keys: []string{"user", "computer_name"}}
+	sql := translateMLWith(t, `* | model_lookup(model="fs", key=[user, computer_name])`, opts)
 
 	const want = "concat(fields.`user`::String, char(30), fields.`computer_name`::String) IN " +
 		"(SELECT _mlk_src.entity_key FROM `model_fs` AS _mlk_src WHERE _mlk_src.fractal_id IN ('f1'))"
@@ -721,7 +793,7 @@ func TestModelLookup_CompositeKeyPrefilters(t *testing.T) {
 // one drops rows at the scan on the strength of the other matching them.
 func TestModelLookup_PrefilterMirrorsJoinOn(t *testing.T) {
 	opts := mlookupOpts()
-	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 1, TimeBucket: "day", FractalID: "f1"}
+	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 1, TimeBucket: "day", FractalID: "f1", Keys: []string{"user", "computer_name"}}
 	cases := map[string]struct{ on, prefilter string }{
 		`* | model_lookup(model="fs", key=[user])`: {
 			on:        "ON fields.`user`::String = _mlookup.entity_key",
@@ -965,8 +1037,8 @@ func TestRarityConfidenceFilterNamesTheRename(t *testing.T) {
 // prefilter admits only keys seen inside the window.
 func TestModelLookup_HistoryWindow(t *testing.T) {
 	opts := mlookupOpts()
-	opts.Models["rare"] = AnalyticsModelInfo{ID: "1", TableName: "model_rare", ModelType: "rarity", MinSample: 1, FractalID: "f1", HistoryDays: 30}
-	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", HistoryDays: 90}
+	opts.Models["rare"] = AnalyticsModelInfo{ID: "1", TableName: "model_rare", ModelType: "rarity", MinSample: 1, FractalID: "f1", HistoryDays: 30, Keys: []string{"image", "hash"}}
+	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", HistoryDays: 90, Keys: []string{"user"}}
 
 	rare := translateMLWith(t, `* | model_lookup(model="rare", key=[host, port])`, opts)
 	mustHaveML(t, rare, "WHERE fractal_id IN ('f1') AND _day > toDate(now(), 'UTC') - 60")
@@ -1300,7 +1372,7 @@ func TestModelLookup_NotKeepsUnscoredRows(t *testing.T) {
 // the model does not score.
 func TestModelLookup_NotSubtractsScoredKeysWhenRawKeysDiffer(t *testing.T) {
 	opts := mlookupOpts()
-	opts.Models["rare5"] = AnalyticsModelInfo{ID: "4", TableName: "model_rare5", ModelType: "rarity", MinSample: 5, FractalID: "f1"}
+	opts.Models["rare5"] = AnalyticsModelInfo{ID: "4", TableName: "model_rare5", ModelType: "rarity", MinSample: 5, FractalID: "f1", Keys: []string{"image", "hash"}}
 	r := mlResult(t, `* | NOT modelLookup(model="rare5", key=[user, image])`, opts)
 	if !strings.Contains(r.SQL, "NOT ((fields.`user`::String, fields.`image`::String) IN (SELECT partition_val, value_val FROM (") {
 		t.Errorf("expected NOT IN over the scored keys, got:\n%s", r.SQL)
@@ -1532,7 +1604,7 @@ func TestModelLookup_RowPickOnACluster(t *testing.T) {
 	opts := mlookupOpts()
 	opts.TableName = "logs_distributed"
 	opts.IncludeShardNum = true
-	opts.Models["beacon"] = AnalyticsModelInfo{ID: "3", TableName: "model_beacon_dist", ModelType: "beacon", FractalID: "f1", Distributed: true}
+	opts.Models["beacon"] = AnalyticsModelInfo{ID: "3", TableName: "model_beacon_dist", ModelType: "beacon", FractalID: "f1", Distributed: true, Keys: []string{"src_ip", "dst_ip", "dst_port"}}
 	sql := translateMLWith(t, `* | modelLookup(model="beacon", key=[src_ip, dst_ip, dst_port])`, opts)
 	for _, want := range []string{
 		"(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM logs_distributed",
@@ -1650,7 +1722,7 @@ func TestModelLookup_PickedRowsAreTheJoinsBuildSide(t *testing.T) {
 	}
 	opts := mlookupOpts()
 	opts.TableName, opts.IncludeShardNum = "logs_distributed", true
-	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", Distributed: true}
+	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", Distributed: true, Keys: []string{"user"}}
 	if sql := translateMLWith(t, `* | modelLookup(model="fs", key=[user])`, opts); !strings.Contains(sql, ") AS _mlookup GLOBAL INNER JOIN (SELECT *, _shard_num FROM logs_distributed WHERE ") {
 		t.Errorf("cluster: expected a GLOBAL join shipping the picked rows with their shard, got:\n%s", sql)
 	}

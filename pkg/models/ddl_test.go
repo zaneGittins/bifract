@@ -273,16 +273,23 @@ func TestRarityFlagPredicates(t *testing.T) {
 		},
 		{
 			name:      "min sample above the floor is stated",
-			def:       ModelDefinition{MinSample: 5, Alert: &AlertConfig{CoverageThreshold: 0.8}},
+			def:       ModelDefinition{PartitionKey: "h", MinSample: 5, Alert: &AlertConfig{CoverageThreshold: 0.8}},
 			wantSQL:   "model_total >= 5 AND coverage > 0.8",
 			wantText:  "group seen on 5+ days and coverage > 0.8",
+			wantThres: true,
+		},
+		{
+			name:      "with no group the floor is the model's history",
+			def:       ModelDefinition{MinSample: 5, Alert: &AlertConfig{CoverageThreshold: 0.8}},
+			wantSQL:   "model_total >= 5 AND coverage > 0.8",
+			wantText:  "5+ days of history and coverage > 0.8",
 			wantThres: true,
 		},
 		{
 			// Only the floor applies, so every scored value passes: saying they
 			// "would alert" would be true of a model that raises none.
 			name:     "min sample alone does not count as a threshold",
-			def:      ModelDefinition{MinSample: 5},
+			def:      ModelDefinition{PartitionKey: "h", MinSample: 5},
 			wantSQL:  "model_total >= 5",
 			wantText: "group seen on 5+ days",
 		},

@@ -309,15 +309,14 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable, recorded str
 	var b strings.Builder
 	switch mt {
 	case ModelTypeRarity:
-		partRef := def.PartitionKey
-		valRef := def.ValueKey
+		part, guard := rarityPartition(def.PartitionKey, applyLowerIfNeeded(def.PartitionKey, def.Extractions))
 		b.WriteString(fmt.Sprintf("SELECT fractal_id,\n"))
-		b.WriteString(fmt.Sprintf("    %s AS partition_val,\n", applyLowerIfNeeded(partRef, def.Extractions)))
-		b.WriteString(fmt.Sprintf("    %s AS value_val,\n", applyLowerIfNeeded(valRef, def.Extractions)))
+		b.WriteString(fmt.Sprintf("    %s AS partition_val,\n", part))
+		b.WriteString(fmt.Sprintf("    %s AS value_val,\n", applyLowerIfNeeded(def.ValueKey, def.Extractions)))
 		b.WriteString("    toUInt64(1) AS event_count,\n")
 		b.WriteString("    " + h.selectCol() + "\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
-		b.WriteString(fmt.Sprintf("WHERE %s != '' AND %s != ''\n", partRef, valRef))
+		b.WriteString(fmt.Sprintf("WHERE %s%s != ''\n", guard, def.ValueKey))
 		b.WriteString("GROUP BY fractal_id, partition_val, value_val" + h.groupBy)
 	case ModelTypeFirstSeen:
 		b.WriteString("SELECT fractal_id,\n")
@@ -387,6 +386,15 @@ func entityAggCols(h historyLayout) string {
     ` + h.selectCol()
 }
 
+// rarityPartition is the partition column's expression and the guard ANDed before
+// the value's; with no group every row shares one constant partition.
+func rarityPartition(key, expr string) (part, guard string) {
+	if key == "" {
+		return "''", ""
+	}
+	return expr, expr + " != '' AND "
+}
+
 // buildDirectSelect builds a SELECT directly from the source table (no extractions).
 // whereExtra, when non-empty, is ANDed into the WHERE clause.
 func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, fractalID, recorded string) (string, error) {
@@ -396,8 +404,9 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 
 	switch mt {
 	case ModelTypeRarity:
+		part, guard := rarityPartition(def.PartitionKey, chFieldRef(def.PartitionKey))
 		b.WriteString(fmt.Sprintf(",\n    %s AS partition_val,\n    %s AS value_val,\n    toUInt64(1) AS event_count,\n    %s\n",
-			chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey), h.selectCol()))
+			part, chFieldRef(def.ValueKey), h.selectCol()))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		preds, err := sourceFilterSQL(def)
@@ -410,7 +419,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
 		}
-		b.WriteString(fmt.Sprintf("\nAND %s != '' AND %s != ''\n", chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey)))
+		b.WriteString(fmt.Sprintf("\nAND %s%s != ''\n", guard, chFieldRef(def.ValueKey)))
 		b.WriteString("GROUP BY fractal_id, partition_val, value_val" + h.groupBy)
 	case ModelTypeFirstSeen:
 		if len(def.KeyFields) == 1 {

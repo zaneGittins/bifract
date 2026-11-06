@@ -29,13 +29,23 @@ type modelExport struct {
 	Definition  ModelDefinition `yaml:"definition"`
 }
 
-// ValidateImport checks a model file as an import would, short of compiling its
-// source query against a fractal's lookups, and returns the model's name.
-func ValidateImport(data []byte) (string, error) {
+// decodeModelExport refuses unknown fields: partition_key is optional, so a
+// misspelled one would otherwise quietly build an ungrouped model.
+func decodeModelExport(data []byte) (modelExport, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	var exp modelExport
-	if err := dec.Decode(&exp); err != nil {
+	if err := dec.Decode(&exp); err != nil && !errors.Is(err, io.EOF) {
+		return exp, err
+	}
+	return exp, nil
+}
+
+// ValidateImport checks a model file as an import would, short of compiling its
+// source query against a fractal's lookups, and returns the model's name.
+func ValidateImport(data []byte) (string, error) {
+	exp, err := decodeModelExport(data)
+	if err != nil {
 		return "", fmt.Errorf("parse model: %w", err)
 	}
 	req := CreateRequest{Name: exp.Name, ModelType: exp.ModelType, Definition: exp.Definition, AlertMode: "none"}
@@ -520,8 +530,8 @@ func (h *Handler) HandleImport(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, "Failed to read request body")
 		return
 	}
-	var exp modelExport
-	if err := yaml.Unmarshal(body, &exp); err != nil {
+	exp, err := decodeModelExport(body)
+	if err != nil {
 		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Invalid YAML: %v", err))
 		return
 	}

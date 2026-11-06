@@ -644,20 +644,7 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 			infos, merr = e.modelManager.ListModelInfos(ctx, alert.FractalID)
 		}
 		if merr == nil {
-			parserModels := make(map[string]parser.AnalyticsModelInfo, len(infos))
-			for name, mi := range infos {
-				parserModels[name] = parser.AnalyticsModelInfo{
-					ID:          mi.ID,
-					TableName:   mi.TableName,
-					ModelType:   string(mi.ModelType),
-					MinSample:   mi.MinSample,
-					TimeBucket:  mi.TimeBucket,
-					HistoryDays: mi.HistoryDays,
-					FractalID:   mi.FractalID,
-					Distributed: mi.Distributed,
-				}
-			}
-			opts.Models = parserModels
+			opts.Models = models.ParserInfos(infos)
 		}
 	}
 

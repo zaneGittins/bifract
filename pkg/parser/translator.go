@@ -11,9 +11,11 @@ import (
 // AnalyticsModelInfo is a lightweight representation of an analytics model used
 // in QueryOptions for BQL model_lookup() command execution.
 type AnalyticsModelInfo struct {
-	ID         string
-	TableName  string // distributed table name in cluster mode, local otherwise
-	ModelType  string // "rarity", "first_seen", or "volume_baseline"
+	ID        string
+	TableName string // distributed table name in cluster mode, local otherwise
+	ModelType string // "rarity", "first_seen", or "volume_baseline"
+	// Keys are the log fields modelLookup() must name, in order.
+	Keys       []string
 	MinSample  int
 	TimeBucket string // volume_baseline bucket granularity ("day"/"hour")
 	// HistoryDays is the window a rarity or first_seen model scores over, 0 for
