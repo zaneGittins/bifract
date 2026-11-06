@@ -6,10 +6,12 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"bifract/internal/fakedb"
+	"bifract/pkg/models"
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
 )
@@ -857,21 +859,84 @@ func TestRecentIngestProbeIncludesTheCursor(t *testing.T) {
 	}
 }
 
-// Alert queries run on the privileged connection, so the fractal scope is what
-// keeps a rule that loses its predicate inside its own fractal or prism.
-func TestAlertQueryCarriesFractalScope(t *testing.T) {
-	e, _, ch := newTestEngine(t)
-	var sent []string
+// Every read in runAlertQuery runs on the least-privilege identity and under the rule's
+// scope, including the ptg() tree walk before the main query and the chain() evidence
+// lookup after it. The scope keeps a rule that loses its predicate in its fractal or prism.
+func TestAlertReadsRunOnTheAlertIdentity(t *testing.T) {
+	chainRows := fakedb.CHResult{
+		Cols: []fakedb.Col{{Column: "_entity", Type: "String"}, {Column: "_chain_ts", Type: "Array(Int64)"}},
+		Rows: [][]any{{"alice", []int64{1700000000000}}},
+	}
+	cases := []struct {
+		name, bql string
+		fractals  []string
+		scope     string
+		min       int
+		script    func(ch *fakedb.CH)
+	}{
+		{"plain", `level=error`, nil, "f1,", 1, nil},
+		{"prism", `level=error`, []string{"f1", "f2"}, "f1,f2,", 1, nil},
+		{"process tree", `ptg(start="seed")`, nil, "f1,", 2, nil},
+		{"chain evidence", `* | chain(user, within=5m) { a="x"; b="y" }`, nil, "f1,", 2, func(ch *fakedb.CH) { ch.OnOnce("_chain_ts", chainRows) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _, ch := newTestEngine(t)
+			if tc.script != nil {
+				tc.script(ch)
+			}
+			var mu sync.Mutex
+			var classes, ids []string
+			ch.CtxArgs = func(ctx context.Context) []any {
+				mu.Lock()
+				defer mu.Unlock()
+				classes = append(classes, storage.QueryClassOf(ctx))
+				ids = append(ids, storage.SentQueryIDOf(ctx))
+				return nil
+			}
+			alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", QueryString: tc.bql})
+			opts := parser.QueryOptions{StartTime: time.Now().Add(-time.Minute), EndTime: time.Now(), FractalID: "f1", FractalIDs: tc.fractals, TableName: "logs"}
+			if _, err := e.runAlertQuery(context.Background(), alert, opts, 5, opts.StartTime); err != nil {
+				t.Fatal(err)
+			}
+			if len(classes) < tc.min {
+				t.Fatalf("%d reads, want at least %d: %q", len(classes), tc.min, ch.Queried())
+			}
+			for i, class := range classes {
+				if class != storage.QueryAlertClass {
+					t.Errorf("read %d ran as %q: %s", i, class, ch.Queried()[i])
+				}
+				if !strings.HasSuffix(ids[i], "~bfscope~"+tc.scope) {
+					t.Errorf("read %d sent as %q: %s", i, ids[i], ch.Queried()[i])
+				}
+			}
+		})
+	}
+}
+
+// tlsh() reads the digest index while the options are built, before runAlertQuery.
+func TestAlertTLSHReadRunsOnTheAlertIdentity(t *testing.T) {
+	e, pg, ch := newTestEngine(t)
+	e.modelManager = models.NewManager(pg.client, e.ch)
+	pg.answer("status = 'active' AND model_type = $2", fakedb.Row("m1", "idx", []byte(`{"key_fields":["hash"]}`), "f1"))
+	var mu sync.Mutex
+	var classes []string
 	ch.CtxArgs = func(ctx context.Context) []any {
-		sent = append(sent, storage.SentQueryIDOf(ctx))
+		mu.Lock()
+		defer mu.Unlock()
+		classes = append(classes, storage.QueryClassOf(ctx))
 		return nil
 	}
-	alert := parsedAlert(t, &Alert{ID: "a1", Name: "Scoped", PrismID: "p1"})
-	opts := parser.QueryOptions{StartTime: time.Now().Add(-time.Minute), EndTime: time.Now(), FractalIDs: []string{"f1", "f2"}, TableName: "logs"}
-	if _, err := e.runAlertQuery(context.Background(), alert, opts, 5, opts.StartTime); err != nil {
+	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", QueryString: `tlsh(field=hash, hash="T1` + strings.Repeat("A", 70) + `")`})
+	if _, err := e.buildQueryOpts(context.Background(), alert, time.Now().Add(-time.Minute), time.Now(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(sent) != 1 || !strings.HasSuffix(sent[0], "~bfscope~f1,f2,") {
-		t.Errorf("alert reads sent as %q", sent)
+	if len(classes) == 0 {
+		t.Fatal("no digest read")
+	}
+	for _, class := range classes {
+		if class != storage.QueryAlertClass {
+			t.Errorf("read ran as %q", class)
+		}
 	}
 }

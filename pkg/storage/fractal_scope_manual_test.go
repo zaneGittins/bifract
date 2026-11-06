@@ -12,10 +12,13 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 )
 
 func scopeEnv(key, def string) string {
@@ -114,7 +117,7 @@ func TestFractalScopeLive(t *testing.T) {
 	expect("cache fill", a, cached, "a1")
 	expect("cache under another scope", UserSearchContext(ctx, FractalScope{FractalIDs: []string{"a", "b"}}), cached, "a1", "b1")
 
-	// The privileged connection: unscoped work is untouched, scoped work (alerts) is bound.
+	// The privileged connection: unscoped work is untouched, scoped work is bound.
 	expect("unscoped default connection", ctx, "SELECT msg FROM "+db+".logs", "a1", "b1", "u1")
 	expect("scoped default connection", ScopeContext(ctx, FractalScope{FractalIDs: []string{"b"}}), "SELECT msg FROM "+db+".logs", "b1")
 
@@ -130,6 +133,59 @@ func TestFractalScopeLive(t *testing.T) {
 			t.Errorf("%s: allowed on the search identity, got %v", name, got)
 		}
 	}
+
+	// The alert identity: a rule's scope binds it, an unscoped rule still reads, and a
+	// translator bug has none of the admin connection's reach.
+	if err := root.Exec(ctx, "CREATE TABLE IF NOT EXISTS default.bfscope_other (msg String) ENGINE = Memory"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		root.Exec(ctx, "DROP TABLE IF EXISTS default.bfscope_other")
+		root.Exec(ctx, "DROP USER IF EXISTS evil")
+	})
+	alert := UncappedReadContext(ScopeContext(ctx, FractalScope{FractalIDs: []string{"a"}}))
+	expect("scoped alert", alert, "SELECT msg FROM logs", "a1")
+	expect("alias shadowing on alert", alert, "SELECT msg FROM (SELECT 'a' AS fractal_id, msg FROM logs) WHERE fractal_id = 'a'", "a1")
+	expect("unscoped alert", UncappedReadContext(ctx), "SELECT msg FROM logs", "a1", "b1", "u1")
+	expect("alert user", alert, "SELECT currentUser() AS msg", AlertCHUser)
+	// The code matters: file(), url() and s3() also fail with a grant held, on the
+	// target rather than on the privilege.
+	const accessDenied, settingConstraint = 497, 452
+	for name, tc := range map[string]struct {
+		sql  string
+		code int32
+	}{
+		"other database": {"SELECT msg FROM default.bfscope_other", accessDenied},
+		"write":          {"INSERT INTO logs (fractal_id, msg) SELECT 'a', 'x'", accessDenied},
+		"ddl":            {"CREATE TABLE evil (msg String) ENGINE = Memory", accessDenied},
+		"drop":           {"DROP TABLE logs", accessDenied},
+		"file()":         {"SELECT * FROM file('bfscope.txt', 'LineAsString')", accessDenied},
+		"url()":          {"SELECT * FROM url('http://127.0.0.1:1/', 'LineAsString')", accessDenied},
+		"s3()":           {"SELECT * FROM s3('http://127.0.0.1:1/bucket/key', 'LineAsString')", accessDenied},
+		"remote()":       {"SELECT msg FROM remote('" + addr + "', " + db + ".logs)", accessDenied},
+		"query_log":      {"SELECT query AS msg FROM system.query_log LIMIT 1", accessDenied},
+		"processes":      {"SELECT query AS msg FROM system.processes LIMIT 1", accessDenied},
+		"text_log":       {"SELECT message AS msg FROM system.text_log LIMIT 1", accessDenied},
+		"query_cache":    {"SELECT query AS msg FROM system.query_cache LIMIT 1", accessDenied},
+		"users":          {"CREATE USER evil", accessDenied},
+		"plan shipping":  {"SELECT msg FROM logs SETTINGS serialize_query_plan = 1", settingConstraint},
+	} {
+		_, err := msgs(alert, tc.sql)
+		var ex *proto.Exception
+		if !errors.As(err, &ex) || ex.Code != tc.code {
+			t.Errorf("%s: err = %v, want code %d", name, err, tc.code)
+		}
+	}
+	if got, err := c.Query(ctx, "SELECT count() AS n FROM system.settings_profile_elements WHERE user_name = '"+AlertCHUser+"' AND setting_name = 'max_memory_usage_for_user'"); err != nil || got[0]["n"].(uint64) != 0 {
+		t.Errorf("alert identity carries a memory ceiling: %v %v", got, err)
+	}
+
+	// An identity lost at boot comes back through the repair, without a restart.
+	c.closeQueryIdentities()
+	c.queryConns.Store(&map[string]*queryIdentity{})
+	expect("lost identity falls back", UncappedReadContext(ctx), "SELECT currentUser() AS msg", "default")
+	c.repairQueryIdentities(ctx)
+	expect("repaired identity", UncappedReadContext(ctx), "SELECT currentUser() AS msg", AlertCHUser)
 
 	// Idempotent: a second reconcile finds the policies and issues no DDL for them.
 	c.ensureFractalScopePolicies(ctx, true)

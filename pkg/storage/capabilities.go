@@ -69,8 +69,8 @@ type CapabilityKey string
 const (
 	// CapWorkloadScheduling backs the admin CPU shares for search and recall.
 	CapWorkloadScheduling CapabilityKey = "workload_scheduling"
-	// CapQueryIdentity backs the per-class memory ceilings. Without it a class
-	// keeps only its per-query ceiling.
+	// CapQueryIdentity is security-relevant: without it a class runs on the default
+	// connection, with the admin's reach and at most a per-query ceiling.
 	CapQueryIdentity CapabilityKey = "query_identity"
 	// CapIngestIdentity is security-relevant: without it the ingest tier runs as
 	// the admin user instead of the INSERT-only one.

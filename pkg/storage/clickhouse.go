@@ -100,10 +100,17 @@ type ClickHouseClient struct {
 	// ReconcileQueryWorkloads for why.
 	queryMemoryCaps atomic.Pointer[map[string]int64]
 
-	// queryConns holds the per-class ClickHouse connection, keyed by workload name, so
-	// a class's memory share can be enforced across everything it is running at once
-	// (see query_identity.go). A class with no entry runs on conn.
+	// queryConns holds the per-class ClickHouse connection, keyed by class name: the
+	// class's privilege boundary and, when capped, its memory ceiling across everything
+	// it is running at once (see query_identity.go). A class with no entry runs on conn.
 	queryConns atomic.Pointer[map[string]*queryIdentity]
+
+	// identityMu serializes identity reconciles: a settings save and the background
+	// repair would otherwise each open a pool for the same class.
+	identityMu sync.Mutex
+
+	// queryPool sizes the class pools; see identityPool.
+	queryPool ClickHousePoolConfig
 }
 
 // markSchemaReady signals that Initialize's schema work is complete (idempotent).
@@ -1116,6 +1123,7 @@ func NewClickHouseClient(opts ClientOptions) (*ClickHouseClient, error) {
 		Password:    opts.Conn.Password,
 		Database:    opts.Conn.Database,
 		tls:         opts.Conn.TLS,
+		queryPool:   opts.Conn.Pool,
 		topo:        opts.Topo,
 		schemaReady: make(chan struct{}),
 	}
@@ -1878,8 +1886,7 @@ const maxGeneratedQuerySize = 16 * 1024 * 1024 // 16 MB
 func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) ([]map[string]interface{}, error) {
 	// Merged into this map rather than layered on top: clickhouse-go's WithSettings
 	// replaces the context's settings wholesale, so a second call would drop the
-	// priority set here. Dashboard widgets arrive tagged; alerts and field stats,
-	// which also use this helper, do not.
+	// priority set here.
 	settings := c.applyQuerySettings(ctx, clickhouse.Settings{
 		"priority":       5,
 		"max_query_size": maxGeneratedQuerySize,

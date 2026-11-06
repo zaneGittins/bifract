@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"bifract/internal/fakedb"
 )
@@ -249,6 +250,8 @@ func TestEnsureQueryIdentityStatementOrder(t *testing.T) {
 		"REVOKE ON CLUSTER 'c1' SELECT ON system.query_thread_log FROM bifract_recall",
 		"REVOKE ON CLUSTER 'c1' SELECT ON system.query_views_log FROM bifract_recall",
 		"REVOKE ON CLUSTER 'c1' SELECT ON system.processes FROM bifract_recall",
+		"REVOKE ON CLUSTER 'c1' SELECT ON system.text_log FROM bifract_recall",
+		"REVOKE ON CLUSTER 'c1' SELECT ON system.query_cache FROM bifract_recall",
 		"GRANT ON CLUSTER 'c1' CREATE TEMPORARY TABLE ON *.* TO bifract_recall",
 		"GRANT ON CLUSTER 'c1' REMOTE ON *.* TO bifract_recall",
 		"GRANT ON CLUSTER 'c1' S3 ON *.* TO bifract_recall",
@@ -273,6 +276,22 @@ func TestEnsureQueryIdentityStatementOrder(t *testing.T) {
 	}
 	if len(f.ExecutedMatching("ON *.* FROM")) != 0 {
 		t.Error("nothing stale to revoke on a fresh identity")
+	}
+
+	// Alert: the same read-only reach as search, and never a memory ceiling.
+	c, f = newWorkloadClient()
+	c.ensureQueryIdentity(context.Background(), AlertCHUser, 0)
+	execs = strings.Join(f.Executed(), "\n")
+	for _, want := range []string{
+		"GRANT SELECT, dictGet ON `logs`.* TO bifract_alert\n",
+		"GRANT SELECT ON system.* TO bifract_alert\n",
+		"ALTER USER bifract_alert SETTINGS serialize_query_plan = 0 CONST\n",
+		"REVOKE SELECT ON system.query_log FROM bifract_alert\n",
+		"GRANT CREATE TEMPORARY TABLE ON *.* TO bifract_alert",
+	} {
+		if !strings.Contains(execs+"\n", want) {
+			t.Errorf("alert identity missing %q in:\n%s", want, execs)
+		}
 	}
 
 	// A server without serialize_query_plan still gets the memory ceiling.
@@ -362,6 +381,173 @@ func TestReconcileQueryIdentities(t *testing.T) {
 	c.closeQueryIdentities()
 	if other.Closed() != 1 || c.queryConns.Load() != nil {
 		t.Error("Close must close every class pool")
+	}
+}
+
+// Every class is provisioned on every reconcile. The alert class has no share to
+// configure, so it is ensured uncapped and never named by a ceiling.
+func TestReconcileProvisionsTheAlertIdentityUncapped(t *testing.T) {
+	c, f := newWorkloadClient()
+	c.reconcileQueryIdentities(context.Background(), map[string]int64{QuerySearchWorkload: 1000})
+	if len(f.ExecutedMatching("CREATE USER IF NOT EXISTS bifract_alert")) != 1 {
+		t.Errorf("executed %q, want the alert identity created", f.Executed())
+	}
+	if got := f.ExecutedMatching("bifract_alert SETTINGS"); len(got) != 1 || strings.Contains(got[0], "max_memory_usage_for_user") {
+		t.Errorf("alert settings = %q, want no ceiling", got)
+	}
+}
+
+// A live alert identity survives a search ceiling change: rebuilding it would abort
+// every running export and alert read for a change that does not concern them.
+func TestReconcileReusesTheAlertIdentity(t *testing.T) {
+	c, f := newWorkloadClient()
+	live := fakedb.NewCH()
+	c.queryConns.Store(&map[string]*queryIdentity{QueryAlertClass: {conn: live}})
+	c.reconcileQueryIdentities(context.Background(), map[string]int64{QuerySearchWorkload: 5000})
+	if id := (*c.queryConns.Load())[QueryAlertClass]; id == nil || id.conn != live {
+		t.Error("the alert identity must be reused")
+	}
+	if live.Closed() != 0 {
+		t.Error("a reused pool must not be closed")
+	}
+	if got := f.ExecutedMatching("bifract_alert"); len(got) != 0 {
+		t.Errorf("no DDL may run for a reused identity: %v", got)
+	}
+}
+
+// A transient failure must not cost an identity its plan pin: only a server that does
+// not know the setting retries without it.
+func TestIdentitySettingsKeepThePlanPinOnTransientFailure(t *testing.T) {
+	c, f := newWorkloadClient()
+	f.FailExec("serialize_query_plan", errors.New("timeout"))
+	if err := c.applyIdentitySettings(context.Background(), AlertCHUser, 0); err == nil {
+		t.Fatal("expected the transient failure")
+	}
+	if got := f.ExecutedMatching("SETTINGS NONE"); len(got) != 0 {
+		t.Errorf("retried without the pin: %q", got)
+	}
+
+	c, f = newWorkloadClient()
+	f.FailExec("serialize_query_plan", fakedb.Exception(115, "Unknown setting"))
+	if err := c.applyIdentitySettings(context.Background(), AlertCHUser, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.ExecutedMatching("SETTINGS NONE"); len(got) != 1 {
+		t.Errorf("executed %q, want one retry", f.Executed())
+	}
+}
+
+// One class failing keeps the capability down even when a later class provisions.
+func TestIdentityCapabilitySurvivesALaterClass(t *testing.T) {
+	c, f := newWorkloadClient()
+	f.FailExec("CREATE USER IF NOT EXISTS bifract_search", fakedb.Exception(497, "denied"))
+	c.reconcileQueryIdentities(context.Background(), nil)
+	if got := c.Capabilities()[CapQueryIdentity].State; got != CapUnavailable {
+		t.Errorf("capability = %v, want unavailable", got)
+	}
+}
+
+// An unreadable memory budget stops the limits, not the privilege boundary, and a
+// live ceiling is left as it was.
+func TestUnknownBudgetStillProvisionsIdentities(t *testing.T) {
+	c, f := newWorkloadClient()
+	live := fakedb.NewCH()
+	c.queryConns.Store(&map[string]*queryIdentity{QuerySearchWorkload: {conn: live, memCapBytes: 500}})
+	f.On("max_server_memory_usage", fakedb.CHResult{Err: errors.New("denied")})
+	f.On("system.metrics", fakedb.CHResult{Err: errors.New("denied")})
+	f.On("asynchronous_metrics", fakedb.CHResult{Err: errors.New("denied")})
+	if err := c.ReconcileQueryWorkloads(context.Background(), WorkloadLimits{SearchMemoryPercent: 50}); err == nil {
+		t.Fatal("expected the budget failure")
+	}
+	if len(f.ExecutedMatching("CREATE USER IF NOT EXISTS bifract_alert")) != 1 {
+		t.Errorf("executed %q, want the alert identity ensured", f.Executed())
+	}
+	if id := (*c.queryConns.Load())[QuerySearchWorkload]; id == nil || id.conn != live || live.Closed() != 0 {
+		t.Error("a live identity must survive an unreadable budget")
+	}
+}
+
+// A class that lost its identity gets it back at its configured ceiling, and a live
+// identity is not touched: a rebuild would abort whatever it is running.
+func TestRepairProvisionsOnlyMissingIdentities(t *testing.T) {
+	c, f := newWorkloadClient()
+	live := fakedb.NewCH()
+	c.setQueryMemoryCaps(map[string]int64{QuerySearchWorkload: 100})
+	c.queryConns.Store(&map[string]*queryIdentity{
+		QueryAlertClass:     {conn: live},
+		QueryRecallWorkload: {conn: live, memCapBytes: 200},
+	})
+	c.repairQueryIdentities(context.Background())
+	if got := f.ExecutedMatching("ALTER USER bifract_search SETTINGS"); len(got) != 1 || !strings.Contains(got[0], "max_memory_usage_for_user = 100 CONST") {
+		t.Errorf("search settings = %q", got)
+	}
+	if got := append(f.ExecutedMatching("bifract_alert"), f.ExecutedMatching("bifract_recall")...); len(got) != 0 {
+		t.Errorf("DDL ran for a live identity: %q", got)
+	}
+	if live.Closed() != 0 {
+		t.Error("a live pool must not be closed")
+	}
+}
+
+func TestRepairDoesNothingWhenNothingIsMissing(t *testing.T) {
+	c, f := newWorkloadClient()
+	live := fakedb.NewCH()
+	all := map[string]*queryIdentity{}
+	for _, class := range queryIdentityClasses {
+		all[class] = &queryIdentity{conn: live}
+	}
+	c.queryConns.Store(&all)
+	c.repairQueryIdentities(context.Background())
+	if got := f.Executed(); len(got) != 0 {
+		t.Errorf("executed %q", got)
+	}
+}
+
+// A server that cannot create users says so once, not once a minute forever.
+func TestRepairStopsAfterAPermanentRefusal(t *testing.T) {
+	c, f := newWorkloadClient()
+	c.recordCapability(CapQueryIdentity, fakedb.Exception(497, "denied"))
+	c.repairQueryIdentities(context.Background())
+	if got := f.Executed(); len(got) != 0 {
+		t.Errorf("executed %q", got)
+	}
+}
+
+func TestIdentityRepairLoopRunsUntilCancelled(t *testing.T) {
+	c, f := newWorkloadClient()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		c.runIdentityRepair(ctx, time.Millisecond)
+		close(done)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(f.ExecutedMatching("CREATE USER IF NOT EXISTS bifract_alert")) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the loop never repaired")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+}
+
+// BIFRACT_CH_QUERY_MAX_CONNS sizes the client, and the class pools follow it.
+func TestIdentityPoolFollowsTheClient(t *testing.T) {
+	c := &ClickHouseClient{}
+	if got := c.identityPool(); got != DefaultQueryPoolConfig() {
+		t.Errorf("unsized client: %+v", got)
+	}
+	sized, err := NewClickHouseClient(ClientOptions{
+		Conn: ConnOptions{Addrs: []string{"127.0.0.1:1"}, Pool: ClickHousePoolConfig{MaxOpenConns: 7}},
+		Role: RoleIngest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sized.Close()
+	if got := sized.identityPool().MaxOpenConns; got != 7 {
+		t.Errorf("MaxOpenConns = %d", got)
 	}
 }
 

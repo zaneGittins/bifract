@@ -34,22 +34,25 @@ func TestFractalScopeMirrorsTranslator(t *testing.T) {
 	}
 }
 
-// sentIDs records the query id of every ClickHouse read the env serves.
-func sentIDs(e *testEnv) func() []string {
+// recordCtx records what read extracts from the context of every ClickHouse read.
+func recordCtx(e *testEnv, read func(context.Context) string) func() []string {
 	var mu sync.Mutex
-	var ids []string
+	var got []string
 	e.ch.CtxArgs = func(ctx context.Context) []any {
 		mu.Lock()
-		ids = append(ids, storage.SentQueryIDOf(ctx))
+		got = append(got, read(ctx))
 		mu.Unlock()
 		return nil
 	}
 	return func() []string {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]string(nil), ids...)
+		return append([]string(nil), got...)
 	}
 }
+
+// sentIDs records the query id of every ClickHouse read the env serves.
+func sentIDs(e *testEnv) func() []string { return recordCtx(e, storage.SentQueryIDOf) }
 
 func assertScoped(t *testing.T, name string, ids []string, scope string) {
 	t.Helper()
@@ -109,4 +112,44 @@ func TestExecuteBQLCarriesFractalScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertScoped(t, "widget", ids(), "f1,")
+}
+
+// Field stats and export run user queries outside the search budget, on the
+// least-privilege uncapped identity rather than the privileged connection. That
+// includes the reads prepareQuery makes, such as the ptg() walk, even for a query
+// export then refuses.
+func TestFieldStatsAndExportRunOnTheUncappedIdentity(t *testing.T) {
+	export := func(q string) func(t *testing.T, e *testEnv) {
+		return func(t *testing.T, e *testEnv) {
+			e.h.HandleExport(httptest.NewRecorder(), testRequest(http.MethodPost, searchBody(t, QueryRequest{Query: q, FractalID: "f1"}), adminCtx()))
+		}
+	}
+	stats := func(q string) func(t *testing.T, e *testEnv) {
+		return func(t *testing.T, e *testEnv) { runFieldStats(t, e, q) }
+	}
+	cases := []struct {
+		name string
+		run  func(t *testing.T, e *testEnv)
+	}{
+		{"field stats", stats("level=error")},
+		{"field stats ptg", stats(`ptg(start="seed")`)},
+		{"export", export("level=error")},
+		{"export ptg", export(`ptg(start="seed")`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, 1000)
+			classes := recordCtx(e, storage.QueryClassOf)
+			tc.run(t, e)
+			got := classes()
+			if len(got) == 0 {
+				t.Fatal("no ClickHouse reads")
+			}
+			for _, class := range got {
+				if class != storage.QueryAlertClass {
+					t.Errorf("read ran as %q", class)
+				}
+			}
+		})
+	}
 }
