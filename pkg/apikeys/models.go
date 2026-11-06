@@ -108,6 +108,20 @@ func (r UpdateAPIKeyRequest) Validate(current *APIKey) error {
 	return nil
 }
 
+// empowers reports whether the update gives the key authority or lifetime, which a
+// rename or a deactivation does not.
+func (r UpdateAPIKeyRequest) empowers() bool {
+	return r.Role != nil || r.ExpiresAt != nil || (r.IsActive != nil && *r.IsActive)
+}
+
+// grantedExpiry returns the expiry the key holds after this update.
+func (r UpdateAPIKeyRequest) grantedExpiry(current *APIKey) *time.Time {
+	if r.ExpiresAt != nil {
+		return r.ExpiresAt
+	}
+	return current.ExpiresAt
+}
+
 // IsExpired checks if the API key has expired
 func (k *APIKey) IsExpired() bool {
 	if k.ExpiresAt == nil {

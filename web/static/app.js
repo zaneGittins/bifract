@@ -896,7 +896,7 @@ const App = {
     // settings without the fractal admin role.
     _tabUnavailable(tab) {
         if (this._fractalOnlyTabs.has(tab) && window.FractalContext && FractalContext.isPrism()) return true;
-        return tab === 'manage' && !(window.Auth && Auth.hasFractalRole('admin'));
+        return tab === 'manage' && !(window.Auth && Auth.canManageScope());
     },
 
     // Runs on every scope change. Hiding the nav item is not enough: the tab

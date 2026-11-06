@@ -377,10 +377,7 @@ const FieldStats = {
     },
 
     escHtml(str) {
-        if (window.Utils) return Utils.escapeHtml(str);
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        return Utils.escapeHtml(str);
     },
 
     escAttr(str) {

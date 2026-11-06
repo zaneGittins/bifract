@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"bifract/internal/fakedb"
+	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
 	"bifract/pkg/storage/storagetest"
 )
@@ -274,4 +278,42 @@ func TestHandleClearAllLogs(t *testing.T) {
 			t.Errorf("got %d %s", rec.Code, rec.Body.String())
 		}
 	})
+}
+
+// Clearing one fractal takes admin on that fractal, and only that fractal's data.
+func TestClearFractalLogsNeedsAdminOnThePath(t *testing.T) {
+	for name, tc := range map[string]struct {
+		user *storage.User
+		role string
+		want int
+	}{
+		"fractal admin": {&storage.User{Username: "fadmin"}, "admin", http.StatusOK},
+		"tenant admin":  {&storage.User{Username: "root", IsAdmin: true}, "", http.StatusOK},
+		"analyst":       {&storage.User{Username: "ann"}, "analyst", http.StatusForbidden},
+		"no grant":      {&storage.User{Username: "nobody"}, "", http.StatusForbidden},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newClearEnv(t)
+			e.h.SetRBACResolver(rbac.NewResolver(e.h.pg))
+			e.pg.On("fractal_permissions", fakedb.Row(tc.role))
+			e.pg.On("SELECT is_default FROM fractals", fakedb.Row(false))
+
+			r := httptest.NewRequest(http.MethodDelete, "/api/v1/fractals/f1/logs", nil)
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("id", "f1")
+			ctx := context.WithValue(r.Context(), chi.RouteCtxKey, rctx)
+			ctx = context.WithValue(ctx, "user", tc.user)
+			rec := httptest.NewRecorder()
+			e.h.HandleClearFractalLogs(rec, r.WithContext(ctx))
+
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body.String())
+			}
+			e.quota.mu.Lock()
+			defer e.quota.mu.Unlock()
+			if cleared := reflect.DeepEqual(e.quota.ids, []string{"f1"}); cleared != (tc.want == http.StatusOK) {
+				t.Fatalf("cleared %v with status %d", e.quota.ids, rec.Code)
+			}
+		})
+	}
 }

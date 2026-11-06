@@ -192,7 +192,7 @@ const Sidebar = {
             let visible = !!scope;
             if (visible && isPrism && window.App && App._fractalOnlyTabs.has(a.dataset.nav)) visible = false;
             if (visible && item && item.gate && !item.gate()) visible = false;
-            if (visible && a.dataset.nav === 'manage') visible = !!(window.Auth && Auth.hasFractalRole('admin'));
+            if (visible && a.dataset.nav === 'manage') visible = !!(window.Auth && Auth.canManageScope());
             a.hidden = !visible;
             a.href = scope ? `#${prefix}/${scope.id}/${a.dataset.nav}` : '#';
         });

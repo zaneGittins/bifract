@@ -21,6 +21,43 @@ async function openTab(page, tab) {
 }
 
 test.describe('Fractal settings layout', () => {
+  // A fractal admin manages the fractal, but deleting it stays with tenant admins.
+  // Asserts the class, not visibility: the default fractal hides this row anyway.
+  test('tenant-only controls are gated for a fractal admin', async ({ page }) => {
+    await openManage(page);
+    const gated = [
+      page.locator('#deleteFractalDangerItem'),
+      page.locator('#prismManageSubTabs [data-subtab="danger"]'),
+      page.locator('#permRoleSelect option[value="admin"]'),
+    ];
+    for (const el of gated) await expect(el).not.toHaveClass(/rbac-hidden/);
+    await page.evaluate(() => {
+      Auth.currentUser = { ...Auth.currentUser, is_admin: false, fractal_role: 'admin' };
+      Auth.updateRBACVisibility();
+    });
+    for (const el of gated) await expect(el).toHaveClass(/rbac-hidden/);
+    for (const tab of TABS) {
+      await expect(page.locator(`#manageSubTabs .alerts-sub-tab[data-subtab="${tab}"]`)).toBeVisible();
+    }
+    await openTab(page, 'danger');
+    await expect(page.locator('#manageClearFractalLogsBtn')).toBeVisible();
+  });
+
+  test('a fractal admin does not manage a system fractal', async ({ page }) => {
+    await openManage(page);
+    const canManage = await page.evaluate(() => {
+      Auth.currentUser = { ...Auth.currentUser, is_admin: false, fractal_role: 'admin' };
+      const live = FractalContext.currentFractal;
+      FractalContext.currentFractal = { ...live, is_system: false };
+      const ordinary = Auth.canManageScope();
+      FractalContext.currentFractal = { ...live, is_system: true };
+      const system = Auth.canManageScope();
+      FractalContext.currentFractal = live;
+      return { ordinary, system };
+    });
+    expect(canManage).toEqual({ ordinary: true, system: false });
+  });
+
   test('every tab starts on the tab bar edges without repeating its name', async ({ page }) => {
     await openManage(page);
     const bar = await page.locator('#manageSubTabs').boundingBox();

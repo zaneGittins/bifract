@@ -2079,7 +2079,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/prisms/{id}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessViewer,
 				Response: api.Response[*prisms.Prism]{},
 				Summary:  "Read one prism.",
 				Handler:  d.prismHandler.HandleGetPrism,
@@ -2087,7 +2087,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPut,
 				Path:     "/prisms/{id}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  prisms.PrismRequest{},
 				Response: api.Response[*prisms.Prism]{},
 				Summary:  "Update a prism.",
@@ -2112,7 +2112,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/prisms/{id}/members",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  prisms.AddMemberRequest{},
 				Response: api.Response[*prisms.Prism]{},
 				Summary:  "Add a fractal to a prism.",
@@ -2121,7 +2121,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodDelete,
 				Path:     "/prisms/{id}/members/{fractalID}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.Response[*prisms.Prism]{},
 				Summary:  "Remove a fractal from a prism.",
 				Handler:  d.prismHandler.HandleRemoveMember,
@@ -2129,7 +2129,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/prisms/{id}/permissions",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.ListResponse[storage.PrismPermission]{},
 				Summary:  "List who has access to a prism.",
 				Handler:  d.prismHandler.HandleListPrismPermissions,
@@ -2137,7 +2137,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/prisms/{id}/permissions",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  prisms.GrantPermissionRequest{},
 				Response: api.Response[*storage.PrismPermission]{},
 				Summary:  "Grant a user or group access to a prism.",
@@ -2146,7 +2146,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPut,
 				Path:     "/prisms/{id}/permissions/{permId}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  prisms.UpdatePermissionRequest{},
 				Response: api.Response[map[string]string]{},
 				Summary:  "Change a prism permission's role.",
@@ -2155,7 +2155,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodDelete,
 				Path:     "/prisms/{id}/permissions/{permId}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.Response[map[string]string]{},
 				Summary:  "Revoke a prism permission.",
 				Handler:  d.prismHandler.HandleRevokePrismPermission,
@@ -2183,14 +2183,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Method:   http.MethodGet,
 				Path:     "/fractals/{id}",
 				Response: api.Response[fractals.FractalDetail]{},
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessViewer,
 				Summary:  "Read one fractal.",
 				Handler:  d.fractalHandler.HandleGetFractal,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPut,
 				Path:     "/fractals/{id}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  fractals.UpdateFractalRequest{},
 				Response: api.Response[*fractals.Fractal]{},
 				Summary:  "Update a fractal.",
@@ -2214,7 +2214,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals/{id}/stats",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessViewer,
 				Response: api.Response[*fractals.FractalStats]{},
 				Summary:  "Return a fractal's row counts and storage usage.",
 				Handler:  d.fractalHandler.HandleGetStats,
@@ -2222,7 +2222,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}/retention",
-				Access:  api.AccessTenantAdmin,
+				Access:  api.AccessFractalAdmin,
 				Request: fractals.UpdateRetentionRequest{},
 				Summary: "Set a fractal's hot-storage retention window.",
 				Handler: d.fractalHandler.HandleSetRetention,
@@ -2230,7 +2230,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}/archive-retention",
-				Access:  api.AccessTenantAdmin,
+				Access:  api.AccessFractalAdmin,
 				Request: fractals.UpdateArchiveRetentionRequest{},
 				Summary: "Set a fractal's archive retention window.",
 				Handler: d.fractalHandler.HandleSetArchiveRetention,
@@ -2238,7 +2238,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}/disk-quota",
-				Access:  api.AccessTenantAdmin,
+				Access:  api.AccessFractalAdmin,
 				Request: fractals.UpdateDiskQuotaRequest{},
 				Summary: "Set a fractal's disk quota and enforcement action.",
 				Handler: d.fractalHandler.HandleSetDiskQuota,
@@ -2255,7 +2255,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals/{id}/permissions",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.ListResponse[storage.FractalPermission]{},
 				Summary:  "List who has access to a fractal.",
 				Handler:  d.fractalHandler.HandleListPermissions,
@@ -2263,7 +2263,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/fractals/{id}/permissions",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  fractals.GrantPermissionRequest{},
 				Response: api.Response[*storage.FractalPermission]{},
 				Summary:  "Grant a user or group access to a fractal.",
@@ -2272,7 +2272,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}/permissions/{permId}",
-				Access:  api.AccessTenantAdmin,
+				Access:  api.AccessFractalAdmin,
 				Request: fractals.UpdatePermissionRequest{},
 				Summary: "Change a fractal permission's role.",
 				Handler: d.fractalHandler.HandleUpdatePermission,
@@ -2280,9 +2280,27 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
 				Path:    "/fractals/{id}/permissions/{permId}",
-				Access:  api.AccessTenantAdmin,
+				Access:  api.AccessFractalAdmin,
 				Summary: "Revoke a fractal permission.",
 				Handler: d.fractalHandler.HandleRevokePermission,
+			})
+
+			// Fractal data and the grant form's pickers
+			r.Register(api.Route{
+				Method:   http.MethodDelete,
+				Path:     "/fractals/{id}/logs",
+				Access:   api.AccessFractalAdmin,
+				Response: map[string]interface{}{},
+				Summary:  "Delete one fractal's logs and their comments.",
+				Handler:  d.statusHandler.HandleClearFractalLogs,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/access-candidates",
+				Access:   api.AccessFractalAdmin,
+				Response: api.Response[fractals.AccessCandidates]{},
+				Summary:  "List the users and groups a fractal or prism admin can grant access to.",
+				Handler:  d.fractalHandler.HandleListAccessCandidates,
 			})
 
 			// Groups (tenant admin only, checked in handler)
@@ -2399,7 +2417,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals/{id}/api-keys",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.ListResponse[apikeys.APIKey]{},
 				Summary:  "List a fractal's API keys.",
 				Handler:  d.apiKeyHandler.HandleListAPIKeys,
@@ -2407,7 +2425,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/fractals/{id}/api-keys",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  apikeys.CreateAPIKeyRequest{},
 				Response: api.Response[apikeys.CreateAPIKeyResponse]{},
 				Summary:  "Create an API key scoped to a fractal.",
@@ -2416,7 +2434,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals/{id}/api-keys/{keyId}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.Response[*apikeys.APIKey]{},
 				Summary:  "Read one fractal API key.",
 				Handler:  d.apiKeyHandler.HandleGetAPIKey,
@@ -2424,7 +2442,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPut,
 				Path:     "/fractals/{id}/api-keys/{keyId}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  apikeys.UpdateAPIKeyRequest{},
 				Response: api.Response[*apikeys.APIKey]{},
 				Summary:  "Update a fractal API key.",
@@ -2433,14 +2451,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
 				Path:    "/fractals/{id}/api-keys/{keyId}",
-				Access:  api.AccessTenantAdmin,
+				Access:  api.AccessFractalAdmin,
 				Summary: "Delete a fractal API key.",
 				Handler: d.apiKeyHandler.HandleDeleteAPIKey,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/fractals/{id}/api-keys/{keyId}/toggle",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.Response[map[string]interface{}]{},
 				Summary:  "Activate or deactivate a fractal API key.",
 				Handler:  d.apiKeyHandler.HandleToggleAPIKey,
@@ -2450,7 +2468,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/prisms/{id}/api-keys",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.ListResponse[apikeys.APIKey]{},
 				Summary:  "List a prism's API keys.",
 				Handler:  d.apiKeyHandler.HandleListPrismAPIKeys,
@@ -2458,7 +2476,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/prisms/{id}/api-keys",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  apikeys.CreateAPIKeyRequest{},
 				Response: api.Response[apikeys.CreateAPIKeyResponse]{},
 				Summary:  "Create an API key scoped to a prism.",
@@ -2467,7 +2485,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/prisms/{id}/api-keys/{keyId}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.Response[*apikeys.APIKey]{},
 				Summary:  "Read one prism API key.",
 				Handler:  d.apiKeyHandler.HandleGetPrismAPIKey,
@@ -2475,7 +2493,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPut,
 				Path:     "/prisms/{id}/api-keys/{keyId}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  apikeys.UpdateAPIKeyRequest{},
 				Response: api.Response[*apikeys.APIKey]{},
 				Summary:  "Update a prism API key.",
@@ -2484,14 +2502,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
 				Path:    "/prisms/{id}/api-keys/{keyId}",
-				Access:  api.AccessTenantAdmin,
+				Access:  api.AccessFractalAdmin,
 				Summary: "Delete a prism API key.",
 				Handler: d.apiKeyHandler.HandleDeletePrismAPIKey,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/prisms/{id}/api-keys/{keyId}/toggle",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.Response[map[string]interface{}]{},
 				Summary:  "Activate or deactivate a prism API key.",
 				Handler:  d.apiKeyHandler.HandleTogglePrismAPIKey,
@@ -2501,7 +2519,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals/{id}/ingest-tokens",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.ListResponse[ingesttokens.IngestToken]{},
 				Summary:  "List a fractal's ingest tokens.",
 				Handler:  d.ingestTokenHandler.HandleListTokens,
@@ -2509,7 +2527,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/fractals/{id}/ingest-tokens",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  ingesttokens.CreateTokenRequest{},
 				Response: api.Response[ingesttokens.CreateTokenResponse]{},
 				Summary:  "Create an ingest token for a fractal.",
@@ -2518,7 +2536,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals/{id}/ingest-tokens/{tokenId}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.Response[*ingesttokens.IngestToken]{},
 				Summary:  "Read one ingest token.",
 				Handler:  d.ingestTokenHandler.HandleGetToken,
@@ -2526,7 +2544,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPut,
 				Path:     "/fractals/{id}/ingest-tokens/{tokenId}",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Request:  ingesttokens.UpdateTokenRequest{},
 				Response: api.Response[*ingesttokens.IngestToken]{},
 				Summary:  "Update an ingest token.",
@@ -2535,14 +2553,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
 				Path:    "/fractals/{id}/ingest-tokens/{tokenId}",
-				Access:  api.AccessTenantAdmin,
+				Access:  api.AccessFractalAdmin,
 				Summary: "Delete an ingest token.",
 				Handler: d.ingestTokenHandler.HandleDeleteToken,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/fractals/{id}/ingest-tokens/{tokenId}/toggle",
-				Access:   api.AccessTenantAdmin,
+				Access:   api.AccessFractalAdmin,
 				Response: api.Response[map[string]interface{}]{},
 				Summary:  "Activate or deactivate an ingest token.",
 				Handler:  d.ingestTokenHandler.HandleToggleToken,

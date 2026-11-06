@@ -118,6 +118,77 @@
         "x-bifract-access": "ingest_token"
       }
     },
+    "/api/v1/access-candidates": {
+      "get": {
+        "operationId": "get_api_v1_access_candidates",
+        "summary": "List the users and groups a fractal or prism admin can grant access to.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
+        "tags": [
+          "access-candidates"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/fractals.AccessCandidates"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "fractal_admin"
+      }
+    },
     "/api/v1/admin/activity": {
       "get": {
         "operationId": "get_api_v1_admin_activity",
@@ -15908,7 +15979,7 @@
       "get": {
         "operationId": "get_api_v1_fractals_byId",
         "summary": "Read one fractal.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -15982,12 +16053,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_fractals_byId",
         "summary": "Update a fractal.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16071,7 +16142,7 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_fractals_byId",
@@ -16130,7 +16201,7 @@
       "get": {
         "operationId": "get_api_v1_fractals_byId_api_keys",
         "summary": "List a fractal's API keys.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16202,12 +16273,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "post": {
         "operationId": "post_api_v1_fractals_byId_api_keys",
         "summary": "Create an API key scoped to a fractal.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16291,14 +16362,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/api-keys/{keyId}": {
       "get": {
         "operationId": "get_api_v1_fractals_byId_api_keys_byKeyId",
         "summary": "Read one fractal API key.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16380,12 +16451,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "put": {
         "operationId": "put_api_v1_fractals_byId_api_keys_byKeyId",
         "summary": "Update a fractal API key.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16477,12 +16548,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_fractals_byId_api_keys_byKeyId",
         "summary": "Delete a fractal API key.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16537,14 +16608,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/api-keys/{keyId}/toggle": {
       "post": {
         "operationId": "post_api_v1_fractals_byId_api_keys_byKeyId_toggle",
         "summary": "Activate or deactivate a fractal API key.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16629,14 +16700,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/archive-retention": {
       "put": {
         "operationId": "put_api_v1_fractals_byId_archive_retention",
         "summary": "Set a fractal's archive retention window.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16693,14 +16764,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/disk-quota": {
       "put": {
         "operationId": "put_api_v1_fractals_byId_disk_quota",
         "summary": "Set a fractal's disk quota and enforcement action.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16757,14 +16828,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/ingest-tokens": {
       "get": {
         "operationId": "get_api_v1_fractals_byId_ingest_tokens",
         "summary": "List a fractal's ingest tokens.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16836,12 +16907,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "post": {
         "operationId": "post_api_v1_fractals_byId_ingest_tokens",
         "summary": "Create an ingest token for a fractal.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -16925,14 +16996,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/ingest-tokens/{tokenId}": {
       "get": {
         "operationId": "get_api_v1_fractals_byId_ingest_tokens_byTokenId",
         "summary": "Read one ingest token.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -17014,12 +17085,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "put": {
         "operationId": "put_api_v1_fractals_byId_ingest_tokens_byTokenId",
         "summary": "Update an ingest token.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -17111,12 +17182,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_fractals_byId_ingest_tokens_byTokenId",
         "summary": "Delete an ingest token.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -17171,14 +17242,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/ingest-tokens/{tokenId}/toggle": {
       "post": {
         "operationId": "post_api_v1_fractals_byId_ingest_tokens_byTokenId_toggle",
         "summary": "Activate or deactivate an ingest token.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -17263,14 +17334,78 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
+      }
+    },
+    "/api/v1/fractals/{id}/logs": {
+      "delete": {
+        "operationId": "delete_api_v1_fractals_byId_logs",
+        "summary": "Delete one fractal's logs and their comments.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
+        "tags": [
+          "fractals"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "description": "Any JSON value."
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/permissions": {
       "get": {
         "operationId": "get_api_v1_fractals_byId_permissions",
         "summary": "List who has access to a fractal.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -17342,12 +17477,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "post": {
         "operationId": "post_api_v1_fractals_byId_permissions",
         "summary": "Grant a user or group access to a fractal.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -17431,14 +17566,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/permissions/{permId}": {
       "put": {
         "operationId": "put_api_v1_fractals_byId_permissions_byPermId",
         "summary": "Change a fractal permission's role.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -17503,12 +17638,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_fractals_byId_permissions_byPermId",
         "summary": "Revoke a fractal permission.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -17563,14 +17698,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/retention": {
       "put": {
         "operationId": "put_api_v1_fractals_byId_retention",
         "summary": "Set a fractal's hot-storage retention window.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -17627,7 +17762,7 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/fractals/{id}/select": {
@@ -17715,7 +17850,7 @@
       "get": {
         "operationId": "get_api_v1_fractals_byId_stats",
         "summary": "Return a fractal's row counts and storage usage.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "fractals"
         ],
@@ -17789,7 +17924,7 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/groups": {
@@ -25633,7 +25768,7 @@
       "get": {
         "operationId": "get_api_v1_prisms_byId",
         "summary": "Read one prism.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -25707,12 +25842,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_prisms_byId",
         "summary": "Update a prism.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -25796,7 +25931,7 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_prisms_byId",
@@ -25885,7 +26020,7 @@
       "get": {
         "operationId": "get_api_v1_prisms_byId_api_keys",
         "summary": "List a prism's API keys.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -25957,12 +26092,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "post": {
         "operationId": "post_api_v1_prisms_byId_api_keys",
         "summary": "Create an API key scoped to a prism.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26046,14 +26181,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/prisms/{id}/api-keys/{keyId}": {
       "get": {
         "operationId": "get_api_v1_prisms_byId_api_keys_byKeyId",
         "summary": "Read one prism API key.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26135,12 +26270,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "put": {
         "operationId": "put_api_v1_prisms_byId_api_keys_byKeyId",
         "summary": "Update a prism API key.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26232,12 +26367,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_prisms_byId_api_keys_byKeyId",
         "summary": "Delete a prism API key.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26292,14 +26427,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/prisms/{id}/api-keys/{keyId}/toggle": {
       "post": {
         "operationId": "post_api_v1_prisms_byId_api_keys_byKeyId_toggle",
         "summary": "Activate or deactivate a prism API key.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26384,14 +26519,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/prisms/{id}/members": {
       "post": {
         "operationId": "post_api_v1_prisms_byId_members",
         "summary": "Add a fractal to a prism.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26475,14 +26610,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/prisms/{id}/members/{fractalID}": {
       "delete": {
         "operationId": "delete_api_v1_prisms_byId_members_byFractalID",
         "summary": "Remove a fractal from a prism.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26564,14 +26699,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/prisms/{id}/permissions": {
       "get": {
         "operationId": "get_api_v1_prisms_byId_permissions",
         "summary": "List who has access to a prism.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26643,12 +26778,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "post": {
         "operationId": "post_api_v1_prisms_byId_permissions",
         "summary": "Grant a user or group access to a prism.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26732,14 +26867,14 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/prisms/{id}/permissions/{permId}": {
       "put": {
         "operationId": "put_api_v1_prisms_byId_permissions_byPermId",
         "summary": "Change a prism permission's role.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26834,12 +26969,12 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_prisms_byId_permissions_byPermId",
         "summary": "Revoke a prism permission.",
-        "description": "Requires instance-wide administration.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
         "tags": [
           "prisms"
         ],
@@ -26924,7 +27059,7 @@
             }
           }
         },
-        "x-bifract-access": "tenant_admin"
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/prisms/{id}/select": {
@@ -36512,6 +36647,27 @@
           "enabled"
         ]
       },
+      "fractals.AccessCandidates": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/fractals.GroupCandidate"
+            }
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/fractals.UserCandidate"
+            }
+          }
+        },
+        "required": [
+          "users",
+          "groups"
+        ]
+      },
       "fractals.CreateFractalRequest": {
         "type": "object",
         "properties": {
@@ -36772,6 +36928,25 @@
           "role"
         ]
       },
+      "fractals.GroupCandidate": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "member_count": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "member_count"
+        ]
+      },
       "fractals.RestoreProvenance": {
         "type": "object",
         "properties": {
@@ -36870,6 +37045,21 @@
         },
         "required": [
           "retention_days"
+        ]
+      },
+      "fractals.UserCandidate": {
+        "type": "object",
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "display_name"
         ]
       },
       "groups.AddMemberRequest": {

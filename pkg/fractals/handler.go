@@ -165,7 +165,8 @@ func (h *Handler) HandleGetFractal(w http.ResponseWriter, r *http.Request) {
 	detail := FractalDetail{Fractal: fractal}
 	// Restore provenance, when this fractal was created as a restore target, so
 	// the UI can show it was restored from another fractal's archive.
-	if prov, ok, perr := h.manager.GetFractalProvenance(r.Context(), fractalID); perr == nil && ok {
+	if prov, ok, perr := h.manager.GetFractalProvenance(r.Context(), fractalID); perr == nil && ok &&
+		rbac.HasAccess(user, h.resolveFractalRole(r, prov.SourceFractalID), rbac.RoleViewer) {
 		detail.RestoreProvenance = prov
 	}
 
@@ -267,6 +268,11 @@ func (h *Handler) HandleSelectFractal(w http.ResponseWriter, r *http.Request) {
 	role := h.resolveFractalRole(r, fractalID)
 	if !rbac.HasAccess(user, role, rbac.RoleViewer) {
 		h.sendError(w, http.StatusForbidden, "Insufficient permissions")
+		return
+	}
+
+	if r.Context().Value("auth_type") == "api_key" {
+		h.sendError(w, http.StatusBadRequest, "An API key is bound to its scope and cannot select another")
 		return
 	}
 
@@ -479,26 +485,59 @@ func (h *Handler) sendError(w http.ResponseWriter, statusCode int, message strin
 
 // resolveFractalRole resolves the calling user's role on a specific fractal.
 func (h *Handler) resolveFractalRole(r *http.Request, fractalID string) rbac.Role {
-	user := h.getCurrentUser(r)
-	if user == nil {
-		return rbac.RoleNone
-	}
-	if user.IsAdmin {
-		return rbac.RoleAdmin
-	}
-	if h.rbacResolver == nil || fractalID == "" {
-		return rbac.RoleNone
-	}
-	role, err := h.rbacResolver.ResolveFractalRole(r.Context(), user.Username, fractalID)
-	if err != nil {
-		return rbac.RoleNone
-	}
-	return role
+	return h.rbacResolver.ManagementRole(r.Context(), h.getCurrentUser(r), fractalID)
 }
 
 // ============================
 // Fractal Permission Endpoints
 // ============================
+
+// UserCandidate is a user as the grant form shows it.
+type UserCandidate struct {
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+}
+
+// GroupCandidate is a group as the grant form shows it.
+type GroupCandidate struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	MemberCount int    `json:"member_count"`
+}
+
+// AccessCandidates is who a grant can name.
+type AccessCandidates struct {
+	Users  []UserCandidate  `json:"users"`
+	Groups []GroupCandidate `json:"groups"`
+}
+
+// HandleListAccessCandidates feeds the grant form for fractal and prism admins,
+// who cannot read the tenant-only /users and /groups.
+func (h *Handler) HandleListAccessCandidates(w http.ResponseWriter, r *http.Request) {
+	users, err := h.pg.ListUsers(r.Context())
+	if err != nil {
+		log.Printf("[Fractals] Failed to list users for grants: %v", err)
+		h.sendError(w, http.StatusInternalServerError, "Failed to list users")
+		return
+	}
+	groups, err := h.pg.ListGroups(r.Context())
+	if err != nil {
+		log.Printf("[Fractals] Failed to list groups for grants: %v", err)
+		h.sendError(w, http.StatusInternalServerError, "Failed to list groups")
+		return
+	}
+
+	out := AccessCandidates{Users: []UserCandidate{}, Groups: []GroupCandidate{}}
+	for _, u := range users {
+		if u.Enabled {
+			out.Users = append(out.Users, UserCandidate{Username: u.Username, DisplayName: u.DisplayName})
+		}
+	}
+	for _, g := range groups {
+		out.Groups = append(out.Groups, GroupCandidate{ID: g.ID, Name: g.Name, MemberCount: g.MemberCount})
+	}
+	h.sendSuccess(w, "Access candidates retrieved successfully", out)
+}
 
 // HandleListPermissions lists permissions for a fractal (fractal admin or tenant admin).
 func (h *Handler) HandleListPermissions(w http.ResponseWriter, r *http.Request) {
@@ -575,6 +614,20 @@ func (h *Handler) HandleGrantPermission(w http.ResponseWriter, r *http.Request) 
 		groupID = req.GroupID
 	}
 
+	// A grant replaces any existing row, so this would otherwise demote an admin.
+	if !user.IsAdmin {
+		admin, err := h.pg.FractalGrantIsAdmin(r.Context(), fractalID, username, groupID)
+		if err != nil {
+			log.Printf("[Fractals] Failed to read existing grant on %s: %v", fractalID, err)
+			h.sendError(w, http.StatusBadRequest, "Failed to grant permission")
+			return
+		}
+		if admin {
+			h.sendError(w, http.StatusForbidden, "Only tenant administrators can change an admin grant")
+			return
+		}
+	}
+
 	perm, err := h.pg.GrantFractalPermission(r.Context(), fractalID, username, groupID, req.Role, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Fractals] Failed to grant permission on %s: %v", fractalID, err)
@@ -610,6 +663,11 @@ func (h *Handler) HandleUpdatePermission(w http.ResponseWriter, r *http.Request)
 	}
 	if perm.FractalID != fractalID {
 		h.sendError(w, http.StatusForbidden, "Permission does not belong to this fractal")
+		return
+	}
+
+	if !user.IsAdmin && perm.Role == "admin" {
+		h.sendError(w, http.StatusForbidden, "Only tenant administrators can change an admin grant")
 		return
 	}
 
@@ -662,6 +720,11 @@ func (h *Handler) HandleRevokePermission(w http.ResponseWriter, r *http.Request)
 	// Prevent revoking your own permission (fractal admins could lock themselves out)
 	if perm.Username != nil && *perm.Username == user.Username && !user.IsAdmin {
 		h.sendError(w, http.StatusBadRequest, "Cannot revoke your own permission")
+		return
+	}
+
+	if !user.IsAdmin && perm.Role == "admin" {
+		h.sendError(w, http.StatusForbidden, "Only tenant administrators can change an admin grant")
 		return
 	}
 

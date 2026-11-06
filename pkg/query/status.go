@@ -11,6 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
 )
 
@@ -24,11 +27,17 @@ type StatusHandler struct {
 	db           *storage.ClickHouseClient
 	pg           *storage.PostgresClient
 	quotaClearer quotaClearer
+	rbacResolver *rbac.Resolver
 
 	cacheMu  sync.RWMutex
 	cached   *StatusResponse
 	cachedAt time.Time
 	cacheTTL time.Duration
+}
+
+// SetRBACResolver attaches the resolver that authorizes per-fractal clears.
+func (h *StatusHandler) SetRBACResolver(resolver *rbac.Resolver) {
+	h.rbacResolver = resolver
 }
 
 // SetQuotaClearer attaches a quota manager that is notified when logs are cleared.
@@ -317,6 +326,18 @@ func (h *StatusHandler) notifyAllCleared(ctx context.Context) {
 // clearFractalTimeout bounds a fractal clear: one batched DROP PARTITION per table per
 // shard, all metadata operations, so this is generous.
 const clearFractalTimeout = 5 * time.Minute
+
+// HandleClearFractalLogs clears the fractal in the path (fractal admin+). The
+// route's scope check reads the selected scope, so the path's is checked here.
+func (h *StatusHandler) HandleClearFractalLogs(w http.ResponseWriter, r *http.Request) {
+	fractalID := chi.URLParam(r, "id")
+	user, _ := r.Context().Value("user").(*storage.User)
+	if !rbac.HasAccess(user, h.rbacResolver.ManagementRole(r.Context(), user, fractalID), rbac.RoleAdmin) {
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+		return
+	}
+	h.clearFractalLogs(w, r, fractalID)
+}
 
 func (h *StatusHandler) clearFractalLogs(w http.ResponseWriter, r *http.Request, fractalID string) {
 	var isDefault bool

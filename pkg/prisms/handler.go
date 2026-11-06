@@ -207,12 +207,13 @@ func (h *Handler) HandleAddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Non-admin users must have access to the fractal they're adding.
+	// Prism grants reach every member, so adding a fractal shares it: that takes
+	// admin on the fractal, not just read access.
 	user := getCurrentUser(r)
 	if user != nil && !user.IsAdmin && h.rbacResolver != nil {
-		role := h.rbacResolver.ResolveRole(r.Context(), user, req.FractalID)
-		if !rbac.HasAccess(user, role, rbac.RoleViewer) {
-			respondError(w, http.StatusForbidden, "You do not have access to this fractal")
+		role := h.rbacResolver.ManagementRole(r.Context(), user, req.FractalID)
+		if !rbac.HasAccess(user, role, rbac.RoleAdmin) {
+			respondError(w, http.StatusForbidden, "Adding a fractal to a prism requires admin on the fractal")
 			return
 		}
 	}
@@ -274,6 +275,11 @@ func (h *Handler) HandleSelectPrism(w http.ResponseWriter, r *http.Request) {
 
 	// Verify the user has at least viewer access on this prism
 	if !h.requirePrismRole(w, r, id, rbac.RoleViewer) {
+		return
+	}
+
+	if r.Context().Value("auth_type") == "api_key" {
+		respondError(w, http.StatusBadRequest, "An API key is bound to its scope and cannot select another")
 		return
 	}
 
@@ -358,6 +364,20 @@ func (h *Handler) HandleGrantPrismPermission(w http.ResponseWriter, r *http.Requ
 		groupID = req.GroupID
 	}
 
+	// A grant replaces any existing row, so this would otherwise demote an admin.
+	if !user.IsAdmin {
+		admin, err := h.pg.PrismGrantIsAdmin(r.Context(), prismID, username, groupID)
+		if err != nil {
+			log.Printf("[Prisms] Failed to read existing grant on %s: %v", prismID, err)
+			respondError(w, http.StatusBadRequest, "Failed to grant permission")
+			return
+		}
+		if admin {
+			respondError(w, http.StatusForbidden, "only tenant administrators can change an admin grant")
+			return
+		}
+	}
+
 	perm, err := h.pg.GrantPrismPermission(r.Context(), prismID, username, groupID, req.Role, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Prisms] Failed to grant permission on %s: %v", prismID, err)
@@ -389,6 +409,11 @@ func (h *Handler) HandleUpdatePrismPermission(w http.ResponseWriter, r *http.Req
 	}
 	if perm.PrismID != prismID {
 		respondError(w, http.StatusForbidden, "Permission does not belong to this prism")
+		return
+	}
+
+	if !user.IsAdmin && perm.Role == "admin" {
+		respondError(w, http.StatusForbidden, "only tenant administrators can change an admin grant")
 		return
 	}
 
@@ -437,6 +462,11 @@ func (h *Handler) HandleRevokePrismPermission(w http.ResponseWriter, r *http.Req
 	// Prevent revoking your own permission
 	if perm.Username != nil && *perm.Username == user.Username && !user.IsAdmin {
 		respondError(w, http.StatusBadRequest, "Cannot revoke your own permission")
+		return
+	}
+
+	if !user.IsAdmin && perm.Role == "admin" {
+		respondError(w, http.StatusForbidden, "only tenant administrators can change an admin grant")
 		return
 	}
 

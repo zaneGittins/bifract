@@ -990,10 +990,7 @@ const InstructionLibraries = {
     _linkIcon() { return '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M6.5 9.5l3-3M7 4l1-1a2.5 2.5 0 013.5 3.5l-1 1M9 12l-1 1A2.5 2.5 0 014.5 9.5l1-1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'; },
 
     esc(str) {
-        if (str === null || str === undefined) return '';
-        const div = document.createElement('div');
-        div.textContent = String(str);
-        return div.innerHTML;
+        return Utils.escapeHtml(str);
     },
 
     escAttr(str) { return this.esc(str).replace(/"/g, '&quot;'); },

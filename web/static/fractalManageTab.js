@@ -157,7 +157,8 @@ const FractalManageTab = {
 
             select.innerHTML = '<option value="">Select a fractal to add</option>';
             fractals.forEach(f => {
-                if (!currentMembers.includes(f.id)) {
+                // Adding shares the fractal, so the server requires admin on it.
+                if (!currentMembers.includes(f.id) && f.user_role === 'admin') {
                     const opt = document.createElement('option');
                     opt.value = f.id;
                     opt.textContent = f.name;
@@ -498,7 +499,7 @@ const FractalManageTab = {
             busyLabel: 'Clearing...',
             onConfirm: async () => {
                 const target = encodeURIComponent(this._requireUnchanged(id));
-                const data = await HttpUtils.safeFetch(`/api/v1/logs?fractal_id=${target}`, { method: 'DELETE' });
+                const data = await HttpUtils.safeFetch(`/api/v1/fractals/${target}/logs`, { method: 'DELETE' });
                 if (data && data.success === false) throw new Error(data.error || 'Failed to clear logs');
                 Object.assign(fractal, { log_count: 0, size_bytes: 0, earliest_log: null, latest_log: null });
                 this._renderStats(fractal);
@@ -620,6 +621,10 @@ const FractalManageTab = {
     },
 
     switchPrismSubTab(tabName, silent = false) {
+        // A deep link can name a tab this user cannot see.
+        if (document.querySelector(`#prismManageSubTabs [data-subtab="${tabName}"]`)?.classList.contains('rbac-hidden')) {
+            tabName = 'overview';
+        }
         if (!silent) window.App?.pushSubPath(tabName);
         // Update tab buttons (scoped to the prism subtabs container)
         const tabBar = document.getElementById('prismManageSubTabs');

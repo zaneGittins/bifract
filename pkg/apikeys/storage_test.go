@@ -229,9 +229,20 @@ func TestValidateAPIKey(t *testing.T) {
 	db.add(keyRow{id: "k6", keyHash: s.HashKey("bifract_alpha_orphan"), fractalID: fractalA, role: "viewer", active: true})
 	db.add(keyRow{id: "k7", keyHash: s.HashKey("bifract_admin_root"), tenant: true, createdBy: "root", active: true, expires: &future})
 	db.add(keyRow{id: "k8", keyHash: s.HashKey("bifract_admin_demoted"), tenant: true, createdBy: "alice", active: true, expires: &future})
+	db.add(keyRow{id: "k9", keyHash: s.HashKey("bifract_alpha_root"), fractalID: fractalA, role: "admin", createdBy: "root", active: true})
+	db.add(keyRow{id: "k10", keyHash: s.HashKey("bifract_alpha_demoted"), fractalID: fractalA, role: "admin", createdBy: "dan", active: true})
+	db.add(keyRow{id: "k11", keyHash: s.HashKey("bifract_alpha_revoked"), fractalID: fractalA, role: "viewer", createdBy: "rob", active: true})
+	db.add(keyRow{id: "k12", keyHash: s.HashKey("bifract_alpha_elsewhere"), fractalID: fractalA, role: "admin", createdBy: "eve", active: true})
+	db.add(keyRow{id: "k13", keyHash: s.HashKey("bifract_prism_demoted"), prismID: prismA, role: "admin", createdBy: "dan", active: true})
 	db.users["alice"] = userRow{enabled: true}
 	db.users["bob"] = userRow{enabled: false}
 	db.users["root"] = userRow{enabled: true, admin: true}
+	db.users["dan"] = userRow{enabled: true}
+	db.users["rob"] = userRow{enabled: true}
+	db.users["eve"] = userRow{enabled: true}
+	db.fractalRoles[fractalA] = map[string]string{"alice": "admin", "bob": "admin", "dan": "analyst"}
+	db.fractalRoles[fractalB] = map[string]string{"eve": "admin"}
+	db.prismRoles[prismA] = map[string]string{"alice": "admin", "dan": "viewer"}
 	st := NewStorage(db.client)
 
 	t.Run("valid key carries its scope and role", func(t *testing.T) {
@@ -256,6 +267,11 @@ func TestValidateAPIKey(t *testing.T) {
 			t.Fatalf("ValidateAPIKey = (%v, %v)", v, err)
 		}
 	})
+	t.Run("scoped key of a tenant admin needs no grant", func(t *testing.T) {
+		if v, err := st.ValidateAPIKey(context.Background(), "bifract_alpha_root"); err != nil || v.ID != "k9" {
+			t.Fatalf("ValidateAPIKey = (%v, %v)", v, err)
+		}
+	})
 	t.Run("prism key", func(t *testing.T) {
 		v, err := st.ValidateAPIKey(context.Background(), "bifract_prism_a_key")
 		if err != nil {
@@ -270,11 +286,15 @@ func TestValidateAPIKey(t *testing.T) {
 		{"expired key", "bifract_alpha_expired"},
 		{"deactivated key", "bifract_alpha_disabled"},
 		{"empty key", ""},
-		// A key acts for the person who issued it, so it stops when they
-		// are disabled or deleted, or for a tenant key, lose tenant admin.
+		// A key acts for the person who issued it, so it stops when they are
+		// disabled or deleted, or lose the authority that let them issue it.
 		{"creator disabled", "bifract_alpha_bob"},
 		{"creator deleted", "bifract_alpha_orphan"},
 		{"tenant key of a demoted creator", "bifract_admin_demoted"},
+		{"fractal key of a demoted creator", "bifract_alpha_demoted"},
+		{"fractal key of a revoked creator", "bifract_alpha_revoked"},
+		{"fractal key of an admin of another fractal", "bifract_alpha_elsewhere"},
+		{"prism key of a demoted creator", "bifract_prism_demoted"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			v, err := st.ValidateAPIKey(context.Background(), tt.key)

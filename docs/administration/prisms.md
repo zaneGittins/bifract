@@ -14,6 +14,8 @@ Tenant admins only.
 
 ## Add or remove member fractals
 
+Prism admins and tenant admins. A prism's grants reach every member, so adding a fractal also takes admin on that fractal.
+
 1. Open the prism from **Fractals**.
 2. Click **Prism settings** in the sidebar, then the **Members** tab.
 3. Pick a fractal in **Select a fractal to add** and click **Add**.
@@ -23,6 +25,8 @@ Tenant admins only.
 To remove a member, click its **✕** button. Changes apply immediately for everyone.
 
 ## Prism settings
+
+Prism admins and tenant admins can open it and change everything except **Delete prism**, which is tenant admin only.
 
 | Tab | Contents |
 |-----|----------|

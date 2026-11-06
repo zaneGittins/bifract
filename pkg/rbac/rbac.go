@@ -2,6 +2,8 @@ package rbac
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
 	"bifract/pkg/storage"
 )
@@ -197,6 +199,26 @@ func (r *Resolver) ObjectRole(ctx context.Context, user *storage.User, fractalID
 		return r.ResolvePrismRoleWithAdmin(ctx, user, prismID)
 	}
 	return r.ResolveRole(ctx, user, fractalID)
+}
+
+// ManagementRole is the role that counts for managing a fractal: its settings,
+// grants, keys, tokens and logs. System fractals hold audit and cross-fractal data,
+// so only a tenant admin manages them, and any other admin counts as analyst there.
+// A failed lookup caps the role too.
+func (r *Resolver) ManagementRole(ctx context.Context, user *storage.User, fractalID string) Role {
+	role := r.ObjectRole(ctx, user, fractalID, "")
+	if r == nil || role != RoleAdmin || user == nil || user.IsAdmin {
+		return role
+	}
+	var system bool
+	err := r.pg.QueryRow(ctx, `SELECT is_system FROM fractals WHERE id = $1`, fractalID).Scan(&system)
+	if errors.Is(err, sql.ErrNoRows) {
+		return role
+	}
+	if err != nil || system {
+		return RoleAnalyst
+	}
+	return role
 }
 
 // selectedScopeRole is ObjectRole without a database: the request's role counts

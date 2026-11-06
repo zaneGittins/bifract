@@ -327,17 +327,27 @@ const Auth = {
         return (weights[this.getFractalRole()] || 0) >= (weights[minRole] || 0);
     },
 
+    // Who manages this scope: its admins, except a system fractal, which is tenant admin only.
+    canManageScope() {
+        if (this.currentUser?.is_admin) return true;
+        return this.hasFractalRole('admin') && !window.FractalContext?.currentFractal?.is_system;
+    },
+
     updateRBACVisibility() {
         // Toggle rbac-hidden class based on fractal role.
         // Using a class instead of inline display avoids clobbering
         // tab-switching logic that also controls display.
-        const isAdmin = this.hasFractalRole('admin');
+        const isAdmin = this.canManageScope();
         document.querySelectorAll('.fractal-admin-only').forEach(el => {
             el.classList.toggle('rbac-hidden', !isAdmin);
         });
         const isAnalyst = this.hasFractalRole('analyst');
         document.querySelectorAll('.fractal-analyst-only').forEach(el => {
             el.classList.toggle('rbac-hidden', !isAnalyst);
+        });
+        const isTenantAdmin = !!(this.currentUser && this.currentUser.is_admin);
+        document.querySelectorAll('.tenant-admin-only').forEach(el => {
+            el.classList.toggle('rbac-hidden', !isTenantAdmin);
         });
         if (window.Sidebar) Sidebar.refresh();
     },

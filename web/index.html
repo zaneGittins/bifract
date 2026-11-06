@@ -2852,7 +2852,7 @@
                         <button class="alerts-sub-tab active" data-subtab="overview" onclick="FractalManageTab.switchPrismSubTab('overview')">Overview</button>
                         <button class="alerts-sub-tab" data-subtab="members" onclick="FractalManageTab.switchPrismSubTab('members')">Members</button>
                         <button class="alerts-sub-tab" data-subtab="access" onclick="FractalManageTab.switchPrismSubTab('access')">Access</button>
-                        <button class="alerts-sub-tab alerts-sub-tab-danger" data-subtab="danger" onclick="FractalManageTab.switchPrismSubTab('danger')">Danger zone</button>
+                        <button class="alerts-sub-tab alerts-sub-tab-danger tenant-admin-only" data-subtab="danger" onclick="FractalManageTab.switchPrismSubTab('danger')">Danger zone</button>
                     </div>
 
                     <!-- Prism Overview Sub-Tab -->
@@ -2948,7 +2948,7 @@
                     </div><!-- end prismSubTabAccess -->
 
                     <!-- Prism Danger Zone Sub-Tab -->
-                    <div id="prismSubTabDanger" class="prism-sub-panel" style="display:none;">
+                    <div id="prismSubTabDanger" class="prism-sub-panel tenant-admin-only" style="display:none;">
                         <div class="sp-card sp-card-danger">
                             <div class="sp-row">
                                 <div class="sp-row-info">
@@ -3158,7 +3158,7 @@
                                     <button id="manageClearFractalLogsBtn" class="danger-btn">Clear logs</button>
                                 </div>
                             </div>
-                            <div class="sp-row" id="deleteFractalDangerItem">
+                            <div class="sp-row tenant-admin-only" id="deleteFractalDangerItem">
                                 <div class="sp-row-info">
                                     <span class="sp-row-label">Delete fractal</span>
                                     <p class="sp-row-desc">Permanently delete this fractal and all its data, alerts, and permissions.</p>
@@ -3959,7 +3959,7 @@ throttleTimeSeconds: 3600"></textarea>
                             <select id="permRoleSelect" class="setting-select">
                                 <option value="viewer">Viewer</option>
                                 <option value="analyst">Analyst</option>
-                                <option value="admin">Admin</option>
+                                <option value="admin" class="tenant-admin-only">Admin</option>
                             </select>
                             <span class="help-text">Viewer: query/view. Analyst: create content. Admin: manage fractal settings.</span>
                         </div>
@@ -4007,7 +4007,7 @@ throttleTimeSeconds: 3600"></textarea>
                             <select id="prismPermRoleSelect" class="setting-select">
                                 <option value="viewer">Viewer</option>
                                 <option value="analyst">Analyst</option>
-                                <option value="admin">Admin</option>
+                                <option value="admin" class="tenant-admin-only">Admin</option>
                             </select>
                             <span class="help-text">Viewer: query/view. Analyst: create content. Admin: manage prism settings.</span>
                         </div>

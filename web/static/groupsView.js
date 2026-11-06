@@ -1,4 +1,4 @@
-// Groups management module (tenant admin only, part of Settings page)
+// Groups management (Settings page) and the grant forms in Fractal and Prism settings
 
 const GroupsView = {
     groups: [],
@@ -508,6 +508,13 @@ const GroupsView = {
         }
     },
 
+    // Only a tenant admin can grant admin, but a row already holding it must show it.
+    _roleOptions(current) {
+        const roles = ['viewer', 'analyst'];
+        if (current === 'admin' || window.Auth?.currentUser?.is_admin) roles.push('admin');
+        return roles.map(r => `<option value="${r}" ${r === current ? 'selected' : ''}>${r}</option>`).join('');
+    },
+
     // Fractal Permissions (used in fractal manage tab)
 
     async loadPermissions(fractalId) {
@@ -548,9 +555,7 @@ const GroupsView = {
                 <td>${label}</td>
                 <td>
                     <select class="setting-select perm-role-select" data-perm-id="${Utils.escapeHtml(p.id)}" data-fractal-id="${Utils.escapeHtml(fractalId)}" onchange="GroupsView.updatePermissionRole(this)">
-                        <option value="viewer" ${p.role === 'viewer' ? 'selected' : ''}>viewer</option>
-                        <option value="analyst" ${p.role === 'analyst' ? 'selected' : ''}>analyst</option>
-                        <option value="admin" ${p.role === 'admin' ? 'selected' : ''}>admin</option>
+                        ${this._roleOptions(p.role)}
                     </select>
                 </td>
                 <td class="col-actions"><button class="btn-delete-user btn-sm" onclick="GroupsView.revokePermission('${Utils.escapeJs(p.id)}', '${Utils.escapeJs(fractalId)}')">Revoke</button></td>
@@ -610,7 +615,7 @@ const GroupsView = {
     showGrantForm() {
         const modal = document.getElementById('grantPermissionModal');
         if (modal) modal.style.display = 'flex';
-        this.loadGrantFormOptions();
+        this._fillGrantPickers('permUserSelect', 'permGroupSelect');
         setTimeout(() => document.getElementById('permGrantType')?.focus(), 50);
     },
 
@@ -632,48 +637,35 @@ const GroupsView = {
         if (groupGroup) groupGroup.style.display = type === 'group' ? '' : 'none';
     },
 
-    async loadGrantFormOptions() {
-        const fractalId = this.getCurrentFractalId();
-        if (!fractalId) return;
-
-        // Load users
-        const userSelect = document.getElementById('permUserSelect');
-        if (userSelect) {
-            try {
-                const resp = await fetch('/api/v1/users?limit=500', { credentials: 'include' });
-                const data = await resp.json();
+    // /access-candidates, not /users and /groups: those are tenant-only, and
+    // fractal and prism admins grant from this form too.
+    async _fillGrantPickers(userSelectId, groupSelectId) {
+        const userSelect = document.getElementById(userSelectId);
+        const groupSelect = document.getElementById(groupSelectId);
+        try {
+            const resp = await fetch('/api/v1/access-candidates', { credentials: 'include' });
+            const data = await resp.json();
+            const { users = [], groups = [] } = data.success ? data.data : {};
+            if (userSelect) {
                 userSelect.innerHTML = '<option value="">Select user...</option>';
-                if (data.success) {
-                    (data.data || []).forEach(u => {
-                        const opt = document.createElement('option');
-                        opt.value = u.username;
-                        opt.textContent = `${u.display_name} (@${u.username})`;
-                        userSelect.appendChild(opt);
-                    });
-                }
-            } catch (err) {
-                console.error('[GroupsView] loadGrantFormOptions users error:', err);
+                users.forEach(u => {
+                    const opt = document.createElement('option');
+                    opt.value = u.username;
+                    opt.textContent = `${u.display_name} (@${u.username})`;
+                    userSelect.appendChild(opt);
+                });
             }
-        }
-
-        // Load groups
-        const groupSelect = document.getElementById('permGroupSelect');
-        if (groupSelect) {
-            try {
-                const resp = await fetch('/api/v1/groups', { credentials: 'include' });
-                const data = await resp.json();
+            if (groupSelect) {
                 groupSelect.innerHTML = '<option value="">Select group...</option>';
-                if (data.success) {
-                    (data.data || []).forEach(g => {
-                        const opt = document.createElement('option');
-                        opt.value = g.id;
-                        opt.textContent = `${g.name} (${g.member_count || 0} members)`;
-                        groupSelect.appendChild(opt);
-                    });
-                }
-            } catch (err) {
-                console.error('[GroupsView] loadGrantFormOptions groups error:', err);
+                groups.forEach(g => {
+                    const opt = document.createElement('option');
+                    opt.value = g.id;
+                    opt.textContent = `${g.name} (${g.member_count || 0} members)`;
+                    groupSelect.appendChild(opt);
+                });
             }
+        } catch (err) {
+            console.error('[GroupsView] _fillGrantPickers error:', err);
         }
     },
 
@@ -775,9 +767,7 @@ const GroupsView = {
                 <td>${label}</td>
                 <td>
                     <select class="setting-select perm-role-select" data-perm-id="${Utils.escapeHtml(p.id)}" data-prism-id="${Utils.escapeHtml(prismId)}" onchange="GroupsView.updatePrismPermissionRole(this)">
-                        <option value="viewer" ${p.role === 'viewer' ? 'selected' : ''}>viewer</option>
-                        <option value="analyst" ${p.role === 'analyst' ? 'selected' : ''}>analyst</option>
-                        <option value="admin" ${p.role === 'admin' ? 'selected' : ''}>admin</option>
+                        ${this._roleOptions(p.role)}
                     </select>
                 </td>
                 <td><button class="btn-delete-user btn-sm" onclick="GroupsView.revokePrismPermission('${Utils.escapeJs(p.id)}', '${Utils.escapeJs(prismId)}')">Revoke</button></td>
@@ -835,7 +825,7 @@ const GroupsView = {
     showPrismGrantForm() {
         const modal = document.getElementById('grantPrismPermissionModal');
         if (modal) modal.style.display = 'flex';
-        this.loadPrismGrantFormOptions();
+        this._fillGrantPickers('prismPermUserSelect', 'prismPermGroupSelect');
         setTimeout(() => document.getElementById('prismPermGrantType')?.focus(), 50);
     },
 
@@ -855,46 +845,6 @@ const GroupsView = {
         const groupGroup = document.getElementById('prismPermGroupSelectGroup');
         if (userGroup) userGroup.style.display = type === 'user' ? '' : 'none';
         if (groupGroup) groupGroup.style.display = type === 'group' ? '' : 'none';
-    },
-
-    async loadPrismGrantFormOptions() {
-        const userSelect = document.getElementById('prismPermUserSelect');
-        if (userSelect) {
-            try {
-                const resp = await fetch('/api/v1/users?limit=500', { credentials: 'include' });
-                const data = await resp.json();
-                userSelect.innerHTML = '<option value="">Select user...</option>';
-                if (data.success) {
-                    (data.data || []).forEach(u => {
-                        const opt = document.createElement('option');
-                        opt.value = u.username;
-                        opt.textContent = `${u.display_name} (@${u.username})`;
-                        userSelect.appendChild(opt);
-                    });
-                }
-            } catch (err) {
-                console.error('[GroupsView] loadPrismGrantFormOptions users error:', err);
-            }
-        }
-
-        const groupSelect = document.getElementById('prismPermGroupSelect');
-        if (groupSelect) {
-            try {
-                const resp = await fetch('/api/v1/groups', { credentials: 'include' });
-                const data = await resp.json();
-                groupSelect.innerHTML = '<option value="">Select group...</option>';
-                if (data.success) {
-                    (data.data || []).forEach(g => {
-                        const opt = document.createElement('option');
-                        opt.value = g.id;
-                        opt.textContent = `${g.name} (${g.member_count || 0} members)`;
-                        groupSelect.appendChild(opt);
-                    });
-                }
-            } catch (err) {
-                console.error('[GroupsView] loadPrismGrantFormOptions groups error:', err);
-            }
-        }
     },
 
     async grantPrismPermission() {

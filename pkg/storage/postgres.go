@@ -3160,6 +3160,17 @@ func (c *PostgresClient) RevokeFractalPermission(ctx context.Context, id string)
 	return nil
 }
 
+// FractalGrantIsAdmin reports whether the grant this user or group already holds
+// on the fractal is admin, so a new grant would replace it.
+func (c *PostgresClient) FractalGrantIsAdmin(ctx context.Context, fractalID string, username, groupID *string) (bool, error) {
+	var admin bool
+	err := c.db.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM fractal_permissions
+			WHERE fractal_id = $1 AND role = 'admin' AND (username = $2 OR group_id = $3))
+	`, fractalID, username, groupID).Scan(&admin)
+	return admin, err
+}
+
 func (c *PostgresClient) UpdateFractalPermissionRole(ctx context.Context, id, role string) error {
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE fractal_permissions SET role = $2, updated_at = NOW() WHERE id = $1
@@ -3237,6 +3248,16 @@ type PrismPermission struct {
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	DisplayName string    `json:"display_name,omitempty"`
+}
+
+// PrismGrantIsAdmin is FractalGrantIsAdmin for a prism.
+func (c *PostgresClient) PrismGrantIsAdmin(ctx context.Context, prismID string, username, groupID *string) (bool, error) {
+	var admin bool
+	err := c.db.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM prism_permissions
+			WHERE prism_id = $1 AND role = 'admin' AND (username = $2 OR group_id = $3))
+	`, prismID, username, groupID).Scan(&admin)
+	return admin, err
 }
 
 func (c *PostgresClient) GrantPrismPermission(ctx context.Context, prismID string, username *string, groupID *string, role, grantedBy string) (*PrismPermission, error) {

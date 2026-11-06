@@ -1,5 +1,5 @@
 // A non-admin opening a fractal or prism by URL must see its name. The router
-// only knows the id from the link, and the admin-only read endpoints refuse them.
+// only knows the id from the link, and the read-one routes judge the selected scope.
 const { randomUUID } = require('crypto');
 const { test, expect } = require('@playwright/test');
 const { login } = require('./fixtures');

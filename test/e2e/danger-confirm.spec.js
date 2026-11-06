@@ -80,7 +80,7 @@ test('a fractal dialog refuses to act once the selected fractal changes', async 
   test.skip(fractals.length < 2, 'needs two fractals');
   const [a, b] = fractals;
   let calls = 0;
-  await page.route('**/api/v1/logs?*', route => { calls++; return route.abort(); });
+  await page.route('**/api/v1/fractals/*/logs', route => { calls++; return route.abort(); });
 
   await openFractal(page, 'manage', a.name);
   await page.locator('#manageSubTabs .alerts-sub-tab[data-subtab="danger"]').click();

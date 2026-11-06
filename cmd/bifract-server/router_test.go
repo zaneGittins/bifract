@@ -323,3 +323,24 @@ func TestNoMiddlewareRewritesRemoteAddr(t *testing.T) {
 		}
 	}
 }
+
+// The route table is a golden file that -update rewrites, so this states the
+// boundary as a rule: these never drop below tenant admin. Delete handlers carry no
+// check of their own, and DELETE /logs without fractal_id wipes every fractal.
+func TestTenantOnlyRoutesStayTenantOnly(t *testing.T) {
+	mux, reg := buildRouter(testDeps())
+	access := map[string]string{}
+	for _, r := range walkRouter(t, mux, reg) {
+		access[r.key()] = r.access
+	}
+	for _, key := range []string{
+		"POST /api/v1/fractals", "DELETE /api/v1/fractals/{id}", "POST /api/v1/fractals/stats/refresh",
+		"POST /api/v1/prisms", "DELETE /api/v1/prisms/{id}",
+		"DELETE /api/v1/logs", "GET /api/v1/users", "GET /api/v1/groups",
+		"GET /api/v1/api-keys", "POST /api/v1/api-keys",
+	} {
+		if got := access[key]; got != string(api.AccessTenantAdmin) {
+			t.Errorf("%s access = %q, want tenant_admin", key, got)
+		}
+	}
+}

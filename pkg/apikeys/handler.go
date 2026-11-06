@@ -48,21 +48,7 @@ func (h *Handler) SetPrismResolver(pr PrismResolver) {
 
 // resolveFractalRole resolves the calling user's role on a specific fractal.
 func (h *Handler) resolveFractalRole(r *http.Request, fractalID string) rbac.Role {
-	user := h.getCurrentUser(r)
-	if user == nil {
-		return rbac.RoleNone
-	}
-	if user.IsAdmin {
-		return rbac.RoleAdmin
-	}
-	if h.rbacResolver == nil || fractalID == "" {
-		return rbac.RoleNone
-	}
-	role, err := h.rbacResolver.ResolveFractalRole(r.Context(), user.Username, fractalID)
-	if err != nil {
-		return rbac.RoleNone
-	}
-	return role
+	return h.rbacResolver.ManagementRole(r.Context(), h.getCurrentUser(r), fractalID)
 }
 
 // resolvePrismRole resolves the calling user's role on a specific prism.
@@ -267,8 +253,12 @@ func (h *Handler) HandleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.ExpiresAt != nil {
-		if err := withinCallerExpiry(r, req.ExpiresAt); err != nil {
+	if req.empowers() {
+		if !mayEmpower(r, user, current) {
+			h.sendError(w, http.StatusForbidden, "Only the key's creator or a tenant admin can do this")
+			return
+		}
+		if err := withinCallerExpiry(r, req.grantedExpiry(current)); err != nil {
 			h.sendError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -335,6 +325,22 @@ func (h *Handler) HandleToggleAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !rbac.HasAccess(user, role, rbac.RoleAdmin) {
 		h.sendError(w, http.StatusForbidden, "Insufficient permissions")
 		return
+	}
+
+	current, err := h.storage.GetFractalAPIKey(r.Context(), keyID, fractalID)
+	if err != nil {
+		h.sendError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+	if !current.IsActive {
+		if !mayEmpower(r, user, current) {
+			h.sendError(w, http.StatusForbidden, "Only the key's creator or a tenant admin can do this")
+			return
+		}
+		if err := withinCallerExpiry(r, current.ExpiresAt); err != nil {
+			h.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	apiKey, err := h.storage.ToggleFractalAPIKey(r.Context(), keyID, fractalID)
@@ -538,8 +544,12 @@ func (h *Handler) HandleUpdatePrismAPIKey(w http.ResponseWriter, r *http.Request
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.ExpiresAt != nil {
-		if err := withinCallerExpiry(r, req.ExpiresAt); err != nil {
+	if req.empowers() {
+		if !mayEmpower(r, user, current) {
+			h.sendError(w, http.StatusForbidden, "Only the key's creator or a tenant admin can do this")
+			return
+		}
+		if err := withinCallerExpiry(r, req.grantedExpiry(current)); err != nil {
 			h.sendError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -606,6 +616,22 @@ func (h *Handler) HandleTogglePrismAPIKey(w http.ResponseWriter, r *http.Request
 	if !rbac.HasAccess(user, role, rbac.RoleAdmin) {
 		h.sendError(w, http.StatusForbidden, "Insufficient permissions")
 		return
+	}
+
+	current, err := h.storage.GetPrismAPIKey(r.Context(), keyID, prismID)
+	if err != nil {
+		h.sendError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+	if !current.IsActive {
+		if !mayEmpower(r, user, current) {
+			h.sendError(w, http.StatusForbidden, "Only the key's creator or a tenant admin can do this")
+			return
+		}
+		if err := withinCallerExpiry(r, current.ExpiresAt); err != nil {
+			h.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	apiKey, err := h.storage.TogglePrismAPIKey(r.Context(), keyID, prismID)
@@ -722,8 +748,8 @@ func (h *Handler) HandleUpdateTenantAPIKey(w http.ResponseWriter, r *http.Reques
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.ExpiresAt != nil {
-		if err := withinCallerExpiry(r, req.ExpiresAt); err != nil {
+	if req.empowers() {
+		if err := withinCallerExpiry(r, req.grantedExpiry(current)); err != nil {
 			h.sendError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -787,16 +813,22 @@ func (h *Handler) HandleToggleTenantAPIKey(w http.ResponseWriter, r *http.Reques
 
 // ---- Helpers ----
 
+// mayEmpower reports whether the caller may raise a key. A key stops with its
+// creator, so one raised by anyone else would outlive that person's access.
+func mayEmpower(r *http.Request, user *storage.User, key *APIKey) bool {
+	return user.IsAdmin || (key.CreatedBy != "" && key.CreatedBy == auth.AttributionUsername(r.Context()))
+}
+
 // withinCallerExpiry refuses an expiry later than the calling key's own, or
 // none at all, so a key cannot outlive the expiry its issuer chose by extending
-// itself or issuing a successor. People are not bounded.
+// itself, issuing a successor, or empowering a longer-lived key. People are not bounded.
 func withinCallerExpiry(r *http.Request, expires *time.Time) error {
 	caller, ok := r.Context().Value("api_key").(*auth.ValidatedAPIKey)
 	if !ok || caller.ExpiresAt == nil {
 		return nil
 	}
 	if expires == nil || expires.After(*caller.ExpiresAt) {
-		return fmt.Errorf("an API key cannot set an expiry later than its own (%s)", caller.ExpiresAt.UTC().Format(time.RFC3339))
+		return fmt.Errorf("an API key cannot grant past its own expiry (%s)", caller.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	return nil
 }
