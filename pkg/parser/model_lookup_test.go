@@ -1180,11 +1180,11 @@ func mlResult(t *testing.T, query string, opts QueryOptions) *TranslationResult 
 // rows are picked before the join: the subquery the joined scan matches by sorting
 // key. "" when the join reads every row the scan's filters keep.
 func scanCap(sql string) string {
-	start := strings.Index(sql, "(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM logs")
+	start := strings.Index(sql, "(timestamp, log_id) IN (SELECT timestamp, log_id FROM logs")
 	if start < 0 {
 		return ""
 	}
-	return balanced(sql, start+len("(timestamp, log_id) GLOBAL IN "))
+	return balanced(sql, start+len("(timestamp, log_id) IN "))
 }
 
 // balanced returns the parenthesised run opening at sql[open].
@@ -1623,7 +1623,7 @@ func TestModelLookup_NoRowPickOverASubquerySource(t *testing.T) {
 	opts.SourceSubquery = "SELECT 'a' AS user, '2026-01-01 00:00:00' AS timestamp, 'x' AS log_id"
 	opts.SourceColumns = []string{"user", "timestamp", "log_id"}
 	sql := translateMLWith(t, `* | modelLookup(model="fs", key=[user])`, opts)
-	if strings.Contains(sql, "(timestamp, log_id) GLOBAL IN") {
+	if strings.Contains(sql, "(timestamp, log_id) IN") {
 		t.Errorf("expected no row pick over a subquery source:\n%s", sql)
 	}
 }

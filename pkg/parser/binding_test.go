@@ -181,7 +181,7 @@ func TestBindingsAreRecordedOnThePipeline(t *testing.T) {
 // subquery goes.
 func TestResultSetBindingInSetMembership(t *testing.T) {
 	sql := bindingSQL(t, `let &admins := user_type="admin" | groupby(user); * | in(user, &admins)`)
-	if !strings.Contains(sql, "IN (SELECT user FROM (") {
+	if !strings.Contains(sql, " IN (SELECT user FROM (") {
 		t.Errorf("want a single-column subquery, got: %s", sql)
 	}
 	// The subquery is scoped like the outer query, not left open.
@@ -192,8 +192,37 @@ func TestResultSetBindingInSetMembership(t *testing.T) {
 
 func TestResultSetBindingNegates(t *testing.T) {
 	sql := bindingSQL(t, `let &admins := user_type="admin" | groupby(user); * | NOT in(user, &admins)`)
-	if !strings.Contains(sql, "NOT IN (SELECT user FROM (") {
+	if !strings.Contains(sql, " NOT IN (SELECT user FROM (") {
 		t.Errorf("want a negated subquery test, got: %s", sql)
+	}
+}
+
+// GLOBAL follows the scan: a Distributed table refuses a plain IN subquery over
+// itself (code 288), and on a local table GLOBAL keeps the test out of PREWHERE.
+func TestResultSetBindingGlobalOnlyOnDistributedScan(t *testing.T) {
+	const admins = `let &a := user_type="admin" | groupby(user); `
+	for table, want := range map[string]map[string]string{
+		"":                     {`* | in(user, &a)`: "::String IN (SELECT", `* | NOT in(user, &a)`: "::String NOT IN (SELECT"},
+		"logs":                 {`* | in(user, &a)`: "::String IN (SELECT", `* | NOT in(user, &a)`: "::String NOT IN (SELECT"},
+		"logs_hot":             {`* | in(user, &a)`: "::String IN (SELECT", `* | NOT in(user, &a)`: "::String NOT IN (SELECT"},
+		"logs_distributed":     {`* | in(user, &a)`: "::String GLOBAL IN (SELECT", `* | NOT in(user, &a)`: "::String GLOBAL NOT IN (SELECT"},
+		"logs_hot_distributed": {`* | in(user, &a)`: "::String GLOBAL IN (SELECT", `* | NOT in(user, &a)`: "::String GLOBAL NOT IN (SELECT"},
+	} {
+		for query, op := range want {
+			opts := serverOpts()
+			opts.TableName = table
+			pipeline, err := ParseQuery(admins + query)
+			if err != nil {
+				t.Fatalf("parse %s: %v", query, err)
+			}
+			result, err := TranslateToSQLWithOrder(pipeline, opts)
+			if err != nil {
+				t.Fatalf("translate %s: %v", query, err)
+			}
+			if !strings.Contains(result.SQL, op) {
+				t.Errorf("table %q, %s: want %q, got: %s", table, query, op, result.SQL)
+			}
+		}
 	}
 }
 
@@ -485,6 +514,28 @@ func TestBindingValueIsEscaped(t *testing.T) {
 		}
 		if strings.Count(sql, "SELECT") != strings.Count(bindingSQL(t, `* | user = "x"`), "SELECT") {
 			t.Errorf("%s: the value changed the query's shape: %s", q, sql)
+		}
+	}
+}
+
+// join()'s key prefilter follows the same rule as the set test.
+func TestJoinPrefilterGlobalOnlyOnDistributedScan(t *testing.T) {
+	for table, want := range map[string]string{
+		"logs":             "::String IN (SELECT user FROM (",
+		"logs_distributed": "::String GLOBAL IN (SELECT user FROM (",
+	} {
+		opts := serverOpts()
+		opts.TableName = table
+		pipeline, err := ParseQuery(`* | join(user) { user_type="admin" | groupby(user) }`)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, want) {
+			t.Errorf("table %q: want %q, got: %s", table, want, result.SQL)
 		}
 	}
 }

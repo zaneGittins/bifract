@@ -33,7 +33,7 @@ func TestInnerJoinCapCountsOnlyMatchingRows(t *testing.T) {
 	sql := translateWith(t, `* | join(user) { a="1" | groupby(user) }`, joinCapOpts())
 	outer, after := splitJoin(t, sql)
 
-	prefilter := "fields.`user`::String GLOBAL IN (SELECT user FROM ("
+	prefilter := "fields.`user`::String IN (SELECT user FROM ("
 	pf := strings.Index(outer, prefilter)
 	limit := strings.LastIndex(outer, "LIMIT 1000")
 	if pf < 0 || limit < 0 || pf > limit {
@@ -48,7 +48,7 @@ func TestInnerJoinCapCountsOnlyMatchingRows(t *testing.T) {
 func TestJoinThenHeadCapsJoinedRows(t *testing.T) {
 	sql := translateWith(t, `* | join(user) { a="1" | groupby(user) } | head(5)`, joinCapOpts())
 	outer, after := splitJoin(t, sql)
-	if pf, lim := strings.Index(outer, "GLOBAL IN"), strings.LastIndex(outer, "LIMIT 5"); pf < 0 || lim < pf {
+	if pf, lim := strings.Index(outer, " IN (SELECT"), strings.LastIndex(outer, "LIMIT 5"); pf < 0 || lim < pf {
 		t.Fatalf("head() after join must cap prefiltered rows:\n%s", outer)
 	}
 	if !strings.HasSuffix(after, "ORDER BY timestamp ASC LIMIT 5") {
@@ -61,7 +61,7 @@ func TestHeadThenJoinCapsBeforeJoin(t *testing.T) {
 	sql := translateWith(t, `* | head(20) | join(user) { a="1" | groupby(user) }`, joinCapOpts())
 	outer, _ := splitJoin(t, sql)
 	head := strings.Index(outer, "LIMIT 20")
-	pf := strings.Index(outer, "GLOBAL IN")
+	pf := strings.Index(outer, " IN (SELECT")
 	if head < 0 || pf < head {
 		t.Fatalf("head() before join must pick rows before the key filter:\n%s", outer)
 	}
@@ -72,7 +72,7 @@ func TestHeadThenJoinCapsBeforeJoin(t *testing.T) {
 func TestGroupedInnerJoinPrefiltersScan(t *testing.T) {
 	sql := translateWith(t, `* | groupby(user) | join(user) { a="1" | groupby(user) }`, joinCapOpts())
 	outer, after := splitJoin(t, sql)
-	where := strings.Index(outer, "fields.`user`::String GLOBAL IN (SELECT user FROM (")
+	where := strings.Index(outer, "fields.`user`::String IN (SELECT user FROM (")
 	group := strings.Index(outer, "GROUP BY user")
 	if where < 0 || group < where {
 		t.Fatalf("grouped scan must filter by the subquery's keys before grouping:\n%s", outer)
@@ -87,7 +87,7 @@ func TestGroupedInnerJoinPrefiltersScan(t *testing.T) {
 func TestLeftJoinKeepsCapWithoutPrefilter(t *testing.T) {
 	sql := translateWith(t, `* | join(user, type=left) { a="1" | groupby(user) }`, joinCapOpts())
 	outer, after := splitJoin(t, sql)
-	if strings.Contains(outer, "GLOBAL IN") {
+	if strings.Contains(outer, " IN (SELECT") {
 		t.Errorf("left join must not filter the outer rows:\n%s", outer)
 	}
 	if !strings.Contains(outer, "LIMIT 1000") {
