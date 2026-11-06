@@ -4,7 +4,7 @@ A disk quota caps how much storage one fractal can use. When it is full, Bifract
 
 ## Set a quota
 
-Tenant admins only.
+Fractal admins and tenant admins.
 
 1. Open the fractal from **Fractals**, click **Fractal settings** in the sidebar, then the **Lifecycle** tab.
 2. Under **Quota**, enter a **Disk quota** in GB. Leave it empty for no limit.

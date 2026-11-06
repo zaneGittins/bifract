@@ -77,9 +77,9 @@ func TestScopedRoutesRequireScopeAdmin(t *testing.T) {
 		{"fractal: prism admin", fractalRoutes, fractalA, "fk", sessionUser(prismAdmin), http.StatusForbidden},
 		{"fractal: fractal admin", fractalRoutes, fractalA, "fk", sessionUser(fractalAdmin), http.StatusOK},
 		{"fractal: tenant admin", fractalRoutes, fractalB, "fb", sessionUser(tenantAdmin), http.StatusOK},
-		// A fractal-admin API key resolves by its synthetic apikey_ name, which
-		// holds no permission row, so it cannot manage keys even on its own fractal.
-		{"fractal: fractal-admin API key", fractalRoutes, fractalA, "fk", apiKeyPrincipal(fractalKey), http.StatusForbidden},
+		// A scoped key is authorized like a person with its role, on its own scope only.
+		{"fractal: fractal-admin API key, own fractal", fractalRoutes, fractalA, "fk", apiKeyPrincipal(fractalKey), http.StatusOK},
+		{"fractal: fractal-admin API key, other fractal", fractalRoutes, fractalB, "fb", apiKeyPrincipal(fractalKey), http.StatusForbidden},
 		{"fractal: tenant-admin API key", fractalRoutes, fractalA, "fk", apiKeyPrincipal(tenantKey), http.StatusOK},
 
 		{"prism: anonymous", prismRoutes, prismA, "pk", anonymous, http.StatusUnauthorized},
@@ -89,9 +89,6 @@ func TestScopedRoutesRequireScopeAdmin(t *testing.T) {
 		{"prism: fractal admin", prismRoutes, prismA, "pk", sessionUser(fractalAdmin), http.StatusForbidden},
 		{"prism: prism admin", prismRoutes, prismA, "pk", sessionUser(prismAdmin), http.StatusOK},
 		{"prism: tenant admin", prismRoutes, prismB, "pb", sessionUser(tenantAdmin), http.StatusOK},
-		// Unlike the fractal routes, a prism-admin key's role is honoured on the
-		// prism it was issued for (rbac.ResolvePrismRoleWithAdmin reads it from
-		// the request) and on no other.
 		{"prism: prism-admin API key, own prism", prismRoutes, prismA, "pk", apiKeyPrincipal(prismKey), http.StatusOK},
 		{"prism: prism-admin API key, other prism", prismRoutes, prismB, "pb", apiKeyPrincipal(prismKey), http.StatusForbidden},
 		{"prism: tenant-admin API key", prismRoutes, prismA, "pk", apiKeyPrincipal(tenantKey), http.StatusOK},
@@ -235,6 +232,8 @@ func TestKeyCannotOutliveCallingKey(t *testing.T) {
 	update := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleUpdateAPIKey }, method: http.MethodPut}
 	updatePrism := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleUpdatePrismAPIKey }, method: http.MethodPut}
 	updateTenant := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleUpdateTenantAPIKey }, method: http.MethodPut}
+	toggle := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleToggleAPIKey }, method: http.MethodPost}
+	togglePrism := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleTogglePrismAPIKey }, method: http.MethodPost}
 	fractalIDs := []string{"id", fractalA}
 	prismIDs := []string{"id", prismA}
 
@@ -256,6 +255,12 @@ func TestKeyCannotOutliveCallingKey(t *testing.T) {
 		{"caller shortens itself", updateTenant, `{"expires_at":"` + within + `"}`, []string{"keyId", "tk"}, tenantKey, http.StatusOK},
 		{"fractal key extended beyond caller", update, `{"expires_at":"` + beyond + `"}`, []string{"id", fractalA, "keyId", "fk"}, tenantKey, http.StatusBadRequest},
 		{"prism key extended beyond caller", updatePrism, `{"expires_at":"` + beyond + `"}`, []string{"id", prismA, "keyId", "pk"}, tenantKey, http.StatusBadRequest},
+		{"longer-lived key given a role", update, `{"role":"admin"}`, []string{"id", fractalA, "keyId", "fk"}, tenantKey, http.StatusBadRequest},
+		{"longer-lived prism key given a role", updatePrism, `{"role":"admin"}`, []string{"id", prismA, "keyId", "pk"}, tenantKey, http.StatusBadRequest},
+		{"longer-lived key reactivated by update", update, `{"is_active":true}`, []string{"id", fractalA, "keyId", "fk"}, tenantKey, http.StatusBadRequest},
+		{"dormant longer-lived key toggled on", toggle, "", []string{"id", fractalA, "keyId", "dormant"}, tenantKey, http.StatusBadRequest},
+		{"dormant longer-lived prism key toggled on", togglePrism, "", []string{"id", prismA, "keyId", "dormantp"}, tenantKey, http.StatusBadRequest},
+		{"active longer-lived key toggled off", toggle, "", []string{"id", fractalA, "keyId", "fk"}, tenantKey, http.StatusOK},
 		{"rename leaves expiry alone", update, `{"name":"renamed"}`, []string{"id", fractalA, "keyId", "fk"}, tenantKey, http.StatusOK},
 		{"person sets any expiry", createTenant, `{"name":"x","expires_at":"` + beyond + `"}`, nil, sessionUser(tenantAdmin), http.StatusOK},
 	}
@@ -265,6 +270,8 @@ func TestKeyCannotOutliveCallingKey(t *testing.T) {
 			db.add(keyRow{id: "fk", fractalID: fractalA, role: "viewer", active: true})
 			db.add(keyRow{id: "pk", prismID: prismA, role: "viewer", active: true})
 			db.add(keyRow{id: "tk", tenant: true, active: true, expires: &callerExpiry})
+			db.add(keyRow{id: "dormant", fractalID: fractalA, role: "viewer"})
+			db.add(keyRow{id: "dormantp", prismID: prismA, role: "viewer"})
 			rec := call(tt.route.fn(newTestHandler(db)), tt.route.method, tt.body, tt.who, tt.ids...)
 			if rec.Code != tt.want {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body.String())
@@ -551,3 +558,52 @@ func TestMissingPathParams(t *testing.T) {
 }
 
 var errErr = errors.New("database unavailable")
+
+// A key stops with its creator, so anyone else raising it would leave a key that
+// outlives their own access. Shutting a key off stays open to every scope admin.
+func TestOnlyTheCreatorRaisesAKey(t *testing.T) {
+	update := func(h *Handler) http.HandlerFunc { return h.HandleUpdateAPIKey }
+	updatePrism := func(h *Handler) http.HandlerFunc { return h.HandleUpdatePrismAPIKey }
+	toggle := func(h *Handler) http.HandlerFunc { return h.HandleToggleAPIKey }
+	togglePrism := func(h *Handler) http.HandlerFunc { return h.HandleTogglePrismAPIKey }
+	expires := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	fadmin, padmin := sessionUser(fractalAdmin), sessionUser(prismAdmin)
+
+	for _, tt := range []struct {
+		name string
+		fn   func(*Handler) http.HandlerFunc
+		body string
+		ids  []string
+		who  principal
+		want int
+	}{
+		{"role on another's key", update, `{"role":"admin"}`, []string{"id", fractalA, "keyId", "theirs"}, fadmin, http.StatusForbidden},
+		{"expiry on another's key", update, `{"expires_at":"` + expires + `"}`, []string{"id", fractalA, "keyId", "theirs"}, fadmin, http.StatusForbidden},
+		{"reactivate another's key", update, `{"is_active":true}`, []string{"id", fractalA, "keyId", "theirs"}, fadmin, http.StatusForbidden},
+		{"toggle on another's key", toggle, "", []string{"id", fractalA, "keyId", "theirs-off"}, fadmin, http.StatusForbidden},
+		{"prism role on another's key", updatePrism, `{"role":"admin"}`, []string{"id", prismA, "keyId", "ptheirs"}, padmin, http.StatusForbidden},
+		{"prism toggle on another's key", togglePrism, "", []string{"id", prismA, "keyId", "ptheirs-off"}, padmin, http.StatusForbidden},
+		{"role on own key", update, `{"role":"admin"}`, []string{"id", fractalA, "keyId", "mine"}, fadmin, http.StatusOK},
+		{"deactivate another's key", update, `{"is_active":false}`, []string{"id", fractalA, "keyId", "theirs"}, fadmin, http.StatusOK},
+		{"toggle another's key off", toggle, "", []string{"id", fractalA, "keyId", "theirs"}, fadmin, http.StatusOK},
+		{"rename another's key", update, `{"name":"renamed"}`, []string{"id", fractalA, "keyId", "theirs"}, fadmin, http.StatusOK},
+		{"tenant admin on another's key", update, `{"role":"admin"}`, []string{"id", fractalA, "keyId", "theirs"}, sessionUser(tenantAdmin), http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newKeyDB()
+			grantRoles(db)
+			db.add(keyRow{id: "mine", fractalID: fractalA, role: "viewer", createdBy: "fadmin", active: true})
+			db.add(keyRow{id: "theirs", fractalID: fractalA, role: "viewer", createdBy: "root", active: true})
+			db.add(keyRow{id: "theirs-off", fractalID: fractalA, role: "viewer", createdBy: "root"})
+			db.add(keyRow{id: "ptheirs", prismID: prismA, role: "viewer", createdBy: "root", active: true})
+			db.add(keyRow{id: "ptheirs-off", prismID: prismA, role: "viewer", createdBy: "root"})
+			rec := call(tt.fn(newTestHandler(db)), http.MethodPut, tt.body, tt.who, tt.ids...)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body.String())
+			}
+			if tt.want != http.StatusOK && len(db.writes()) != 0 {
+				t.Fatal("refused request wrote")
+			}
+		})
+	}
+}

@@ -171,9 +171,22 @@ func utc(t *time.Time) *time.Time {
 	return &u
 }
 
+// creatorAuthorityClause is the authority a key's creator must still hold: tenant admin,
+// or admin on the key's scope, directly or through a group. A tenant key has no
+// scope, so only the first can match.
+const creatorAuthorityClause = `(u.is_admin IS TRUE
+	OR EXISTS (SELECT 1 FROM fractal_permissions fp
+		WHERE fp.fractal_id = ak.fractal_id AND fp.role = 'admin'
+			AND (fp.username = u.username
+				OR fp.group_id IN (SELECT group_id FROM group_members WHERE username = u.username)))
+	OR EXISTS (SELECT 1 FROM prism_permissions pp
+		WHERE pp.prism_id = ak.prism_id AND pp.role = 'admin'
+			AND (pp.username = u.username
+				OR pp.group_id IN (SELECT group_id FROM group_members WHERE username = u.username))))`
+
 // ValidateAPIKey checks if an API key is valid and returns associated data. It
-// is refused once its creator is disabled or deleted, and a tenant key once its
-// creator is no longer a tenant admin.
+// is refused once its creator is disabled, deleted, or no longer holds
+// creatorAuthorityClause.
 func (s *Storage) ValidateAPIKey(ctx context.Context, key string) (*ValidatedAPIKey, error) {
 	keyHash := s.HashKey(key)
 
@@ -182,8 +195,8 @@ func (s *Storage) ValidateAPIKey(ctx context.Context, key string) (*ValidatedAPI
 		%s
 		JOIN users u ON u.username = ak.created_by
 		WHERE ak.key_hash = $1 AND ak.is_active = true
-			AND u.enabled AND (NOT ak.tenant_admin OR u.is_admin IS TRUE)
-	`, selectColumns, fromClause), keyHash)
+			AND u.enabled AND %s
+	`, selectColumns, fromClause, creatorAuthorityClause), keyHash)
 
 	apiKey, err := scanAPIKey(row)
 	if err == sql.ErrNoRows {

@@ -716,6 +716,7 @@ func main() {
 
 	// Initialize auth handler with API key validation support
 	authHandler := auth.NewAuthHandlerWithAPIKeys(pg, db, fractalManager, apiKeyValidator)
+	statusHandler.SetRBACResolver(authHandler.RBACResolver())
 
 	// Initialize OIDC handler (optional, enabled by env vars)
 	var oidcHandler *oidc.Handler

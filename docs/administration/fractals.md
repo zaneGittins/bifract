@@ -19,14 +19,14 @@ The new fractal gets a default ingest token on its **Ingest** page.
 
 ## Fractal settings
 
-Open a fractal from **Fractals**, then click **Fractal settings** in the sidebar. Changes on every tab other than **Overview** need a tenant admin.
+Open a fractal from **Fractals**, then click **Fractal settings** in the sidebar. Fractal admins and tenant admins can open it and change everything except **Delete fractal**, which is tenant admin only. System fractals are tenant admin only throughout.
 
 | Tab | Contents |
 |-----|----------|
 | **Overview** | Name, description (**Edit**), creator, log count, size, earliest and latest log |
 | **Access** | **Permissions** (see [Grant access](users-and-roles.md#grant-access-to-a-fractal-or-prism)) and [API keys](ingest-tokens.md) |
 | **Lifecycle** | Retention, archive retention and [disk quota](disk-quotas.md) |
-| **Danger zone** | **Clear logs** and **Delete fractal** |
+| **Danger zone** | **Clear logs** and **Delete fractal** (tenant admins) |
 
 ## Set retention
 

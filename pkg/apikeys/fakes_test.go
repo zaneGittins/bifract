@@ -153,9 +153,9 @@ func (db *keyDB) respond(query string, args []driver.Value) (fakedb.PGResult, bo
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	switch {
-	case strings.Contains(query, "FROM fractal_permissions"):
+	case strings.Contains(query, "FROM fractal_permissions") && !strings.Contains(query, "api_keys"):
 		return fakedb.Row(db.fractalRoles[args[0].(string)][args[1].(string)]), true
-	case strings.Contains(query, "FROM prism_permissions"):
+	case strings.Contains(query, "FROM prism_permissions") && !strings.Contains(query, "api_keys"):
 		return fakedb.Row(db.prismRoles[args[0].(string)][args[1].(string)]), true
 	case strings.Contains(query, "SELECT name FROM fractals"):
 		if name, ok := db.fractalNames[args[0].(string)]; ok {
@@ -224,7 +224,8 @@ func (db *keyDB) respond(query string, args []driver.Value) (fakedb.PGResult, bo
 
 // creatorHolds applies the conditions query places on the key's creator: an
 // inner join on users (a LEFT JOIN would keep keys of deleted creators), its
-// enabled flag, and admin for a tenant key.
+// enabled flag, and tenant admin or admin on the key's scope. fractalRoles and
+// prismRoles stand in for the direct and group grants the subqueries read.
 func (db *keyDB) creatorHolds(query string, k *keyRow) bool {
 	if !regexp.MustCompile(`(^|[^T])\s+JOIN users u ON u\.username = ak\.created_by`).MatchString(query) {
 		return true
@@ -236,10 +237,16 @@ func (db *keyDB) creatorHolds(query string, k *keyRow) bool {
 	if strings.Contains(query, "AND u.enabled") && !u.enabled {
 		return false
 	}
-	if strings.Contains(query, "NOT ak.tenant_admin OR u.is_admin IS TRUE") && k.tenant && !u.admin {
+	if !strings.Contains(query, "u.is_admin IS TRUE") || u.admin {
+		return true
+	}
+	if k.tenant {
 		return false
 	}
-	return true
+	if !strings.Contains(query, "role = 'admin'") {
+		return true
+	}
+	return db.fractalRoles[k.fractalID][k.createdBy] == "admin" || db.prismRoles[k.prismID][k.createdBy] == "admin"
 }
 
 func sortedIDs(m map[string]*keyRow) []string {

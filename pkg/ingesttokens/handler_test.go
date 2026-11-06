@@ -1,6 +1,7 @@
 package ingesttokens
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -237,5 +238,33 @@ func TestBadRequests(t *testing.T) {
 	}
 	if rec := call(h.HandleUpdateToken, http.MethodPut, "{", asUser(tenantAdmin), "id", fractalA, "tokenId", "a1"); rec.Code != http.StatusBadRequest {
 		t.Errorf("malformed update: status = %d", rec.Code)
+	}
+}
+
+// A scoped API key is authorized like a person with its role, on its own fractal only.
+func TestScopedKeyManagesOnlyItsOwnFractalTokens(t *testing.T) {
+	key := func(role string) func(context.Context) context.Context {
+		return func(ctx context.Context) context.Context {
+			ctx = context.WithValue(ctx, "user", &storage.User{Username: "apikey_k1"})
+			ctx = context.WithValue(ctx, "auth_type", "api_key")
+			ctx = context.WithValue(ctx, "selected_fractal", "f-own")
+			return context.WithValue(ctx, "fractal_role", role)
+		}
+	}
+	for name, tc := range map[string]struct {
+		role, fractal string
+		want          int
+	}{
+		"admin key, own fractal":   {"admin", "f-own", http.StatusNotFound}, // past the role check
+		"admin key, other fractal": {"admin", "f-other", http.StatusForbidden},
+		"viewer key, own fractal":  {"viewer", "f-own", http.StatusForbidden},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newTestHandler(newTokenDB(), nil)
+			rec := call(h.HandleGetToken, "GET", "", key(tc.role), "id", tc.fractal, "tokenId", "missing")
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body.String())
+			}
+		})
 	}
 }

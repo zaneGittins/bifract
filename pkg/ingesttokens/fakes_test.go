@@ -140,6 +140,8 @@ func (db *tokenDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 	str := func(i int) string { s, _ := args[i].(string); return s }
 
 	switch {
+	case strings.Contains(q, "SELECT is_system FROM fractals"):
+		return fakedb.Row(false), true
 	case strings.Contains(q, "FROM fractal_permissions"):
 		return fakedb.Row(db.roles[str(0)][str(1)]), true
 	case strings.Contains(q, "FROM fractals") && strings.Contains(q, "WHERE id = $1"):

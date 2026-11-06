@@ -2,9 +2,12 @@ package rbac
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"bifract/internal/fakedb"
 	"bifract/pkg/storage"
+	"bifract/pkg/storage/storagetest"
 )
 
 // An API key authenticates as a principal with no fractal_permissions row, so a
@@ -119,5 +122,34 @@ func TestObjectRoleWithoutResolverStaysOnTheSelectedScope(t *testing.T) {
 	}
 	if got := resolver.ObjectRole(ctx, user, "", ""); got != RoleNone {
 		t.Errorf("an object with no scope: %q, want none", got)
+	}
+}
+
+func TestManagementRoleCapsSystemFractals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		grant   string
+		tenant  bool
+		lookup  fakedb.PGResult
+		want    Role
+		queries int
+	}{
+		"admin, ordinary fractal": {"admin", false, fakedb.Row(false), RoleAdmin, 1},
+		"admin, system fractal":   {"admin", false, fakedb.Row(true), RoleAnalyst, 1},
+		"admin, lookup fails":     {"admin", false, fakedb.PGResult{Err: errors.New("down")}, RoleAnalyst, 1},
+		"viewer keeps reading":    {"viewer", false, fakedb.Row(true), RoleViewer, 0},
+		"tenant admin":            {"", true, fakedb.Row(true), RoleAdmin, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pg, fake := storagetest.Postgres()
+			fake.On("SELECT is_system FROM fractals", tc.lookup)
+			fake.On("fractal_permissions", fakedb.Row(tc.grant))
+			user := &storage.User{Username: "someone", IsAdmin: tc.tenant}
+			if got := NewResolver(pg).ManagementRole(context.Background(), user, "f1"); got != tc.want {
+				t.Errorf("role = %q, want %q", got, tc.want)
+			}
+			if got := len(fake.Matching("SELECT is_system")); got != tc.queries {
+				t.Errorf("is_system lookups = %d, want %d", got, tc.queries)
+			}
+		})
 	}
 }

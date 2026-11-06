@@ -11,7 +11,7 @@ Every fractal gets a default ingest token when it is created. To create more, se
 
 ## Create an API key for a fractal or prism
 
-Tenant admins only.
+Fractal or prism admins on their own scope, and tenant admins.
 
 1. Open the fractal or prism, click **Fractal settings** (or **Prism settings**) in the sidebar, then the **Access** tab.
 2. Under **API keys**, click **Create API key**.
@@ -21,7 +21,7 @@ Tenant admins only.
 
 ![Create API key dialog](../images/administration/create-api-key.png)
 
-In the key list, **Deactivate** turns a key off without deleting it (**Activate** turns it back on) and **Delete** revokes it permanently.
+In the key list, **Deactivate** turns a key off without deleting it (**Activate** turns it back on) and **Delete** revokes it permanently. Fractal and prism admins can deactivate or delete any key on their scope, but only its creator or a tenant admin can activate it, or change its role or expiry.
 
 ## Roles
 
@@ -31,7 +31,7 @@ A key holds one role on the fractal or prism it was issued for, authorized exact
 |------|--------|
 | `viewer` | Read logs, comments, alerts, notebooks and dashboards |
 | `analyst` | Viewer, plus create and edit them |
-| `admin` | Analyst, plus alert policies and change review, and [export logs](exporting-logs.md) |
+| `admin` | Analyst, plus alert policies and change review, [export logs](exporting-logs.md), and manage the scope's settings, grants, keys and tokens |
 
 ## Tenant admin keys
 

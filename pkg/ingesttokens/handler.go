@@ -27,21 +27,7 @@ func (h *Handler) SetRBAC(resolver *rbac.Resolver) {
 
 // resolveFractalRole resolves the calling user's role on a specific fractal.
 func (h *Handler) resolveFractalRole(r *http.Request, fractalID string) rbac.Role {
-	user := h.getCurrentUser(r)
-	if user == nil {
-		return rbac.RoleNone
-	}
-	if user.IsAdmin {
-		return rbac.RoleAdmin
-	}
-	if h.rbacResolver == nil || fractalID == "" {
-		return rbac.RoleNone
-	}
-	role, err := h.rbacResolver.ResolveFractalRole(r.Context(), user.Username, fractalID)
-	if err != nil {
-		return rbac.RoleNone
-	}
-	return role
+	return h.rbacResolver.ManagementRole(r.Context(), h.getCurrentUser(r), fractalID)
 }
 
 func NewHandler(s *Storage, fractalManager *fractals.Manager, cache *TokenCache) *Handler {
@@ -158,7 +144,7 @@ func (h *Handler) HandleGetToken(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.storage.GetToken(r.Context(), tokenID, fractalID)
 	if err != nil {
-		h.sendError(w, http.StatusNotFound, fmt.Sprintf("Ingest token not found: %v", err))
+		h.sendError(w, http.StatusNotFound, "Ingest token not found")
 		return
 	}
 

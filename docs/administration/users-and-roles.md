@@ -1,6 +1,6 @@
 # Users & Roles
 
-Tenant admins add users, decide who is a tenant admin, and grant per-fractal roles directly or through groups. Everything here lives under **Settings** in the sidebar's **Admin** section.
+Tenant admins add users and decide who is a tenant admin. Tenant admins, and fractal or prism admins on their own scope, grant roles directly or through groups. Everything here lives under **Settings** in the sidebar's **Admin** section.
 
 ![Users list](../images/administration/users-list.png)
 
@@ -19,9 +19,9 @@ A `user` also needs a role on each fractal or prism they should see:
 |--------------|--------|
 | `viewer` | Search logs and read comments, notebooks, dashboards and alerts |
 | `analyst` | Viewer, plus create and edit comments, notebooks, dashboards and alerts |
-| `admin` | Analyst, plus alert policies and change review, deleting others' comments, and [exports](exporting-logs.md) |
+| `admin` | Analyst, plus alert policies and change review, deleting others' comments, [exports](exporting-logs.md), and the fractal's settings |
 
-Tenant admins have full access to every fractal regardless of grants. Fractal settings (access, API keys, ingest tokens, retention, quotas, clearing logs) are tenant admin only. A user's effective role is the strongest one granted directly or through any group.
+Tenant admins have full access to every fractal regardless of grants. A fractal admin manages that fractal: access, API keys, ingest tokens, retention, quotas and clearing logs. System fractals such as `audit` are managed by tenant admins only. Creating or deleting a fractal or prism, and tenant settings such as users, groups, the archive and endpoint analytics, stay with tenant admins. A user's effective role is the strongest one granted directly or through any group.
 
 ## Add a user
 
@@ -62,7 +62,7 @@ OIDC users have no password and no invite; see [OIDC / SSO](oidc-sso.md).
 
 ![Grant access dialog](../images/administration/grant-access.png)
 
-Tenant admins only. Use **Revoke** on a row to remove a grant.
+Tenant admins, and fractal or prism admins on their own scope. Only a tenant admin can grant the `admin` role, or change or revoke a grant that holds it. Use **Revoke** on a row to remove a grant.
 
 ## Groups
 

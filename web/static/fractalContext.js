@@ -282,8 +282,8 @@ const FractalContext = {
     },
 
     // Select on the server and return { role, record }, or null on failure. The
-    // record comes from /select because it needs only viewer access; the
-    // read-one endpoints are tenant-admin only.
+    // record comes from /select because the read-one routes judge the selected
+    // scope, which has not moved yet.
     async _select(id, type) {
         const url = `/api/v1/${type === 'prism' ? 'prisms' : 'fractals'}/${id}/select`;
         try {
