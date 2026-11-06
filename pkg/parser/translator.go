@@ -151,6 +151,26 @@ func (o QueryOptions) EffectiveTableName() string {
 	return "logs"
 }
 
+// readsDistributed reports whether logs are read through a Distributed table, which
+// storage.Topology.Table names with this suffix.
+func (o QueryOptions) readsDistributed() bool {
+	return strings.HasSuffix(o.TableName, "_distributed")
+}
+
+// subqueryIn is the IN operator for a subquery over the logs. A Distributed table
+// refuses a plain one (code 288), and on a local table GLOBAL keeps the test out of
+// PREWHERE, reading every column of every row the other filters leave.
+func (o QueryOptions) subqueryIn(negate bool) string {
+	op := "IN"
+	if negate {
+		op = "NOT IN"
+	}
+	if o.readsDistributed() {
+		op = "GLOBAL " + op
+	}
+	return op
+}
+
 type TranslationResult struct {
 	SQL          string
 	FieldOrder   []string

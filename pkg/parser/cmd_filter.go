@@ -50,12 +50,8 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			}
 			return fmt.Errorf("in(): %w", err)
 		}
-		op := "IN"
-		if cmd.Negate {
-			op = "NOT IN"
-		}
 		ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
-			fmt.Sprintf("%s %s (%s)", fieldRef, op, sub))
+			fmt.Sprintf("%s %s (%s)", fieldRef, ctx.Opts.subqueryIn(cmd.Negate), sub))
 		return nil
 	}
 
