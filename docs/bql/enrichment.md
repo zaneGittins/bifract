@@ -53,13 +53,13 @@ Adds the baseline an analytics [model](../features/models.md) has learned to eac
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `model` | Yes | Name of a model in this fractal |
-| `key` | Yes | Log fields matched against the model's key, in order |
+| `key` | Yes | Log fields matched against the model's key, in order. The count must match the model |
 | `require` | No | Default `true`: only rows the model scored. `false` keeps the rest with empty enrichment. |
 
 | Model type | `key=` | Columns added |
 |------------|--------|---------------|
-| `rarity` | `[partition, value]` ([scoring](../features/models.md#how-rarity-is-scored)) | `percent`, `coverage`, `model_count`, `model_total` |
-| `first_seen` | `[entity]` ([what is_new means](../features/models.md#what-new-means-for-first-last-seen)) | `first_seen`, `last_seen`, `event_count`, `is_new` |
+| `rarity` | `[group, value]`, or `[value]` with no group ([scoring](../features/models.md#how-rarity-is-scored)) | `percent`, `coverage`, `model_count`, `model_total` |
+| `first_seen` | `[groups..., value]`, or `[value]` with no group ([what is_new means](../features/models.md#what-new-means-for-first-last-seen)) | `first_seen`, `last_seen`, `event_count`, `is_new` |
 | `volume_baseline` | `[entity]` ([scoring](../features/models.md#how-volume-is-scored)) | `z_score`, `baseline_median`, `latest_count`, `mad`, `n_buckets`, `latest_bucket` |
 | `beacon` | `[src_ip, dst_ip, dst_port]` | `beacon_score`, `conn_count`, `prevalence` and per-signal scores |
 | `long_connection` | `[src_ip, dst_ip, dst_port]` | `longconn_score`, `total_duration`, `conn_count`, `prevalence` and per-signal scores |

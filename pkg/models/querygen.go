@@ -14,12 +14,12 @@ func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
 	// fire on rows outside the model's source.
 	lines := sourceLines(def)
 
-	// modelLookup
+	if keys := def.LookupKeys(mt); keys != nil {
+		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s])", escapeBQLString(name), strings.Join(keys, ", ")))
+	}
+
 	switch mt {
 	case ModelTypeRarity:
-		keyParts := []string{def.PartitionKey, def.ValueKey}
-		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s])",
-			escapeBQLString(name), strings.Join(keyParts, ", ")))
 		if def.Alert != nil {
 			if def.Alert.CoverageThreshold > 0 {
 				lines = append(lines, fmt.Sprintf("| coverage > %.2f", def.Alert.CoverageThreshold))
@@ -29,30 +29,19 @@ func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
 			}
 		}
 	case ModelTypeFirstSeen:
-		keyParts := def.KeyFields
-		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s])",
-			escapeBQLString(name), strings.Join(keyParts, ", ")))
 		if def.Alert != nil && def.Alert.AlertOnNew {
 			lines = append(lines, `| is_new = "1"`)
 		}
 	case ModelTypeVolumeBaseline:
-		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s])",
-			escapeBQLString(name), strings.Join(def.KeyFields, ", ")))
 		z := 3.5
 		if def.Alert != nil && def.Alert.ZThreshold > 0 {
 			z = def.Alert.ZThreshold
 		}
 		lines = append(lines, fmt.Sprintf("| z_score > %.2f", z))
 	case ModelTypeBeacon:
-		nf := def.Network.WithDefaults()
-		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s, %s, %s])",
-			escapeBQLString(name), nf.SrcField, nf.DstField, nf.PortField))
 		thr := def.Beacon.WithDefaults(int64(def.WindowDays()) * 86400).ScoreThreshold
 		lines = append(lines, fmt.Sprintf("| beacon_score > %.2f", thr))
 	case ModelTypeLongConnection:
-		nf := def.Network.WithDefaults()
-		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s, %s, %s])",
-			escapeBQLString(name), nf.SrcField, nf.DstField, nf.PortField))
 		thr := def.LongConn.WithDefaults().ScoreThreshold
 		lines = append(lines, fmt.Sprintf("| longconn_score > %.2f", thr))
 	}

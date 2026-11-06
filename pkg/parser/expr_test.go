@@ -445,7 +445,7 @@ func modelOpts() QueryOptions {
 	o := exprOpts()
 	o.FractalID = "f1"
 	o.Models = map[string]AnalyticsModelInfo{
-		"beacons": {ID: "m1", TableName: "model_beacons", ModelType: "beacon", MinSample: 5, FractalID: "f1"},
+		"beacons": {ID: "m1", TableName: "model_beacons", ModelType: "beacon", MinSample: 5, FractalID: "f1", Keys: []string{"src_ip", "dst_ip", "dst_port"}},
 	}
 	return o
 }

@@ -38211,7 +38211,6 @@
         "required": [
           "filter",
           "extractions",
-          "partition_key",
           "value_key",
           "min_sample",
           "key_fields",

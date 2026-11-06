@@ -108,7 +108,7 @@ func TestVolumeScoredSQL_Options(t *testing.T) {
 // latest_bucket so an alert can tell which bucket its z_score describes.
 func TestModelLookup_VolumeUsesSharedScoring(t *testing.T) {
 	opts := mlookupOpts()
-	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 5, TimeBucket: "hour", FractalID: "f1"}
+	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 5, TimeBucket: "hour", FractalID: "f1", Keys: []string{"user"}}
 	pipeline, err := ParseQuery(`* | model_lookup(model="vol", key=[user]) | z_score > 3.5`)
 	if err != nil {
 		t.Fatalf("parse error: %v", err)

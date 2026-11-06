@@ -39,12 +39,15 @@ type findingsRule struct {
 	Where string
 	Order string
 	Text  string
+	// Tiebreak follows a picked sort so pages never overlap: rows that tie have no
+	// stable order, and every row of a rarity model with no group ties on coverage.
+	Tiebreak string
 }
 
 func findingsRuleFor(mt ModelType, def ModelDefinition) findingsRule {
 	switch mt {
 	case ModelTypeRarity:
-		r := findingsRule{Order: "percent ASC, coverage DESC, partition_val, value_val"}
+		r := findingsRule{Order: "percent ASC, coverage DESC, partition_val, value_val", Tiebreak: "percent ASC, partition_val, value_val"}
 		if f := rarityFlagPredicates(def); f.Thresholded {
 			r.Where, r.Text = f.SQL(), f.Text()
 		}
@@ -52,23 +55,28 @@ func findingsRuleFor(mt ModelType, def ModelDefinition) findingsRule {
 	case ModelTypeVolumeBaseline:
 		z := volumeZThreshold(def)
 		return findingsRule{
-			Where: fmt.Sprintf("z_score > %g", z),
-			Order: "z_score DESC, entity_val",
-			Text:  fmt.Sprintf("z-score > %g", z),
+			Where:    fmt.Sprintf("z_score > %g", z),
+			Order:    "z_score DESC, entity_val",
+			Text:     fmt.Sprintf("z-score > %g", z),
+			Tiebreak: "entity_val",
 		}
 	case ModelTypeFirstSeen:
 		return findingsRule{
-			Where: fmt.Sprintf("recorded_at >= now() - INTERVAL %d DAY", findingsNewDays),
-			Order: "recorded_at DESC, first_seen DESC, entity_key",
-			Text:  fmt.Sprintf("first recorded by the model in the last %d days", findingsNewDays),
+			Where:    fmt.Sprintf("recorded_at >= now() - INTERVAL %d DAY", findingsNewDays),
+			Order:    "recorded_at DESC, first_seen DESC, entity_key",
+			Text:     fmt.Sprintf("first recorded by the model in the last %d days", findingsNewDays),
+			Tiebreak: "entity_key",
 		}
 	case ModelTypeBeacon, ModelTypeLongConnection:
 		t := networkScoreThreshold(def, mt)
 		return findingsRule{
-			Where: fmt.Sprintf("final_score > %g", t),
-			Order: "final_score DESC, src_ip, dst_ip, dst_port",
-			Text:  fmt.Sprintf("score > %g", t),
+			Where:    fmt.Sprintf("final_score > %g", t),
+			Order:    "final_score DESC, src_ip, dst_ip, dst_port",
+			Text:     fmt.Sprintf("score > %g", t),
+			Tiebreak: "src_ip, dst_ip, dst_port",
 		}
+	case ModelTypeTLSH:
+		return findingsRule{Tiebreak: "digest"}
 	}
 	return findingsRule{}
 }
@@ -95,7 +103,7 @@ func dataPlan(q DataQuery, allowed map[string]bool, defaultSort string, rule fin
 			return "", "", true
 		}
 		if allowed[q.Sort] {
-			return rule.Where, sortExpr(q.Sort) + " " + dir, false
+			return rule.Where, rule.withTiebreak(sortExpr(q.Sort) + " " + dir), false
 		}
 		return rule.Where, rule.Order, false
 	}
@@ -103,7 +111,14 @@ func dataPlan(q DataQuery, allowed map[string]bool, defaultSort string, rule fin
 	if !allowed[col] {
 		col = defaultSort
 	}
-	return "", sortExpr(col) + " " + dir, false
+	return "", rule.withTiebreak(sortExpr(col) + " " + dir), false
+}
+
+func (r findingsRule) withTiebreak(order string) string {
+	if r.Tiebreak == "" {
+		return order
+	}
+	return order + ", " + r.Tiebreak
 }
 
 func plainSort(col string) string { return col }

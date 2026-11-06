@@ -126,7 +126,7 @@ func TestPreviewValidation(t *testing.T) {
 		{`{"model_type":"first_seen","definition":{"key_fields":["u"]},"window":"2d"}`, "invalid preview window"},
 		{`{"model_type":"first_seen","definition":{"key_fields":["u"]},"start":"2026-01-01T00:00:00Z"}`, "needs both a start and an end"},
 		{`{"model_type":"first_seen","definition":{"key_fields":["u"]},"start":"2026-01-02T00:00:00Z","end":"2026-01-01T00:00:00Z"}`, "must start before it ends"},
-		{`{"model_type":"rarity","definition":{},"window":"1d"}`, "Preview failed: partition_key is required"},
+		{`{"model_type":"rarity","definition":{},"window":"1d"}`, "Preview failed: value_key is required"},
 	}
 	for _, c := range cases {
 		code, resp := call(t, h.HandlePreview, c.body, analystInFractal)
@@ -178,7 +178,10 @@ func TestImportValidation(t *testing.T) {
 	}{
 		{"name: [unclosed", http.StatusBadRequest, "Invalid YAML"},
 		{"model_type: rarity\n", http.StatusBadRequest, "Model name is required"},
-		{"name: n\nmodel_type: rarity\ndefinition:\n  value_key: v\n", http.StatusInternalServerError, "partition_key is required"},
+		{"name: n\nmodel_type: rarity\ndefinition:\n  partition_key: p\n", http.StatusInternalServerError, "value_key is required"},
+		// A misspelled group would otherwise build an ungrouped model without a word.
+		{"name: n\nmodel_type: rarity\ndefinition:\n  partition_keys: p\n  value_key: v\n", http.StatusBadRequest, "partition_keys"},
+		{"", http.StatusBadRequest, "Model name is required"},
 	}
 	for _, c := range cases {
 		code, resp := call(t, h.HandleImport, c.body, analystInFractal)

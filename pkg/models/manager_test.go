@@ -101,7 +101,7 @@ func TestValidateDefinitionShape(t *testing.T) {
 		want string // "" = valid
 	}{
 		{"rarity ok", ModelTypeRarity, ModelDefinition{PartitionKey: "a", ValueKey: "b"}, ""},
-		{"rarity no partition", ModelTypeRarity, ModelDefinition{ValueKey: "b"}, "partition_key is required"},
+		{"rarity without a group", ModelTypeRarity, ModelDefinition{ValueKey: "b"}, ""},
 		{"rarity no value", ModelTypeRarity, ModelDefinition{PartitionKey: "a"}, "value_key is required"},
 		{"first_seen no keys", ModelTypeFirstSeen, ModelDefinition{}, "key_fields is required for first_seen"},
 		{"volume no keys", ModelTypeVolumeBaseline, ModelDefinition{}, "key_fields is required for volume_baseline"},

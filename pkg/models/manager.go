@@ -164,17 +164,7 @@ func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[str
 		if distributed {
 			tableName = chModelDistName(id)
 		}
-
-		result[name] = ModelInfo{
-			ID:          id,
-			TableName:   tableName,
-			ModelType:   ModelType(modelType),
-			MinSample:   def.MinSample,
-			TimeBucket:  def.TimeBucket,
-			HistoryDays: def.HistoryDaysFor(ModelType(modelType)),
-			FractalID:   fractalID,
-			Distributed: distributed,
-		}
+		result[name] = newModelInfo(id, ModelType(modelType), def, fractalID, tableName, distributed)
 	}
 	return result, rows.Err()
 }
@@ -220,17 +210,7 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 		if distributed {
 			tableName = chModelDistName(id)
 		}
-
-		result[name] = ModelInfo{
-			ID:          id,
-			TableName:   tableName,
-			ModelType:   ModelType(modelType),
-			MinSample:   def.MinSample,
-			TimeBucket:  def.TimeBucket,
-			HistoryDays: def.HistoryDaysFor(ModelType(modelType)),
-			FractalID:   ownerFractalID,
-			Distributed: distributed,
-		}
+		result[name] = newModelInfo(id, ModelType(modelType), def, ownerFractalID, tableName, distributed)
 	}
 	return result, rows.Err()
 }
@@ -1457,7 +1437,11 @@ func rarityFlagPredicates(def ModelDefinition) rarityFlags {
 	}
 	f := rarityFlags{sql: []string{fmt.Sprintf("model_total >= %d", minSample)}}
 	if minSample > 1 {
-		f.words = append(f.words, fmt.Sprintf("group seen on %d+ day%s", minSample, plural(minSample)))
+		word := "group seen on %d+ day%s"
+		if def.PartitionKey == "" {
+			word = "%d+ day%s of history"
+		}
+		f.words = append(f.words, fmt.Sprintf(word, minSample, plural(minSample)))
 	}
 	if def.Alert != nil {
 		if t := def.Alert.CoverageThreshold; t > 0 {
@@ -1677,9 +1661,6 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 	}
 	switch mt {
 	case ModelTypeRarity:
-		if def.PartitionKey == "" {
-			return fmt.Errorf("partition_key is required for rarity models")
-		}
 		if def.ValueKey == "" {
 			return fmt.Errorf("value_key is required for rarity models")
 		}
@@ -1766,7 +1747,7 @@ func validateHistoryDays(mt ModelType, def ModelDefinition) error {
 	}
 	if mt == ModelTypeRarity {
 		if need := rarityAlertHistory(def); d < need {
-			return fmt.Errorf("a %d-day history window is shorter than the %d days a group needs before its values can alert (min history, or more than 100 / share threshold days); use at least %d",
+			return fmt.Errorf("a %d-day history window is shorter than the %d days of data needed before values can alert (min history, or more than 100 / share threshold days); use at least %d",
 				d, need, need)
 		}
 	}

@@ -76,7 +76,7 @@ func TestGetDataFirstSeen(t *testing.T) {
 	if d, ok := rows[0]["days"].([]string); !ok || len(d) != 1 || d[0] != "2026-10-03" {
 		t.Errorf("days: %#v", rows[0]["days"])
 	}
-	if q := env.ch.QueriedMatching(" ORDER BY "); len(q) != 1 || !strings.Contains(q[0], "ORDER BY event_count ASC LIMIT 50 OFFSET 0") ||
+	if q := env.ch.QueriedMatching(" ORDER BY "); len(q) != 1 || !strings.Contains(q[0], "ORDER BY event_count ASC, entity_key LIMIT 50 OFFSET 0") ||
 		!strings.Contains(q[0], "min(first_recorded) AS recorded_at") {
 		t.Errorf("page: %v", q)
 	}

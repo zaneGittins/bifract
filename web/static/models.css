@@ -1134,6 +1134,21 @@
     line-height: 1.5;
 }
 
+.me-shape-summary {
+    color: var(--text-secondary);
+}
+
+.mv-shape-summary {
+    margin-top: 10px;
+}
+
+.me-shape-summary code,
+.mv-shape-summary code {
+    font-family: var(--font-mono);
+    font-size: 0.95em;
+    color: var(--text-primary);
+}
+
 .key-field-row {
     display: flex;
     align-items: center;
