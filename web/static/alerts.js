@@ -2557,7 +2557,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                 return;
             }
 
-            await this._consumeAlertStream(res, resultsDiv, countDiv, execTimeEl, alertExportWrap, controller);
+            await this._consumeAlertStream(res, resultsDiv, countDiv, execTimeEl, alertExportWrap);
 
         } catch (error) {
             if (error.name === 'AbortError') return;
@@ -2572,102 +2572,78 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         }
     },
 
-    async _consumeAlertStream(res, resultsDiv, countDiv, execTimeEl, exportBtn, controller) {
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
+    async _consumeAlertStream(res, resultsDiv, countDiv, execTimeEl, exportBtn) {
         let rows = [];
         let fieldOrder = null;
         let isAggregated = false;
         let firstRows = true;
-        let histogram = null;
         let histTimeRange = null;
         let histFrames = 0;
 
-        try {
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buf += decoder.decode(value, { stream: true });
-
-                const lines = buf.split('\n');
-                buf = lines.pop();
-
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (!trimmed) continue;
-                    let frame;
-                    try { frame = JSON.parse(trimmed); } catch { continue; }
-
-                    switch (frame.type) {
-                        case 'meta':
-                            fieldOrder = frame.field_order || null;
-                            isAggregated = frame.is_aggregated || false;
-                            this.fieldOrder = fieldOrder;
-                            this.isAggregated = isAggregated;
-                            histTimeRange = {
-                                start: frame.time_start || this.getTimeRange().start,
-                                end: frame.time_end || this.getTimeRange().end,
-                            };
-                            break;
-                        case 'histogram':
-                            // The server scans the histogram newest-first and keeps
-                            // sending frames after 'done'. Painting only at 'done' left
-                            // the timeline showing whichever chunks happened to arrive
-                            // first, permanently partial on a wide range.
-                            histogram = frame.buckets || null;
-                            histFrames++;
-                            this._paintAlertHistogram(frame, histTimeRange);
-                            break;
-                        case 'histogram_end':
-                            // The scan stopped without covering the range. Keep what was
-                            // counted rather than implying more is coming.
-                            if (histFrames === 0) {
-                                const emptySection = document.getElementById('alertTimelineSection');
-                                if (emptySection) emptySection.style.display = 'none';
-                            }
-                            break;
-                        case 'rows': {
-                            const incoming = frame.data || [];
-                            if (!incoming.length) break;
-                            rows = rows.concat(incoming);
-                            this._queryChrome().markRows();
-                            if (firstRows) {
-                                firstRows = false;
-                                resultsDiv.innerHTML = '';
-                            }
-                            this.currentResults = rows;
-                            if (countDiv) countDiv.textContent = `${rows.length} result${rows.length === 1 ? '' : 's'}`;
-                            if (window.QueryExecutor) {
-                                QueryExecutor.renderResultsToElement(rows, resultsDiv, fieldOrder, {
-                                    allResults: rows, isAggregated, detailHost: 'alert',
-                                    gutter: isAggregated ? null : (window.AlertTests && AlertTests.gutter), comments: false,
-                                });
-                            }
-                            break;
-                        }
-                        case 'error':
-                            throw new Error(frame.error || 'Query error');
-                        case 'done':
-                            // The stream stays open past this to drain histogram
-                            // chunks, so the deferred indicator has to be stood down
-                            // here rather than in the finally.
-                            this._queryChrome().settle();
-                            this._applyAlertQueryResult(
-                                { results: rows, fieldOrder, isAggregated, sql: frame.sql, executionMs: frame.execution_ms,
-                                  histogram, histTimeRange },
-                                resultsDiv, countDiv, execTimeEl, exportBtn
-                            );
-                            break;
+        await QueryStream.read(res, (frame) => {
+            switch (frame.type) {
+                case 'meta':
+                    fieldOrder = frame.field_order || null;
+                    isAggregated = frame.is_aggregated || false;
+                    this.fieldOrder = fieldOrder;
+                    this.isAggregated = isAggregated;
+                    histTimeRange = {
+                        start: frame.time_start || this.getTimeRange().start,
+                        end: frame.time_end || this.getTimeRange().end,
+                    };
+                    break;
+                case 'histogram':
+                    // The server scans the histogram newest-first and keeps
+                    // sending frames after 'done'. Painting only at 'done' left
+                    // the timeline showing whichever chunks happened to arrive
+                    // first, permanently partial on a wide range.
+                    histFrames++;
+                    this._paintAlertHistogram(frame, histTimeRange);
+                    break;
+                case 'histogram_end':
+                    // The scan stopped without covering the range. Keep what was
+                    // counted rather than implying more is coming.
+                    if (histFrames === 0) {
+                        const emptySection = document.getElementById('alertTimelineSection');
+                        if (emptySection) emptySection.style.display = 'none';
                     }
+                    break;
+                case 'rows': {
+                    const incoming = frame.data || [];
+                    if (!incoming.length) break;
+                    rows = rows.concat(incoming);
+                    this._queryChrome().markRows();
+                    if (firstRows) {
+                        firstRows = false;
+                        resultsDiv.innerHTML = '';
+                    }
+                    this.currentResults = rows;
+                    if (countDiv) countDiv.textContent = `${rows.length} result${rows.length === 1 ? '' : 's'}`;
+                    if (window.QueryExecutor) {
+                        QueryExecutor.renderResultsToElement(rows, resultsDiv, fieldOrder, {
+                            allResults: rows, isAggregated, detailHost: 'alert',
+                            gutter: isAggregated ? null : (window.AlertTests && AlertTests.gutter), comments: false,
+                        });
+                    }
+                    break;
                 }
+                case 'error':
+                    throw new Error(frame.error || 'Query error');
+                case 'done':
+                    // The stream stays open past this to drain histogram
+                    // chunks, so the deferred indicator has to be stood down
+                    // here rather than in the finally.
+                    this._queryChrome().settle();
+                    this._applyAlertQueryResult(
+                        { results: rows, fieldOrder, isAggregated, sql: frame.sql, executionMs: frame.execution_ms },
+                        resultsDiv, countDiv, execTimeEl, exportBtn
+                    );
+                    break;
             }
-        } finally {
-            reader.releaseLock();
-        }
+        });
     },
 
-    _applyAlertQueryResult({ results, fieldOrder, isAggregated, sql, executionMs, histogram, histTimeRange }, resultsDiv, countDiv, execTimeEl, exportBtn) {
+    _applyAlertQueryResult({ results, fieldOrder, isAggregated, sql, executionMs }, resultsDiv, countDiv, execTimeEl, exportBtn) {
         this.currentResults = results;
         this.fieldOrder = fieldOrder;
         this.isAggregated = isAggregated;

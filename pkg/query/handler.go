@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -1967,7 +1968,6 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	enc := json.NewEncoder(w)
 	// writeFrame encodes one NDJSON frame and flushes it. Returns false when the
 	// connection is gone so callers can stop early. The clickhouse-go progress
 	// callback fires from the driver's background read goroutine, concurrently
@@ -1977,11 +1977,9 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	writeFrame := func(frame map[string]interface{}) bool {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		if err := enc.Encode(frame); err != nil {
-			return false
-		}
+		ok := writeNDJSONFrame(w, frame)
 		flusher.Flush()
-		return true
+		return ok
 	}
 
 	startWall := time.Now()
@@ -2210,7 +2208,9 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 		// request is over: the client left, or the scan failed and said so.
 		streamRows := func(queryID, sql string) bool {
 			streamErr := h.db.StreamQuery(queryCtx, queryID, sql, onRow, onProgress)
-			flushBatch()
+			if !flushBatch() {
+				clientGone = true
+			}
 			if clientGone || r.Context().Err() != nil {
 				return false
 			}
@@ -2553,6 +2553,20 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	}
 
 	h.auditSearch(r, prep.req.Query, prep.selectedIndex, executionMs, count)
+}
+
+// writeNDJSONFrame writes one frame, reporting whether it went out. A frame that
+// can't be encoded is replaced by an error frame, so the client learns the run failed
+// rather than seeing the stream stop.
+func writeNDJSONFrame(w io.Writer, frame map[string]interface{}) bool {
+	data, err := json.Marshal(frame)
+	if err != nil {
+		log.Printf("[QueryHandler] Stream frame not encodable: %v", err)
+		fmt.Fprintln(w, `{"type":"error","error":"Query results could not be encoded","error_type":"execution"}`)
+		return false
+	}
+	_, err = w.Write(append(data, '\n'))
+	return err == nil
 }
 
 func (h *QueryHandler) parseTimeRange(start, end string) (time.Time, time.Time, error) {
@@ -3385,43 +3399,61 @@ func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 
 // sanitizeFloats replaces NaN and Inf float values with null-safe alternatives
 // so that json.Encode does not fail (Go's encoding/json cannot marshal NaN/Inf).
-func sanitizeFloats(v interface{}) {
+func sanitizeFloats(v interface{}) { sanitizedValue(v) }
+
+// sanitizedValue returns v with non-finite floats as nil, and whether that changed
+// it. Maps and untyped slices are edited in place, and only where a value changes,
+// since a clean shared map must stay safe to read concurrently. A typed float slice
+// can't hold nil, so one that needs it is copied.
+func sanitizedValue(v interface{}) (interface{}, bool) {
 	switch val := v.(type) {
+	case float64:
+		if !isFinite(val) {
+			return nil, true
+		}
+	case float32:
+		if !isFinite(val) {
+			return nil, true
+		}
+	case []float64:
+		return sanitizedFloatSlice(val)
+	case []float32:
+		return sanitizedFloatSlice(val)
 	case map[string]interface{}:
 		for k, elem := range val {
-			switch f := elem.(type) {
-			case float64:
-				if math.IsNaN(f) || math.IsInf(f, 0) {
-					val[k] = nil
-				}
-			case float32:
-				if math.IsNaN(float64(f)) || math.IsInf(float64(f), 0) {
-					val[k] = nil
-				}
-			case map[string]interface{}, []interface{}, []map[string]interface{}:
-				sanitizeFloats(elem)
+			if clean, changed := sanitizedValue(elem); changed {
+				val[k] = clean
 			}
 		}
 	case []map[string]interface{}:
 		for _, item := range val {
-			sanitizeFloats(item)
+			sanitizedValue(item)
 		}
 	case []interface{}:
 		for i, elem := range val {
-			switch f := elem.(type) {
-			case float64:
-				if math.IsNaN(f) || math.IsInf(f, 0) {
-					val[i] = nil
-				}
-			case float32:
-				if math.IsNaN(float64(f)) || math.IsInf(float64(f), 0) {
-					val[i] = nil
-				}
-			case map[string]interface{}, []interface{}, []map[string]interface{}:
-				sanitizeFloats(elem)
+			if clean, changed := sanitizedValue(elem); changed {
+				val[i] = clean
 			}
 		}
 	}
+	return v, false
+}
+
+func isFinite[F float32 | float64](f F) bool {
+	return !math.IsNaN(float64(f)) && !math.IsInf(float64(f), 0)
+}
+
+func sanitizedFloatSlice[F float32 | float64](s []F) (interface{}, bool) {
+	if !slices.ContainsFunc(s, func(f F) bool { return !isFinite(f) }) {
+		return s, false
+	}
+	out := make([]interface{}, len(s))
+	for i, f := range s {
+		if isFinite(f) {
+			out[i] = f
+		}
+	}
+	return out, true
 }
 
 // getAuditFractalID lazily resolves and caches the audit fractal ID.
