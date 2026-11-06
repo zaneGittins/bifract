@@ -1,6 +1,11 @@
 package storage
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"bifract/pkg/parser"
+)
 
 // TestDeriveTopologyMatchesLegacyIsCluster is the behaviour-preservation proof
 // for the topology refactor. Before the refactor a single string field drove
@@ -134,6 +139,28 @@ func TestTopologySQLFragments(t *testing.T) {
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// The translator recognises a Distributed read by name, so the name Table builds is a
+// contract: drifting from it brings back ClickHouse's refusal of a plain IN subquery.
+func TestDistributedReadTableSelectsGlobalIn(t *testing.T) {
+	query := `let &a := user_type="admin" | groupby(user); * | in(user, &a)`
+	for _, distributed := range []bool{false, true} {
+		for _, base := range []string{"logs", "logs_hot"} {
+			pipeline, err := parser.ParseQuery(query)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			table := Topology{DistributedTables: distributed}.Table(base)
+			result, err := parser.TranslateToSQLWithOrder(pipeline, parser.QueryOptions{FractalID: "f1", TableName: table})
+			if err != nil {
+				t.Fatalf("translate: %v", err)
+			}
+			if got := strings.Contains(result.SQL, "GLOBAL IN"); got != distributed {
+				t.Errorf("%s: GLOBAL IN = %v, want %v:\n%s", table, got, distributed, result.SQL)
+			}
 		}
 	}
 }

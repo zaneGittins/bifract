@@ -652,10 +652,8 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 			if source.Layer.LimitBy != "" {
 				limit = source.Layer.LimitBy + " " + limit
 			}
-			// GLOBAL whatever the topology, as pgr's re-read does: on a cluster the
-			// subquery reads logs_distributed, and on one node it costs nothing.
-			picked := fmt.Sprintf("(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM %s%s ORDER BY %s %s)",
-				rowSource, whereClause(pending), order, limit)
+			picked := fmt.Sprintf("(timestamp, log_id) %s (SELECT timestamp, log_id FROM %s%s ORDER BY %s %s)",
+				opts.subqueryIn(false), rowSource, whereClause(pending), order, limit)
 			// The joined read keeps the filters: log_id is not unique, so a row sharing
 			// a picked (timestamp, log_id) may fail them. The strict prefilter is left
 			// to the INNER JOIN, which applies exactly the same key set.
@@ -988,8 +986,7 @@ func (p *QueryPlan) innerJoinWrap() bool {
 }
 
 // joinPrefilter is the scan predicate that keeps only rows whose join key the
-// subquery returns, or "" when the key has no scan-level expression. GLOBAL so a
-// cluster scan of logs_distributed reads the subquery once rather than per shard.
+// subquery returns, or "" when the key has no scan-level expression.
 func (p *QueryPlan) joinPrefilter(source *QueryStage, opts QueryOptions) string {
 	if !p.innerJoinWrap() || len(p.Stages) != 1 || opts.SourceSubquery != "" || p.IsChain {
 		return ""
@@ -1002,7 +999,7 @@ func (p *QueryPlan) joinPrefilter(source *QueryStage, opts QueryOptions) string 
 	if keyExpr == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s GLOBAL IN (SELECT %s FROM (%s))", keyExpr, p.JoinKey, p.JoinSubSQL)
+	return fmt.Sprintf("%s %s (SELECT %s FROM (%s))", keyExpr, opts.subqueryIn(false), p.JoinKey, p.JoinSubSQL)
 }
 
 // outerKeyScanExpr returns the per-row expression the outer SELECT names the join
