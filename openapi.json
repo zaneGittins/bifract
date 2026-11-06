@@ -14457,6 +14457,87 @@
         "x-bifract-access": "tenant_admin"
       }
     },
+    "/api/v1/exchange/datasets/imports/{importId}/start": {
+      "post": {
+        "operationId": "post_api_v1_exchange_datasets_imports_byImportId_start",
+        "summary": "Run a held dataset import.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "exchange"
+        ],
+        "parameters": [
+          {
+            "name": "importId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/datasets.Import"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
     "/api/v1/exchange/datasets/{id}/import": {
       "post": {
         "operationId": "post_api_v1_exchange_datasets_byId_import",
@@ -14483,6 +14564,16 @@
             "session": []
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/datasets.AddRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -35524,6 +35615,14 @@
           }
         }
       },
+      "datasets.AddRequest": {
+        "type": "object",
+        "properties": {
+          "hold": {
+            "type": "boolean"
+          }
+        }
+      },
       "datasets.Import": {
         "type": "object",
         "properties": {
@@ -35580,6 +35679,9 @@
             "format": "date-time"
           },
           "url": {
+            "type": "string"
+          },
+          "warning": {
             "type": "string"
           }
         },

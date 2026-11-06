@@ -231,6 +231,11 @@ func (c *ClickHouseClient) ClearAllLogData(ctx context.Context, modelIDs []strin
 	return c.truncateOnEveryShard(ctx, tables, "clear log data")
 }
 
+// ClearModelData empties one analytics model's data tables on every node.
+func (c *ClickHouseClient) ClearModelData(ctx context.Context, modelID string) error {
+	return c.truncateOnEveryShard(ctx, ModelCHDataTables(modelID), "clear model data")
+}
+
 // truncateOnEveryShard empties tables on every node. TRUNCATE removes whole parts
 // without rewriting data or running a mutation, so it is instant at any size. The
 // provenance summary goes last, after a fill in progress is told every fractal was

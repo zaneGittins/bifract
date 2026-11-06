@@ -1,6 +1,7 @@
 package dictionaries
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"bifract/internal/fakedb"
 	"bifract/pkg/settings"
+	"bifract/pkg/storage/storagetest"
 )
 
 // feed serves a source file the test can change between refreshes.
@@ -456,5 +459,34 @@ func TestRefreshDueSources(t *testing.T) {
 	}
 	if got := keysOf(w.liveRows(due.ID), "host"); !slices.Equal(got, []string{"a", "c"}) {
 		t.Errorf("due list rows %v", got)
+	}
+}
+
+// What an import waits on: a list counts as loaded once it has had rows, even if
+// a later refresh failed, and only this fractal's sourced lists are read.
+func TestFractalSourceLoads(t *testing.T) {
+	pgc, pg := storagetest.Postgres()
+	now := time.Now()
+	status := func(st SourceStatus) []byte {
+		raw, _ := json.Marshal(st)
+		return raw
+	}
+	pg.On("FROM dictionaries WHERE fractal_id = $1 AND source IS NOT NULL", fakedb.RowsOf(
+		[]driver.Value{"broken", status(SourceStatus{CheckedAt: &now, Error: "status 404"})},
+		[]driver.Value{"loaded", status(SourceStatus{CheckedAt: &now, ChangedAt: &now})},
+		[]driver.Value{"refresh-failed", status(SourceStatus{ChangedAt: &now, Error: "status 500"})},
+		[]driver.Value{"running", status(SourceStatus{CheckedAt: &now})},
+		[]driver.Value{"unstarted", nil},
+	))
+	m := NewManager(pgc, nil)
+	loading, failed, err := m.FractalSourceLoads(ctx, fractalA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(loading, []string{"running", "unstarted"}) || !slices.Equal(failed, []string{"broken: status 404"}) {
+		t.Errorf("loading %v failed %v", loading, failed)
+	}
+	if args := pg.Matching("source IS NOT NULL")[0].Args; args[0] != fractalA {
+		t.Errorf("args %v", args)
 	}
 }

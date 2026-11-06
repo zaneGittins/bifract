@@ -113,6 +113,8 @@ The range is scored as the editor's preview scores it and the scores are kept, d
 
 API: `POST /models/{id}/score-range` with `from` and `to` (RFC 3339).
 
+A [bundle with a dataset](../exchange/using.md#bundles-with-a-dataset) does this for you once its logs are stored.
+
 ## View results
 
 Click a model name to open it.
@@ -182,7 +184,7 @@ Learning period: a group, or the model if it has no group, must reach **Min hist
 
 ### How volume is scored
 
-Volume Baseline scores the latest **complete** bucket (`latest_bucket`, yesterday for a daily model) against the entity's own history. History runs from the entity's first bucket in the window (90 days daily, 30 days hourly) up to the scored bucket. Empty buckets count as zero.
+Volume Baseline scores the latest **complete** bucket (`latest_bucket`, yesterday for a daily model) against the entity's own history. In a dataset's fractal, the model view scores the bucket holding the dataset's last log instead, whole or not. History runs from the entity's first bucket in the window (90 days daily, 30 days hourly) up to the scored bucket. Empty buckets count as zero.
 
 Hourly models compare an hour only with the same hour on the same kind of day (UTC): weekday 3am against past weekday 3am hours, Saturday 2pm against past weekend 2pm hours. A weekday hour has about 21 samples in the window and a weekend hour 8, so hourly min history is at most 8. Daily models do not separate weekdays from weekends.
 

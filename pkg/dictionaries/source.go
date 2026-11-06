@@ -809,6 +809,39 @@ func coolingDown(dict *Dictionary, now time.Time) bool {
 	return st != nil && st.CheckedAt != nil && now.Sub(*st.CheckedAt) < manualRefreshCooldown
 }
 
+// FractalSourceLoads reports a fractal's lists that have not had rows from their
+// source yet: those still on their first load, and, as "name: reason", those
+// whose first load failed. A failed list keeps retrying on its own schedule.
+func (m *Manager) FractalSourceLoads(ctx context.Context, fractalID string) (loading, failed []string, err error) {
+	rows, err := m.pg.Query(ctx,
+		`SELECT name, source_status FROM dictionaries WHERE fractal_id = $1 AND source IS NOT NULL ORDER BY name`, fractalID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list sourced lookups: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var raw []byte
+		if err := rows.Scan(&name, &raw); err != nil {
+			return nil, nil, fmt.Errorf("scan sourced lookup: %w", err)
+		}
+		var st SourceStatus
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &st); err != nil {
+				return nil, nil, fmt.Errorf("read status of lookup %s: %w", name, err)
+			}
+		}
+		switch {
+		case st.ChangedAt != nil:
+		case st.Error != "":
+			failed = append(failed, name+": "+st.Error)
+		default:
+			loading = append(loading, name)
+		}
+	}
+	return loading, failed, rows.Err()
+}
+
 // StartSourceRefresh refreshes every list with a source on its interval until
 // ctx ends. Every replica runs it; the per-list lock lets one load each list.
 func (m *Manager) StartSourceRefresh(ctx context.Context) {

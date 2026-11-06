@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,6 +46,11 @@ var (
 	// settleTimeout how long that count may stand still before the import fails.
 	settlePoll    = 2 * time.Second
 	settleTimeout = 5 * time.Minute
+	// contentPoll is how often an import checks on what it waits for in its
+	// fractal, and contentTimeout how long that may take: just past the longest a
+	// model's first build or a lookup's first load runs before giving up.
+	contentPoll    = 2 * time.Second
+	contentTimeout = 11 * time.Minute
 )
 
 // Queue accepts logs for insert, refusing them under backpressure.
@@ -60,6 +66,37 @@ type LogStore interface {
 	CountFractalLogs(ctx context.Context, fractalID string) (uint64, error)
 }
 
+// Content is what lives in a dataset's fractal beside its logs, and follows them.
+type Content struct {
+	Models  ModelStore
+	Alerts  AlertStore
+	Lookups LookupStore
+}
+
+// ModelStore holds a fractal's analytics models.
+type ModelStore interface {
+	// BuildingModels names the models not yet able to record.
+	BuildingModels(ctx context.Context, fractalID string) ([]string, error)
+	// ResetFractal empties every model, whose state is derived from dropped logs.
+	ResetFractal(ctx context.Context, fractalID string) error
+	// ScoreFractal scores the models that cannot read a past range from their
+	// rolling state, returning lines to show about what it could not do.
+	ScoreFractal(ctx context.Context, fractalID string, start, end time.Time) []string
+}
+
+// AlertStore holds a fractal's alerts.
+type AlertStore interface {
+	// ClearFractalHistory forgets what the alerts fired on and their throttles.
+	ClearFractalHistory(ctx context.Context, fractalID string) error
+}
+
+// LookupStore holds a fractal's lookups.
+type LookupStore interface {
+	// FractalSourceLoads lists lookups without rows yet: those loading, and those
+	// whose load failed, each with its reason.
+	FractalSourceLoads(ctx context.Context, fractalID string) (loading, failed []string, err error)
+}
+
 // Broadcaster sends an event to an SSE room.
 type Broadcaster interface {
 	Broadcast(room string, event sse.Event, excludeClientID string)
@@ -67,11 +104,12 @@ type Broadcaster interface {
 
 // Worker runs dataset imports, one at a time per server.
 type Worker struct {
-	store  *Store
-	client *http.Client
-	queue  Queue
-	logs   LogStore
-	hub    Broadcaster
+	store   *Store
+	client  *http.Client
+	queue   Queue
+	logs    LogStore
+	content Content
+	hub     Broadcaster
 	// maxDepth is the queue depth an import waits below, leaving the rest of the
 	// queue to live ingest.
 	maxDepth int
@@ -79,8 +117,8 @@ type Worker struct {
 	dir string
 }
 
-func NewWorker(store *Store, client *http.Client, queue Queue, logs LogStore, hub Broadcaster, maxDepth int, dir string) *Worker {
-	return &Worker{store: store, client: client, queue: queue, logs: logs, hub: hub, maxDepth: max(maxDepth, 1), dir: dir}
+func NewWorker(store *Store, client *http.Client, queue Queue, logs LogStore, content Content, hub Broadcaster, maxDepth int, dir string) *Worker {
+	return &Worker{store: store, client: client, queue: queue, logs: logs, content: content, hub: hub, maxDepth: max(maxDepth, 1), dir: dir}
 }
 
 // Start polls for imports until the returned stop is called. Stopping leaves a
@@ -128,7 +166,7 @@ func (w *Worker) RunOnce(ctx context.Context) bool {
 // run imports one claimed dataset from the start: the fractal is emptied first,
 // since a claim may be a retry or a takeover of an import that got part way.
 // A failure empties it again, so a failed import leaves no partial dataset to
-// search.
+// search or score.
 func (w *Worker) run(parent context.Context, imp *Import) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -173,14 +211,14 @@ func (w *Worker) run(parent context.Context, imp *Import) {
 		}
 	}()
 
-	err := w.load(ctx, imp, &status, &bytesDone, &logsDone)
+	warning, err := w.load(ctx, imp, &status, &bytesDone, &logsDone)
 	if err != nil && ctx.Err() == nil {
 		log.Printf("[Datasets] Import of %s failed: %v", imp.DatasetID, err)
 		// Let queued batches land first, or they would arrive after the drop.
 		if logsDone.Load() > 0 {
 			w.settle(ctx, imp.FractalID, logsDone.Load())
 		}
-		if derr := w.logs.DeleteLogsByFractalID(ctx, imp.FractalID, false); derr != nil {
+		if derr := w.empty(ctx, imp.FractalID); derr != nil {
 			log.Printf("[Datasets] Emptying fractal %s after a failed import: %v", imp.FractalName, derr)
 		}
 	}
@@ -195,6 +233,7 @@ func (w *Worker) run(parent context.Context, imp *Import) {
 		return
 	}
 	final := snapshot()
+	final.Warning = warning
 	if ferr := w.store.Finish(context.Background(), final, publicError(err)); ferr != nil {
 		log.Printf("[Datasets] Recording the end of import %d: %v", imp.ID, ferr)
 		return
@@ -205,14 +244,33 @@ func (w *Worker) run(parent context.Context, imp *Import) {
 	w.broadcast(final)
 }
 
-func (w *Worker) load(ctx context.Context, imp *Import, status *atomic.Value, bytesDone, logsDone *atomic.Int64) error {
-	if err := w.logs.DeleteLogsByFractalID(ctx, imp.FractalID, false); err != nil {
-		return fmt.Errorf("empty the fractal before importing: %w", err)
+// empty drops a fractal's logs and what was derived from them. Logs go first, so
+// nothing reading them can put the rest back.
+func (w *Worker) empty(ctx context.Context, fractalID string) error {
+	if err := w.logs.DeleteLogsByFractalID(ctx, fractalID, false); err != nil {
+		return err
+	}
+	if err := w.content.Models.ResetFractal(ctx, fractalID); err != nil {
+		return err
+	}
+	return w.content.Alerts.ClearFractalHistory(ctx, fractalID)
+}
+
+// load runs an import to its end, returning anything to warn of on success.
+func (w *Worker) load(ctx context.Context, imp *Import, status *atomic.Value, bytesDone, logsDone *atomic.Int64) (string, error) {
+	// A model records only logs stamped after it is built, so none go in before that.
+	if err := w.await(ctx, "models still building", func() ([]string, error) {
+		return w.content.Models.BuildingModels(ctx, imp.FractalID)
+	}); err != nil {
+		return "", err
+	}
+	if err := w.empty(ctx, imp.FractalID); err != nil {
+		return "", fmt.Errorf("empty the fractal before importing: %w", err)
 	}
 	d := &exchange.Dataset{URL: imp.URL, SHA256: imp.SHA256, Bytes: imp.BytesTotal, Logs: imp.LogsTotal}
 	path, err := datasetfile.DownloadFile(ctx, w.client, d, w.dir, bytesDone.Store)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer os.Remove(path)
 
@@ -220,10 +278,20 @@ func (w *Worker) load(ctx context.Context, imp *Import, status *atomic.Value, by
 	// fails before any of it is ingested.
 	n, err := w.read(ctx, path, datasetfile.CountLogs)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if n != imp.LogsTotal {
-		return failf("the file holds %d logs, but the Exchange lists %d", n, imp.LogsTotal)
+		return "", failf("the file holds %d logs, but the Exchange lists %d", n, imp.LogsTotal)
+	}
+	// A model reads each log once, so one arriving before its lookup is never matched.
+	if err := w.await(ctx, "lookups still loading", func() ([]string, error) {
+		loading, failed, err := w.content.Lookups.FractalSourceLoads(ctx, imp.FractalID)
+		if err == nil && len(failed) > 0 {
+			err = failf("a lookup did not load, %s", strings.Join(failed, "; "))
+		}
+		return loading, err
+	}); err != nil {
+		return "", err
 	}
 
 	status.Store(StatusImporting)
@@ -257,15 +325,42 @@ func (w *Worker) load(ctx context.Context, imp *Import, status *atomic.Value, by
 		err = flush()
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	if stored, ok := w.settle(ctx, imp.FractalID, imp.LogsTotal); !ok {
 		if err := ctx.Err(); err != nil {
-			return err
+			return "", err
 		}
-		return failf("only %d of %d logs were stored", stored, imp.LogsTotal)
+		return "", failf("only %d of %d logs were stored", stored, imp.LogsTotal)
 	}
-	return nil
+	if imp.RangeStart == nil || imp.RangeEnd == nil {
+		return "", nil
+	}
+	status.Store(StatusScoring)
+	warnings := w.content.Models.ScoreFractal(ctx, imp.FractalID, *imp.RangeStart, *imp.RangeEnd)
+	return strings.Join(warnings, " "), ctx.Err()
+}
+
+// await polls until check names nothing left to wait for, failing as what if it
+// still does at contentTimeout.
+func (w *Worker) await(ctx context.Context, what string, check func() ([]string, error)) error {
+	deadline := time.Now().Add(contentTimeout)
+	for {
+		waiting, err := check()
+		switch {
+		case err != nil:
+			return err
+		case len(waiting) == 0:
+			return nil
+		case time.Now().After(deadline):
+			return failf("%s after %s: %s", what, contentTimeout, strings.Join(waiting, ", "))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(contentPoll):
+		}
+	}
 }
 
 // settle waits until the fractal stores at least want logs. It gives up once the

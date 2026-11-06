@@ -290,7 +290,7 @@ func TestCHNetHealthSummary(t *testing.T) {
 	d.netState(ModelDefinition{}, 1)
 	d.exec(BuildNetResultsTableDDL("r"))
 	for _, mt := range []ModelType{ModelTypeBeacon, ModelTypeLongConnection} {
-		rows := d.rows(healthSummarySQL(mt, ModelDefinition{}, "r", "s", "f1", time.Now()))
+		rows := d.rows(healthSummarySQL(mt, ModelDefinition{}, "r", "s", "f1", "", time.Now()))
 		if len(rows) != 1 {
 			t.Fatalf("%s: %v", mt, rows)
 		}

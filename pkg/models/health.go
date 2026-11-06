@@ -77,8 +77,9 @@ type stateSummary struct {
 // healthSummarySQL returns the single query that summarizes a model's state for
 // the listing, anchored at today (a UTC date). table is the model's read table
 // and stateTable a network model's rolling-state read table. Every column is
-// computed from the model's own aggregate tables, never from raw logs.
-func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, fractalID string, today time.Time) string {
+// computed from the model's own aggregate tables, never from raw logs. volumeAsOf
+// is what a volume model scores as of (see volumeAsOf).
+func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, fractalID, volumeAsOf string, today time.Time) string {
 	fidEsc := storage.EscCHStr(fractalID)
 	fid := fidScope(fidEsc)
 	qt := "`" + table + "`"
@@ -125,7 +126,7 @@ FROM (
 	case ModelTypeVolumeBaseline:
 		// A finding is an entity whose latest complete bucket scores above the
 		// alert's z threshold right now; there is no per-day history of scores.
-		scored := parser.VolumeScoredSQL(qt, fid, def.TimeBucket, def.MinSample, "", false)
+		scored := parser.VolumeScoredSQLAt(qt, fid, def.TimeBucket, def.MinSample, "", volumeAsOf, false)
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest%s
 FROM %s WHERE %s`, epoch("toDateTime(min(bucket), 'UTC')"), epoch("toDateTime(max(bucket), 'UTC')"),
 			flagged(scored), qt, fid)
@@ -273,6 +274,11 @@ func deriveHealth(m *Model, sum *stateSummary, sumErr error, now time.Time) *Mod
 
 	limit := staleAfter(m.ModelType, m.Definition)
 	if sum.newest.IsZero() {
+		// A dataset older than a network model's window leaves it only its scores.
+		if m.DatasetEnd != nil && h.ScoredThrough != nil {
+			h.State, h.Detail = HealthScored, scoredThroughText(*h.ScoredThrough)
+			return h
+		}
 		// Nothing recorded: a young model is waiting for data, an old one is not
 		// matching any logs.
 		if now.Sub(m.CreatedAt) > limit {
@@ -299,7 +305,8 @@ func deriveHealth(m *Model, sum *stateSummary, sumErr error, now time.Time) *Mod
 		h.State, h.Detail = HealthHealthy, "Waiting for the first matching events."
 		return h
 	}
-	if age := now.Sub(sum.newest); age > limit {
+	// A dataset's source ended when it was recorded, and sparse events may end sooner.
+	if age := now.Sub(sum.newest); age > limit && m.DatasetEnd == nil {
 		h.State = HealthStale
 		h.Detail = fmt.Sprintf("Newest recorded event is %s old (limit %s). The source may have stopped sending.",
 			humanDuration(age), humanDuration(limit))
@@ -314,6 +321,9 @@ func deriveHealth(m *Model, sum *stateSummary, sumErr error, now time.Time) *Mod
 		return h
 	}
 	h.State, h.Detail = HealthHealthy, "Recording and scoring normally."
+	if m.DatasetEnd != nil {
+		h.Detail = "Holds what it read from the imported dataset."
+	}
 	return h
 }
 
@@ -522,7 +532,7 @@ func (m *Manager) readStateSummary(ctx context.Context, mo *Model, now time.Time
 	if mo.ModelType.IsScheduled() {
 		stateTable = m.networkStateReadTable(mo.ID)
 	}
-	q := healthSummarySQL(mo.ModelType, mo.Definition, m.readTableName(mo), stateTable, mo.FractalID, now)
+	q := healthSummarySQL(mo.ModelType, mo.Definition, m.readTableName(mo), stateTable, mo.FractalID, volumeAsOf(mo), now)
 	if q == "" {
 		return nil, fmt.Errorf("no summary for model type %s", mo.ModelType)
 	}

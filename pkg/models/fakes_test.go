@@ -67,6 +67,8 @@ type modelDB struct {
 	fail map[string]error
 	// hook, set before any goroutine starts, sees every statement first.
 	hook func(stmt string)
+	// fractalEnds are the fractals with a default range, by id.
+	fractalEnds map[string]*time.Time
 }
 
 func newModelDB(t testing.TB) *modelDB {
@@ -182,7 +184,7 @@ func (db *modelDB) columns(r *modelRow) []driver.Value {
 		r.id, r.fractalID, r.prismID, r.name, r.description, r.modelType, []byte(r.definition),
 		r.chTable, r.chMV, r.status, r.alertMode, r.linkedAlertID, r.errorMessage, r.createdBy,
 		r.createdAt, r.updatedAt, r.bfStatus, r.bfWindow, r.bfTotal, r.bfDone,
-		tval(r.bfStartedAt), tval(r.bfFrom), tval(r.bfTo), r.bfError, tval(r.watermark), enabled, last,
+		tval(r.bfStartedAt), tval(r.bfFrom), tval(r.bfTo), r.bfError, tval(r.watermark), enabled, last, tval(db.fractalEnds[r.fractalID]),
 	}
 }
 
@@ -335,6 +337,15 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 		return db.update(row(3), func(r *modelRow) {
 			r.name, r.description, r.definition, r.updatedAt = arg(0), arg(1), arg(2), now
 		}), true
+	case "UPDATE analytics_models SET backfill_status = 'none', backfill_window = '', backfill_total = 0, backfill_done = 0, backfill_started_at = NULL, backfill_from = NULL, backfill_to = NULL, backfill_error = '', updated_at = NOW() WHERE id = $1":
+		if r, ok := db.rows[arg(0)]; ok {
+			return db.update(r, func(r *modelRow) {
+				r.bfStatus, r.bfWindow, r.bfTotal, r.bfDone, r.bfError = "none", "", 0, 0, ""
+				r.bfStartedAt, r.bfFrom, r.bfTo = nil, nil, nil
+				r.updatedAt = time.Now()
+			}), true
+		}
+		return affected(0), true
 	case "UPDATE analytics_models SET status='rebuilding' WHERE id=$1":
 		return db.update(row(0), func(r *modelRow) { r.status = "rebuilding" }), true
 	case "UPDATE analytics_models SET alert_mode=$1, updated_at=NOW() WHERE id=$2":

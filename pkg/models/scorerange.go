@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+var (
+	// errScoreBusy and errScoreIngest report a pass that did not start because the
+	// raw-log slot or ingest has no room for it right now.
+	errScoreBusy   = errors.New("a backfill or range scoring is running; try again when it finishes")
+	errScoreIngest = errors.New("ingest is under pressure; try again shortly")
+	// errScoreTimeout reports a pass that ran out of time and wrote nothing.
+	errScoreTimeout = errors.New("scoring did not finish in time and wrote nothing; score a shorter range")
+)
+
 // netRawPass is what a raw-log scoring pass learned besides its pairs.
 type netRawPass struct {
 	networkSize uint64
@@ -124,10 +133,10 @@ func (m *Manager) ScoreRange(ctx context.Context, model *Model, req ScoreRangeRe
 	case m.bfSem <- struct{}{}:
 		defer func() { <-m.bfSem }()
 	default:
-		return nil, fmt.Errorf("a backfill or range scoring is running; try again when it finishes")
+		return nil, errScoreBusy
 	}
 	if m.bfHealth != nil && !m.bfHealth.Healthy() {
-		return nil, fmt.Errorf("ingest is under pressure; try again shortly")
+		return nil, errScoreIngest
 	}
 	budget := time.Duration(m.bfCfg.chunkTimeoutSec) * time.Second
 	if dl, ok := ctx.Deadline(); ok && time.Until(dl) < budget {
@@ -147,7 +156,7 @@ func (m *Manager) ScoreRange(ctx context.Context, model *Model, req ScoreRangeRe
 		return nil
 	})
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("scoring did not finish in time and wrote nothing; score a shorter range")
+		return nil, errScoreTimeout
 	}
 	if err != nil {
 		return nil, err
