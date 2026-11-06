@@ -2480,6 +2480,7 @@ CREATE INDEX IF NOT EXISTS idx_alert_change_reviews_cr ON alert_change_reviews(c
 
 -- Exchange dataset imports, one per fractal. The app claims a pending row, or one
 -- whose updated_at heartbeat has gone stale, and restarts it from the beginning.
+-- A held row waits for its fractal's content to be added.
 CREATE TABLE IF NOT EXISTS dataset_imports (
     id           BIGSERIAL PRIMARY KEY,
     dataset_id   TEXT NOT NULL,
@@ -2488,10 +2489,11 @@ CREATE TABLE IF NOT EXISTS dataset_imports (
     sha256       TEXT NOT NULL,
     bytes_total  BIGINT NOT NULL,
     logs_total   BIGINT NOT NULL,
-    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'downloading', 'importing', 'succeeded', 'failed')),
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('held', 'pending', 'downloading', 'importing', 'scoring', 'succeeded', 'failed')),
     bytes_done   BIGINT NOT NULL DEFAULT 0,
     logs_done    BIGINT NOT NULL DEFAULT 0,
     error        TEXT NOT NULL DEFAULT '',
+    warning      TEXT NOT NULL DEFAULT '',
     requested_by TEXT NOT NULL DEFAULT '',
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     started_at   TIMESTAMPTZ,
@@ -2499,4 +2501,4 @@ CREATE TABLE IF NOT EXISTS dataset_imports (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_dataset_imports_open
-    ON dataset_imports (updated_at) WHERE status IN ('pending', 'downloading', 'importing');
+    ON dataset_imports (updated_at) WHERE status IN ('pending', 'downloading', 'importing', 'scoring');

@@ -389,6 +389,8 @@ func (def ModelDefinition) WindowDays() int {
 }
 
 type Model struct {
+	// DatasetEnd is where the logs of a dataset's fractal end, nil in any other.
+	DatasetEnd    *time.Time      `json:"-"`
 	ID            string          `json:"id"`
 	FractalID     string          `json:"fractal_id"`
 	PrismID       string          `json:"prism_id"`

@@ -137,8 +137,9 @@ func TestParseIndexRejects(t *testing.T) {
 		{"dataset id is a fractal name", strings.Replace(datasetYAML(""), "id: lab-001", "id: 1lab", 1), "id"},
 		{"requires a dataset", datasetYAML("") + `
   - {id: p, kind: policy, name: P, path: p.yaml, requires: [lab-001]}`, "fractal of its own"},
-		{"dataset in a bundle", datasetYAML("") + `
-  - {id: b, kind: bundle, name: B, items: [lab-001]}`, "dataset"},
+		{"two datasets in a bundle", datasetYAML("") + `
+  - {id: lab-002, kind: dataset, name: Lab 2, dataset: {url: "https://x.example/d", sha256: ` + strings.Repeat("a", 64) + `, bytes: 1, logs: 1, start: 2026-10-27T00:00:00Z, end: 2026-10-28T00:00:00Z}}
+  - {id: b, kind: bundle, name: B, items: [lab-001, lab-002]}`, "one dataset"},
 		{"dataset requires", strings.Replace(datasetYAML(""), "name: Lab", "name: Lab\n    requires: [p]", 1) + `
   - {id: p, kind: policy, name: P, path: p.yaml}`, "requirements"},
 		{"dataset section on a policy", `items: [{id: p, kind: policy, name: P, path: p.yaml, dataset: {url: "https://x.example/d"}}]`, "dataset"},
@@ -176,6 +177,35 @@ func datasetYAML(override string) string {
 		b.WriteString("      " + fields[k] + "\n")
 	}
 	return b.String()
+}
+
+// A bundle may carry one dataset: its other members are installed into the
+// dataset's fractal before the logs arrive.
+func TestParseBundleWithDataset(t *testing.T) {
+	idx, err := ParseIndex([]byte(datasetYAML("") + `
+  - {id: p, kind: policy, name: P, path: p.yaml}
+  - {id: b, kind: bundle, name: B, items: [lab-001, p]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := idx.Find("b")
+	if b == nil || len(b.Items) != 2 {
+		t.Fatalf("bundle = %+v", b)
+	}
+}
+
+// Without its dataset, a lab's items would go into whichever fractal is open.
+func TestReadIndexDropsABundleThatLostItsDataset(t *testing.T) {
+	idx, err := ReadIndex([]byte(datasetYAML("logs: 0") + `
+  - {id: p, kind: policy, name: P, path: p.yaml}
+  - {id: b, kind: bundle, name: B, items: [lab-001, p]}
+  - {id: kept, kind: bundle, name: K, items: [gone, p]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idx.Find("b") != nil || idx.Find("kept") == nil {
+		t.Errorf("items = %+v", idx.Items)
+	}
 }
 
 func TestParseDataset(t *testing.T) {

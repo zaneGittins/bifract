@@ -73,15 +73,17 @@ func newTestHandlerIndex(t *testing.T) (*Handler, *fakeFractals, *fakedb.PG, *te
 	pg.On("INSERT INTO dataset_imports", fakedb.Row(int64(9)))
 	pg.On("WHERE i.id = $1", fakedb.Row(int64(9), "bifract-labs-001", testFractal, "bifract-labs-001",
 		"https://example.com/d.jsonl.zst", strings.Repeat("ab", 32), int64(10), int64(3), StatusPending,
-		int64(0), int64(0), "", "admin", now, nil, nil, now))
+		int64(0), int64(0), "", "", "admin", now, nil, nil, now, testStart, testEnd))
 	f := &fakeFractals{}
 	hub := &testHub{}
 	idx := &fakeIndex{idx: testIndex}
 	return NewHandler(idx, f, NewStore(pgc), hub), f, pg, hub, idx
 }
 
-func add(h *Handler, id string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(http.MethodPost, "/exchange/datasets/"+id+"/import", nil)
+func add(h *Handler, id string) *httptest.ResponseRecorder { return addBody(h, id, "") }
+
+func addBody(h *Handler, id, body string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, "/exchange/datasets/"+id+"/import", strings.NewReader(body))
 	rc := chi.NewRouteContext()
 	rc.URLParams.Add("id", id)
 	r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rc))
@@ -105,6 +107,28 @@ func TestHandleAdd(t *testing.T) {
 	}
 	if len(hub.events) != 1 {
 		t.Errorf("broadcasts = %v", hub.events)
+	}
+}
+
+// An add with no body queues the import; hold leaves it for HandleStart.
+func TestHandleAddStatus(t *testing.T) {
+	for body, want := range map[string]string{
+		"":               StatusPending,
+		"{}":             StatusPending,
+		`{"hold":false}`: StatusPending,
+		`{"hold":true}`:  StatusHeld,
+	} {
+		h, _, pg, _ := newTestHandler(t)
+		if w := addBody(h, "bifract-labs-001", body); w.Code != http.StatusOK {
+			t.Fatalf("%q: status %d: %s", body, w.Code, w.Body)
+		}
+		if got := pg.Matching("INSERT INTO dataset_imports")[0].Args[7]; got != want {
+			t.Errorf("%q: status %v, want %s", body, got, want)
+		}
+	}
+	h, f, _, _ := newTestHandler(t)
+	if w := addBody(h, "bifract-labs-001", "{"); w.Code != http.StatusBadRequest || len(f.created) != 0 {
+		t.Errorf("bad body: %d, created %v", w.Code, f.created)
 	}
 }
 
@@ -164,6 +188,32 @@ func TestHandleRetryOnlyFailed(t *testing.T) {
 	}
 	if calls := pg.Matching("SET status = 'pending'"); !strings.Contains(calls[0].Query, "status = 'failed'") {
 		t.Errorf("retry must only reset failed imports: %s", calls[0].Query)
+	}
+}
+
+func TestHandleStartOnlyHeld(t *testing.T) {
+	h, _, pg, hub := newTestHandler(t)
+	start := func() int {
+		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		rc := chi.NewRouteContext()
+		rc.URLParams.Add("importId", "9")
+		r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rc))
+		w := httptest.NewRecorder()
+		h.HandleStart(w, r)
+		return w.Code
+	}
+	if code := start(); code != http.StatusConflict {
+		t.Errorf("starting an import that is not held: %d", code)
+	}
+	pg.On("SET status = 'pending'", fakedb.Affected(1))
+	if code := start(); code != http.StatusOK {
+		t.Errorf("starting a held import: %d", code)
+	}
+	if calls := pg.Matching("SET status = 'pending'"); !strings.Contains(calls[0].Query, "status = 'held'") {
+		t.Errorf("start must only queue held imports: %s", calls[0].Query)
+	}
+	if len(hub.events) != 1 {
+		t.Errorf("broadcasts = %v", hub.events)
 	}
 }
 

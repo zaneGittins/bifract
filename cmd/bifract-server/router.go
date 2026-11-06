@@ -2585,6 +2585,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Method:   http.MethodPost,
 				Path:     "/exchange/datasets/{id}/import",
 				Access:   api.AccessTenantAdmin,
+				Request:  datasets.AddRequest{},
 				Response: api.Response[*datasets.Import]{},
 				Summary:  "Create a fractal for an Exchange dataset and import the dataset into it.",
 				Handler:  d.datasetHandler.HandleAdd,
@@ -2596,6 +2597,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Response: api.Response[*datasets.Import]{},
 				Summary:  "Run a failed dataset import again from the start.",
 				Handler:  d.datasetHandler.HandleRetry,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/exchange/datasets/imports/{importId}/start",
+				Access:   api.AccessTenantAdmin,
+				Response: api.Response[*datasets.Import]{},
+				Summary:  "Run a held dataset import.",
+				Handler:  d.datasetHandler.HandleStart,
 			})
 
 			// Dictionaries

@@ -2,7 +2,9 @@ package datasets
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -64,8 +66,24 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	api.WriteSuccess(w, imports)
 }
 
+// AddRequest is the optional body of a dataset add.
+type AddRequest struct {
+	// Hold keeps the import from running until it is started, so a bundle's other
+	// items can be added to the fractal first and see every log arrive.
+	Hold bool `json:"hold,omitempty"`
+}
+
 // HandleAdd creates a fractal named after the dataset and queues its import.
 func (h *Handler) HandleAdd(w http.ResponseWriter, r *http.Request) {
+	var req AddRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		api.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	status := StatusPending
+	if req.Hold {
+		status = StatusHeld
+	}
 	idx, err := h.index.Index(r.Context())
 	if errors.Is(err, exchange.ErrDisabled) {
 		api.WriteError(w, http.StatusNotFound, err.Error())
@@ -97,7 +115,7 @@ func (h *Handler) HandleAdd(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to create the dataset's fractal")
 		return
 	}
-	imp, err := h.store.Create(r.Context(), it.ID, f.ID, user, d.URL, d.SHA256, d.Bytes, d.Logs)
+	imp, err := h.store.Create(r.Context(), it.ID, f.ID, user, d.URL, d.SHA256, d.Bytes, d.Logs, status)
 	if err != nil {
 		log.Printf("[Datasets] %v", err)
 		if derr := h.fractals.DeleteFractal(context.Background(), f.ID); derr != nil {
@@ -131,18 +149,29 @@ func fractalDescription(it *exchange.Item) string {
 
 // HandleRetry runs a failed import again from the start.
 func (h *Handler) HandleRetry(w http.ResponseWriter, r *http.Request) {
+	h.requeue(w, r, h.store.Retry, "only a failed import can be retried")
+}
+
+// HandleStart queues a held import.
+func (h *Handler) HandleStart(w http.ResponseWriter, r *http.Request) {
+	h.requeue(w, r, h.store.Start, "only a held import can be started")
+}
+
+// requeue moves an import back to pending, answering refused when it is not in
+// the state queue takes it from.
+func (h *Handler) requeue(w http.ResponseWriter, r *http.Request, queue func(context.Context, int64) error, refused string) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "importId"), 10, 64)
 	if err != nil {
 		api.WriteError(w, http.StatusBadRequest, "invalid import id")
 		return
 	}
-	if err := h.store.Retry(r.Context(), id); err != nil {
+	if err := queue(r.Context(), id); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			api.WriteError(w, http.StatusConflict, "only a failed import can be retried")
+			api.WriteError(w, http.StatusConflict, refused)
 			return
 		}
 		log.Printf("[Datasets] %v", err)
-		api.WriteError(w, http.StatusInternalServerError, "Failed to retry the import")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to queue the import")
 		return
 	}
 	imp, err := h.store.Get(r.Context(), id)
