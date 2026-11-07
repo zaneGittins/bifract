@@ -302,12 +302,10 @@ func main() {
 		}
 	}
 
-	// Convert tables provisioned before their per-fractal partition keys, so clearing a
-	// fractal drops partitions instead of running mutations, then backfill pgr's access paths
-	// (migration 019) for rows written before them; the backfill waits for the conversion,
-	// whose copied rows bypass the summary views. One replica does both under an advisory
-	// lock. Every replica retries until they report done, so a rolling deploy or a lost lock
-	// hands the work to whichever replica is left; each step resumes where it stopped.
+	// Convert tables provisioned on an earlier layout, then backfill pgr's access paths and,
+	// while Collect baselines is on, lineage from logs. The backfills wait for the conversion,
+	// whose copied rows bypass the views. One replica does this under an advisory lock, and
+	// every replica retries until it is done; each step resumes where it stopped.
 	go func() {
 		const firstRetry, maxRetry = time.Minute, 6 * time.Hour
 		for wait := firstRetry; !convertAndBackfill(db, pg); wait = min(2*wait, maxRetry) {
@@ -636,6 +634,13 @@ func main() {
 	stateMaintainer.SetIngestWatermark(ingestWatermark)
 	stateMaintainer.Start(models.StateMaintInterval())
 	defer stateMaintainer.Stop()
+
+	// Ancestry is built in the background from lineage up to the ingest watermark. Readers fall
+	// back to lineage for whatever it has not reached, so its lag never changes a result.
+	ancestryBuilder := storage.NewProcAncestryBuilder(pg, db, ingestWatermark)
+	ancestryBuilder.SetIngestPressureFunc(backlogged)
+	ancestryBuilder.Start(time.Duration(max(1, getEnvInt("BIFRACT_PROC_ANCESTRY_INTERVAL", 10))) * time.Second)
+	defer ancestryBuilder.Stop()
 
 	// Distribution queue monitor (cluster mode only) — polls system.distribution_queue
 	// every 60s and writes ch.distribution.* events to the system fractal on health changes.
@@ -1346,11 +1351,11 @@ func (a *APIKeyValidatorAdapter) UpdateLastUsed(ctx context.Context, keyID strin
 	return a.storage.UpdateLastUsed(ctx, keyID)
 }
 
-// convertAndBackfill runs the partition conversion and the pgr access-path backfill if this
-// replica wins the lock, and reports whether both are done. Losing the lock's connection
+// convertAndBackfill runs the layout conversion and the provenance backfills if this replica
+// wins the lock, and reports whether they are done. Losing the lock's connection
 // cancels the work, since another replica may then take it.
 func convertAndBackfill(db *storage.ClickHouseClient, pg *storage.PostgresClient) bool {
-	// Both steps compare tables against the migrated schema.
+	// Every step compares tables against the migrated schema.
 	db.WaitForSchemaReady(context.Background())
 	ctx, unlock, ok := pg.HoldAdvisoryLock(context.Background(), storage.LockRepartition)
 	if !ok {
@@ -1359,14 +1364,14 @@ func convertAndBackfill(db *storage.ClickHouseClient, pg *storage.PostgresClient
 	defer unlock()
 	keep, err := pg.FractalIDSet(ctx)
 	if err != nil {
-		log.Printf("Warning: partition conversion: list fractals: %v", err)
+		log.Printf("Warning: layout conversion: list fractals: %v", err)
 		return false
 	}
 	// Rows under an empty fractal_id belong to the default fractal.
 	keep[""] = true
 	converted := true
-	if err := db.ConvertPartitioning(ctx, keep); err != nil {
-		log.Printf("Warning: partition conversion incomplete, will resume: %v", err)
+	if err := db.ConvertLayouts(ctx, keep); err != nil {
+		log.Printf("Warning: layout conversion incomplete, will resume: %v", err)
 		converted = false
 	}
 	// Rows a conversion still has to copy would bypass the summary views; a conversion that
@@ -1377,6 +1382,13 @@ func convertAndBackfill(db *storage.ClickHouseClient, pg *storage.PostgresClient
 	if err := db.BackfillProvenancePaths(ctx, pg); err != nil {
 		log.Printf("Warning: pgr access-path backfill incomplete, will resume: %v", err)
 		return false
+	}
+	// Lineage reaches back to process creations logged before Collect baselines was on.
+	if v, _ := pg.GetSetting(ctx, storage.AdvancedEndpointAnalysisSetting); v == "true" {
+		if err := db.BackfillLineage(ctx, pg); err != nil {
+			log.Printf("Warning: lineage backfill incomplete, will resume: %v", err)
+			return false
+		}
 	}
 	return converted
 }

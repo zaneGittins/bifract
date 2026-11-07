@@ -167,8 +167,8 @@ func TestMarkProvenanceFillClear(t *testing.T) {
 	}
 	_, f = newFakeClient()
 	f.OnArg("FROM system.tables", provenanceFillCleared, fakedb.CHResult{
-		Cols: []fakedb.Col{{Column: "partition_key", Type: "String"}, {Column: "engine_full", Type: "String"}},
-		Rows: [][]any{{"", "MergeTree ORDER BY fractal_id"}},
+		Cols: []fakedb.Col{{Column: "partition_key", Type: "String"}, {Column: "sorting_key", Type: "String"}, {Column: "engine_full", Type: "String"}},
+		Rows: [][]any{{"", "", "MergeTree ORDER BY fractal_id"}},
 	})
 	if err := markProvenanceFillClear(context.Background(), f, []string{"a", ""}); err != nil {
 		t.Fatal(err)

@@ -123,6 +123,12 @@ func TestPgrFilters(t *testing.T) {
 		{`pgrHasAncestor("notepad.exe")`, []string{"cmd2"}},
 		{`NOT pgrHasAncestor("winword.exe")`, []string{"bcast", "bcast-net", "cgnat", "cgnat-net", "cmd2", "lan", "lan-net", "mc", "mc-net", "no-guid", "note", "old-file", "v6", "v6-net", "v6ll", "v6ll-net", "word", "zero", "zero-net"}},
 		{`tag=word OR pgrHasAncestor("notepad.exe")`, []string{"cmd2", "word"}},
+		{`pgrHasDescendant("rundll32.exe")`, []string{"cmd", "ps", "word"}},
+		{`pgrHasDescendant("rundll32.exe", depth=1)`, []string{"ps"}},
+		{`pgrHasDescendant("powershell.exe", depth=2)`, []string{"cmd", "word"}},
+		{`pgrHasDescendant("cmd.exe")`, []string{"note", "word"}},
+		{`pgrHasDescendant(/rundll/) | pgrHasAncestor("winword.exe")`, []string{"cmd", "ps"}},
+		{`NOT pgrHasDescendant("rundll32.exe")`, []string{"bcast", "bcast-net", "cgnat", "cgnat-net", "cmd2", "lan", "lan-net", "mc", "mc-net", "no-guid", "note", "old-file", "rdll", "rdll-file", "rdll-net", "v6", "v6-net", "v6ll", "v6ll-net", "zero", "zero-net"}},
 	}
 	for _, tc := range cases {
 		if got := tags(tc.query); !slices.Equal(got, tc.want) {

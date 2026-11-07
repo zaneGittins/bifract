@@ -182,6 +182,9 @@ func (h *QueryHandler) logsQueryOptions() parser.QueryOptions {
 		ProcLineageTable:       h.procLineageTableName(),
 		ProcFreqTable:          h.procFreqTableName(),
 		ProcEdgesTable:         h.procEdgesTableName(),
+		ProcAncestryTable:      h.readTable("proc_ancestry"),
+		ProcAncestryMarkTable:  h.readTable("proc_ancestry_watermark"),
+		ProvenanceMarksTable:   h.readTable("provenance_marks"),
 		ProvenanceSummaryTable: h.provenanceSummaryTableName(),
 		IncludeShardNum:        h.db != nil && h.db.Topology().DistributedTables,
 		IncludeIngestTime:      true,
@@ -206,6 +209,14 @@ func (h *QueryHandler) dictDatabase() string {
 		return ""
 	}
 	return h.db.LogsDatabase()
+}
+
+// readTable returns a local table's read table: its Distributed twin in cluster mode.
+func (h *QueryHandler) readTable(local string) string {
+	if h.db != nil {
+		return h.db.Topology().Table(local)
+	}
+	return local
 }
 
 // procLineageTableName returns the process-lineage read table for ptg() traversal,

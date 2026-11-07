@@ -1095,6 +1095,20 @@ var bqlFunctionDocs = []FunctionDoc{
 		},
 	},
 	{
+		Name:        "pgrHasDescendant",
+		Category:    "Traversal",
+		Description: "Row filter: keeps logs whose process started a process with a matching image, directly or through its descendants, down to depth= levels, whenever they ran. The reverse of pgrHasAncestor, with the same values (bare name, full path or /regex/, case-insensitive), placement rules and limits. Works on any event carrying process_guid. Needs Collect baselines on.",
+		Syntax:      `| pgrHasDescendant("name.exe" | "C:\\dir\\name.exe" | /regex/, depth=N)`,
+		Parameters: []Param{
+			{Name: "value", Type: "string", Required: true, Description: "File name, full path or /regex/ for the descendant image"},
+			{Name: "depth", Type: "number", Required: false, Description: "Levels to look down (default: 5, max: 8)"},
+		},
+		Examples: []string{
+			`bifract_category=network_connect image=~winword | pgrHasDescendant("powershell.exe")`,
+			`bifract_category=process_creation image=~svchost | NOT pgrHasDescendant("whoami.exe")`,
+		},
+	},
+	{
 		Name:        "pgrHasNetwork",
 		Category:    "Traversal",
 		Description: "Row filter: keeps logs whose process_guid made a matching network connection, whenever it happened. The value matches the stored destination: a public IP as is, internal IPv4 as its /24 (10.1.2.0/24), internal IPv6 as the word internal. A /regex/ matches the same text; no argument means any connection. external=true leaves out internal ranges, 0.0.0.0/8, CGNAT, multicast, reserved and broadcast addresses, and for IPv6 anything outside global unicast. Costs 5 of a query's 40 lookups; otherwise same limits as pgrHasAncestor().",
@@ -1107,6 +1121,21 @@ var bqlFunctionDocs = []FunctionDoc{
 			`bifract_category=file_write | pgrHasNetwork()`,
 			`bifract_category=process_creation image=~notepad | pgrHasNetwork(external=true)`,
 			`bifract_category=process_creation | pgrHasNetwork("203.0.113.7")`,
+		},
+	},
+	{
+		Name:        "pgrContext",
+		Category:    "Enrichment",
+		Description: "Adds the process-creation facts of each row's process as pgr_* columns, looked up by process_guid whenever the process started: pgr_commandline, pgr_user, pgr_image, pgr_parent_image, pgr_parent_guid, pgr_parent_commandline, pgr_hash, pgr_original_file_name, pgr_start_time (text). With no arguments it adds them all; name only the ones needed, since command lines are costly to read. The columns filter, group and sort like any field. A row whose process has no creation event reads '' in every column (require=true drops it instead). Needs Collect baselines on. After an aggregation, process_guid must be a group column. Not combinable with modelLookup() or join(); not in archive search, models or rule tests.",
+		Syntax:      `| pgrContext(commandline, user, ..., require=false)`,
+		Parameters: []Param{
+			{Name: "columns", Type: "array", Required: false, Description: "Any of commandline, user, image, parent_image, parent_guid, parent_commandline, hash, original_file_name, start_time (default: all)"},
+			{Name: "require", Type: "boolean", Required: false, Description: "true keeps only rows whose process has a creation event (default: false)"},
+		},
+		Examples: []string{
+			`bifract_category=network_connect | pgrContext(commandline, user) | table(timestamp, dst_ip, pgr_commandline, pgr_user)`,
+			`bifract_category=dns_query | pgrContext(commandline) | pgr_commandline=~"-enc"`,
+			`bifract_category=file_write | pgrContext(original_file_name) | groupby(pgr_original_file_name)`,
 		},
 	},
 	{

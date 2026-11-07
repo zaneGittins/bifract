@@ -1432,6 +1432,8 @@ const (
 	LockFieldPathReconcile int64 = 0x6269667261637407
 	// LockEndpointAnalysis serializes endpoint-analysis toggles across replicas.
 	LockEndpointAnalysis int64 = 0x6269667261637408
+	// LockProcAncestry lets one replica at a time build proc_ancestry.
+	LockProcAncestry int64 = 0x6269667261637409
 )
 
 // WithAdvisoryLock runs fn holding lockID, first waiting for any other holder.

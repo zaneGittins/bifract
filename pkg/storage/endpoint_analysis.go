@@ -32,6 +32,7 @@ var endpointAnalysisMVNames = []string{
 	"proc_freq_rthread_mv",
 	"proc_freq_pacc_mv",
 	"process_edges_mv",
+	"process_edges_p2p_mv",
 }
 
 // endpointMVInList renders endpointAnalysisMVNames as a SQL IN-list literal, so the
@@ -178,6 +179,38 @@ func reconcileEndpointMVsOnConn(ctx context.Context, conn driver.Conn, enabled b
 		if execErr != nil && !endpointToggleAlreadyApplied(execErr) {
 			return fmt.Errorf("%s: %w", stmt, execErr)
 		}
+		if name == p2pEdgesView {
+			// Injection edges come from logs while their view is off, and from the rollup once it
+			// is back on; the mark is moved after the view, so nothing falls between the two.
+			at := p2pMarkNow
+			if !enabled {
+				at = p2pMarkNever
+			}
+			if err := setP2PMark(ctx, conn, at); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// p2pEdgesView rolls injection and handle-access edges into process_edges (see migration 025).
+const p2pEdgesView = "process_edges_p2p_mv"
+
+// The marks a toggle sets: an hour ahead, so a log stamped by a server clock running fast is
+// still read from logs, or never, while the view is off.
+const (
+	p2pMarkNow   = "now64(3) + INTERVAL 1 HOUR"
+	p2pMarkNever = "toDateTime64('2200-01-01 00:00:00', 3, 'UTC')"
+)
+
+// setP2PMark records on conn's node when pgr starts reading injection edges from the rollup. Each
+// write follows the node's last one, so the latest write is the one readers see.
+func setP2PMark(ctx context.Context, conn driver.Conn, at string) error {
+	err := conn.Exec(ctx, "INSERT INTO "+provenanceMarksTable+" (name, at, set_at) SELECT 'p2p_edges', "+at+", greatest(now64(3), "+
+		"(SELECT max(set_at) FROM "+provenanceMarksTable+" WHERE name = 'p2p_edges') + toIntervalMillisecond(1))")
+	if err != nil {
+		return fmt.Errorf("move injection edge mark: %w", err)
 	}
 	return nil
 }
@@ -212,12 +245,19 @@ func loadEndpointMVSet(ctx context.Context, conn driver.Conn, query string) (map
 
 // endpointAnalysisTables hold the baselines the endpoint-analysis MVs accumulate, and the
 // summary derived from them.
-var endpointAnalysisTables = []string{"proc_lineage", "proc_freq", "process_edges", provenanceSummaryTable}
+var endpointAnalysisTables = []string{"proc_lineage", "proc_freq", "process_edges", procAncestryTable, procAncestryWatermarkTable, provenanceSummaryTable}
 
 // ClearEndpointAnalysisBaselines empties the baseline tables on every node. The MVs
 // stay attached, so the baselines rebuild from the next insert.
 func (c *ClickHouseClient) ClearEndpointAnalysisBaselines(ctx context.Context) error {
-	return c.truncateOnEveryShard(ctx, withConversionTables(endpointAnalysisTables), "clear endpoint baselines")
+	if err := c.truncateOnEveryShard(ctx, withConversionTables(endpointAnalysisTables), "clear endpoint baselines"); err != nil {
+		return err
+	}
+	// Injection edges rolled up before the clear are gone, so logs serve them again. A mark
+	// already further ahead, as while the view is off, stays.
+	return c.onEveryShard(ctx, "move injection edge mark", func(conn driver.Conn) error {
+		return setP2PMark(ctx, conn, "greatest("+p2pMarkNow+", (SELECT argMax(at, set_at) FROM "+provenanceMarksTable+" WHERE name = 'p2p_edges'))")
+	})
 }
 
 // ClearAllLogData empties every log table and everything derived from it on every node,
@@ -269,7 +309,7 @@ func (c *ClickHouseClient) truncateOnEveryShard(ctx context.Context, tables []st
 }
 
 // withConversionTables adds the copy-holding working tables of any table mid-conversion
-// (see ConvertPartitioning), so a clear cannot have earlier rows copied back afterwards.
+// (see ConvertLayouts), so a clear cannot have earlier rows copied back afterwards.
 // TRUNCATE ... IF EXISTS makes them free when no conversion is running.
 func withConversionTables(tables []string) []string {
 	out := append([]string{}, tables...)

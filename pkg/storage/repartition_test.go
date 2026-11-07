@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// The converter compares system.tables.partition_key against these keys, and new installs
+// The converter compares system.tables' partition and sorting keys against these, and new installs
 // take theirs from init-clickhouse.sql. If the two disagree, every start would re-convert.
 func TestRepartitionTargetsMatchInitSQL(t *testing.T) {
 	for _, target := range repartitionTargets {
@@ -14,8 +14,11 @@ func TestRepartitionTargetsMatchInitSQL(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(ddl, "\nPARTITION BY "+target.key+"\n") {
-			t.Errorf("%s: init-clickhouse.sql must declare PARTITION BY %s", target.table, target.key)
+		if !strings.Contains(ddl, "\nPARTITION BY "+target.partitionKey+"\n") {
+			t.Errorf("%s: init-clickhouse.sql must declare PARTITION BY %s", target.table, target.partitionKey)
+		}
+		if target.sortingKey != "" && !strings.Contains(ddl, "\nORDER BY ("+target.sortingKey+")\n") {
+			t.Errorf("%s: init-clickhouse.sql must declare ORDER BY (%s)", target.table, target.sortingKey)
 		}
 		if !strings.HasPrefix(ddl, "CREATE TABLE IF NOT EXISTS "+target.table+" (") {
 			t.Errorf("%s: unexpected DDL start %q", target.table, ddl[:min(60, len(ddl))])

@@ -11,7 +11,7 @@ Provenance needs baselines built from endpoint logs, so it is off by default. A 
 1. Open **Settings** in the sidebar, then the **Platform** tab.
 2. Under **Endpoint analytics**, turn on **Collect baselines**.
 
-Bifract then maintains two baselines as logs arrive: process lineage (who spawned whom) and behavior frequency (how common each file, IP and domain is across hosts). They run on every ingested log, so leave this off if you do not use `pgr()`. Baselines start from the moment you enable it.
+Bifract then maintains two baselines as logs arrive: process lineage (who spawned whom) and behavior frequency (how common each file, IP and domain is across hosts). They run on every ingested log, so leave this off if you do not use `pgr()` or the `pgrHas` filters and `pgrContext()`. Behavior frequency starts from the moment you enable it. Process lineage also reaches back: at the next server start, process creations already in your logs are added, within log retention, and the ancestors behind `pgrHasAncestor()` and `pgrHasDescendant()` are recorded from them in the background.
 
 ## Investigate a process
 
@@ -31,7 +31,7 @@ For just the spawn tree, without scoring or file, network and DNS activity, use 
 
 Both look up only the rows a tree touches, so their cost follows the size of the tree, not of the fractal or its retention. Command lines come from the lineage table, so they stay visible after the logs behind them age out.
 
-To filter ordinary logs by their process ancestry or connections, without building a graph, see [`pgrHasAncestor()`](../bql/enrichment.md#pgrhasancestor) and [`pgrHasNetwork()`](../bql/enrichment.md#pgrhasnetwork).
+To filter ordinary logs by their process ancestry, descendants or connections without building a graph, see [`pgrHasAncestor()`](../bql/enrichment.md#pgrhasancestor), [`pgrHasDescendant()`](../bql/enrichment.md#pgrhasdescendant) and [`pgrHasNetwork()`](../bql/enrichment.md#pgrhasnetwork). To add a process's command line, user or hashes to them as columns, see [`pgrContext()`](../bql/enrichment.md#pgrcontext).
 
 ## Required fields
 
@@ -77,6 +77,8 @@ A process that runs the same command over and over, such as a remote-access tool
 ### After upgrading
 
 Baselines written before the upgrade that added pgr's lookups are backfilled by a background job. Graphs are correct while it runs, just slower over older history. One server drives it: it first fills the fleet summary (logging `provenance summary filled`), then indexes one fractal per ClickHouse node at a time (logging `materializing ...`, and `provenance projections complete` when done).
+
+The upgrade that sorts process lineage by start time rebuilds `proc_lineage` and `process_edges` in the background first, copying one fractal at a time. Until a fractal's copy finishes, `pgr()`, `ptg()`, `pgrContext()` and the `pgrHas` filters see only its provenance from after the upgrade. Each table logs `conversion complete` when done.
 
 ## Anomaly scoring
 

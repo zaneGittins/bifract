@@ -1531,6 +1531,17 @@ func commandIndex(commands []CommandNode, name string) int {
 	return -1
 }
 
+// lookupCommandIndex returns the index of the first command that joins a lookup's columns,
+// modelLookup() or pgrContext(), or -1.
+func lookupCommandIndex(commands []CommandNode) int {
+	for i, cmd := range commands {
+		if n := canonicalCommandName(cmd.Name); n == canonicalCommandName("modelLookup") || n == canonicalCommandName("pgrContext") {
+			return i
+		}
+	}
+	return -1
+}
+
 // firstAggregatingCommandIndex returns the index of the first command that
 // aggregates (collapses rows), or len(commands) if none do. Aggregation is
 // sourced from aggregatingCommandNames, populated at command registration.

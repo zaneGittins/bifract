@@ -71,11 +71,8 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 	if ctx.AsCondition {
 		return h.executeCondition(cmd, ctx)
 	}
-	if ctx.Plan.IsJoin {
-		return fmt.Errorf("modelLookup() cannot be combined with join()")
-	}
-	if ctx.Plan.hasModelLookup() {
-		return fmt.Errorf("modelLookup() cannot be used more than once")
+	if err := claimLookup(ctx.Plan, "modelLookup"); err != nil {
+		return err
 	}
 
 	_, keyFields, strict, err := parseModelLookupArgs(cmd)
@@ -115,7 +112,7 @@ func joinModelAfterAggregation(ctx *CommandContext, keyFields, keyExprs []string
 	enrichesScan := len(plan.Stages) == 1 && len(src.Caps) == 0 && src.Limit == "" && src.LimitBy == "" && src.ScanLimitBy == ""
 	carried, err := pushCarryForwardStage(ctx)
 	if err != nil {
-		return fmt.Errorf("modelLookup(): %w", err)
+		return fmt.Errorf("%s(): %w", plan.lookupName, err)
 	}
 	if enrichesScan && len(plan.keysLostToAggregation(plan.SourceStage(), keyExprs, keyFields)) == 0 {
 		plan.ModelLookupKeyExprs = keyExprs
@@ -123,14 +120,14 @@ func joinModelAfterAggregation(ctx *CommandContext, keyFields, keyExprs []string
 	left := make([]string, len(keyFields))
 	for i, kf := range keyFields {
 		if !slices.Contains(carried, kf) {
-			return fmt.Errorf("modelLookup() key %[1]s must be part of the grouping to survive aggregation: add %[1]s to the group/table columns, or drop the aggregation", kf)
+			return fmt.Errorf("%[2]s() key %[1]s must be part of the grouping to survive aggregation: add %[1]s to the group/table columns, or drop the aggregation", kf, plan.lookupName)
 		}
 		left[i] = modelKeyString("_outer." + quoteIdent(kf))
 	}
 	stage := plan.CurrentStage()
 	for _, f := range plan.ModelLookupFields {
 		if slices.Contains(carried, f) {
-			return fmt.Errorf("modelLookup(): the aggregated rows already have a column %q, which the model adds", f)
+			return fmt.Errorf("%s(): the aggregated rows already have a column %q, which it adds", plan.lookupName, f)
 		}
 		stage.Layer.Selects = append(stage.Layer.Selects, SelectExpr{Expr: f})
 		ctx.Registry.Register(f, FieldKindAssignment, f, ctx.CmdIndex)

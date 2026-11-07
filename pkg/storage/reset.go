@@ -22,6 +22,7 @@ var resetMaterializedViews = []string{
 	"proc_freq_rthread_mv",
 	"proc_freq_pacc_mv",
 	"process_edges_mv",
+	"process_edges_p2p_mv",
 	"provenance_summary_lineage_mv",
 	"provenance_summary_freq_mv",
 }
@@ -39,6 +40,9 @@ var resetShardedTables = []string{
 	"proc_lineage",
 	"proc_freq",
 	"process_edges",
+	procAncestryTable,
+	procAncestryWatermarkTable,
+	provenanceMarksTable,
 	provenanceSummaryTable,
 }
 

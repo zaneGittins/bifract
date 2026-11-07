@@ -128,7 +128,7 @@ func nonTreeField(cond HavingCondition) string {
 // BuildProcessTreeRowsSQL reads the own process_creation row of every node in
 // ProvenanceTreeTable (a node is its own member), within the query window like the walk.
 func BuildProcessTreeRowsSQL(opts QueryOptions) string {
-	conds := append(procLineageWindow(opts, ""), "process_guid GLOBAL IN (SELECT guid FROM "+ProvenanceTreeTable+" WHERE guid = node)")
+	conds := append(procLineageWindow(opts, ""), treeKeys(" WHERE guid = node"))
 	return fmt.Sprintf("SELECT process_guid, parent_guid, toString(timestamp) AS ts, log_id, fractal_id, image, parent_image, "+
 		"substring(commandline, 1, %d) AS commandline, computer_name FROM %s FINAL WHERE %s",
 		maxProcessTreeCommandline, procLineageTable(opts), strings.Join(conds, " AND "))

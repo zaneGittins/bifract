@@ -107,10 +107,12 @@ var commandProbes = map[string]commandProbe{
 		with: map[string]string{"field": `* | outlier(latency)`, "threshold": `* | outlier(bytes, 4.5)`},
 	},
 
-	"in":             {base: `* | in(user, ["a"])`, with: map[string]string{"field": `* | in(host, ["a"])`, "values": `* | in(user, ["a","b"])`}},
-	"cidr":           {base: `* | cidr(src_ip, "10.0.0.0/8")`, with: map[string]string{"field": `* | cidr(dst_ip, "10.0.0.0/8")`, "range": `* | cidr(src_ip, "192.168.0.0/16")`}},
-	"pgrHasNetwork":  {base: `* | pgrHasNetwork("203.0.113.1")`, with: map[string]string{"value": `* | pgrHasNetwork("203.0.113.2")`, "external": `* | pgrHasNetwork("203.0.113.1", external=true)`}},
-	"pgrHasAncestor": {base: `* | pgrHasAncestor("a.exe")`, with: map[string]string{"value": `* | pgrHasAncestor("b.exe")`, "depth": `* | pgrHasAncestor("a.exe", depth=2)`}},
+	"in":               {base: `* | in(user, ["a"])`, with: map[string]string{"field": `* | in(host, ["a"])`, "values": `* | in(user, ["a","b"])`}},
+	"cidr":             {base: `* | cidr(src_ip, "10.0.0.0/8")`, with: map[string]string{"field": `* | cidr(dst_ip, "10.0.0.0/8")`, "range": `* | cidr(src_ip, "192.168.0.0/16")`}},
+	"pgrHasNetwork":    {base: `* | pgrHasNetwork("203.0.113.1")`, with: map[string]string{"value": `* | pgrHasNetwork("203.0.113.2")`, "external": `* | pgrHasNetwork("203.0.113.1", external=true)`}},
+	"pgrContext":       {base: `* | pgrContext(commandline)`, with: map[string]string{"columns": `* | pgrContext(user)`, "require": `* | pgrContext(commandline, require=true)`}},
+	"pgrHasDescendant": {base: `* | pgrHasDescendant("a.exe")`, with: map[string]string{"value": `* | pgrHasDescendant("b.exe")`, "depth": `* | pgrHasDescendant("a.exe", depth=2)`}},
+	"pgrHasAncestor":   {base: `* | pgrHasAncestor("a.exe")`, with: map[string]string{"value": `* | pgrHasAncestor("b.exe")`, "depth": `* | pgrHasAncestor("a.exe", depth=2)`}},
 	"comment": {
 		base: `* | comment()`,
 		with: map[string]string{"tags": `* | comment(tags=[triage])`, "keyword": `* | comment(keyword="x")`},

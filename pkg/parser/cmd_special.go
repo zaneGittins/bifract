@@ -217,7 +217,7 @@ func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, p
 			if ctx.Plan.ModelLookupAtScan {
 				return fmt.Errorf("table(): model column %q is not available after the aggregation; group by it or aggregate it", name)
 			}
-			return fmt.Errorf("table(): model column %q is read before modelLookup() adds it", name)
+			return fmt.Errorf("table(): column %q is read before %s() adds it", name, ctx.Plan.lookupName)
 		}
 		// Not produced by the aggregated stage. It may be produced by a later
 		// layer (e.g. a post-aggregation assignment computed in the outer

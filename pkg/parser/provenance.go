@@ -34,6 +34,22 @@ func inTree(col string) string {
 	return col + " GLOBAL IN (SELECT guid FROM " + ProvenanceTreeTable + ")"
 }
 
+// treeKeys is inTree for proc_lineage and process_edges, which are sorted by proc_key.
+func treeKeys(where string) string {
+	return "proc_key GLOBAL IN (SELECT " + procKeyExpr("guid") + " FROM " + ProvenanceTreeTable + where + ")"
+}
+
+// procKeyExpr is the proc_lineage and process_edges sort key of a GUID. A Sysmon GUID has its
+// second and third groups swapped, putting the start time's high bits first so one time window
+// sits together; anything else is unchanged. The swap undoes itself, so the key is as unique as
+// the GUID and a lookup by key is exact.
+func procKeyExpr(col string) string {
+	return fmt.Sprintf(procKeyTmpl, col)
+}
+
+const procKeyTmpl = `if(match(%[1]s, '^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}$'), ` +
+	`concat(substring(%[1]s, 1, 10), substring(%[1]s, 16, 5), substring(%[1]s, 11, 5), substring(%[1]s, 21)), %[1]s)`
+
 // pgr()'s own result-row cap. The query layer budgets its rows to it (structure in walk order,
 // a share held for leaves and bridges) and also applies it as the OUTER query's LIMIT (see
 // resolvePgrSource / resolvedSource.Limit). It exists because the generic per-deployment
@@ -299,7 +315,8 @@ func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
 // parent_guid is the next hop. ts_ms is its creation time. No FINAL: the caller dedups guids and
 // process_guid is globally unique.
 func BuildProcessTreeHopSQL(guid string, opts QueryOptions) string {
-	conds := append(procLineageWindow(opts, ""), fmt.Sprintf("process_guid = '%s'", escapeString(guid)))
+	lit := "'" + escapeString(guid) + "'"
+	conds := append(procLineageWindow(opts, ""), "proc_key = "+procKeyExpr(lit), "process_guid = "+lit)
 	return fmt.Sprintf("SELECT process_guid, parent_guid, toUnixTimestamp64Milli(timestamp) AS ts_ms FROM %s WHERE %s",
 		procLineageTable(opts), strings.Join(conds, " AND "))
 }
@@ -318,7 +335,7 @@ func BuildProcessTreeHopSQL(guid string, opts QueryOptions) string {
 // shard aggregates its own before the initiator merges them.
 func BuildProcessGroupHopSQL(opts QueryOptions) string {
 	conds := append(procLineageWindow(opts, "c."),
-		"c.parent_guid GLOBAL IN (SELECT guid FROM "+ProvenanceFrontierTable+")")
+		"c.parent_key GLOBAL IN (SELECT "+procKeyExpr("guid")+" FROM "+ProvenanceFrontierTable+")")
 	return fmt.Sprintf("SELECT f.node AS parent_node, "+
 		"argMin(c.process_guid, (c.timestamp, c.process_guid)) AS rep, uniqExact(c.process_guid) AS n, "+
 		"groupUniqArray(%[1]d)(c.process_guid) AS members, "+
@@ -333,6 +350,31 @@ func procLineageTable(opts QueryOptions) string {
 		return opts.ProcLineageTable
 	}
 	return "proc_lineage"
+}
+
+// procAncestryTable and procAncestryMarkTable name the ancestry tables to read.
+func procAncestryTable(opts QueryOptions) string {
+	if opts.ProcAncestryTable != "" {
+		return opts.ProcAncestryTable
+	}
+	return "proc_ancestry"
+}
+
+// p2pBeforeRollup bounds a logs read of injection and handle-access events to those ingested
+// before the rollup began recording them, the history only logs hold.
+func p2pBeforeRollup(opts QueryOptions) string {
+	table := opts.ProvenanceMarksTable
+	if table == "" {
+		table = "provenance_marks"
+	}
+	return "ingest_timestamp < (SELECT argMax(at, set_at) FROM " + table + " WHERE name = 'p2p_edges')"
+}
+
+func procAncestryMarkTable(opts QueryOptions) string {
+	if opts.ProcAncestryMarkTable != "" {
+		return opts.ProcAncestryMarkTable
+	}
+	return "proc_ancestry_watermark"
 }
 
 func procFreqTable(opts QueryOptions) string {
@@ -420,7 +462,7 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 		"SELECT parent_guid AS src_node, process_guid AS dst_node, image AS label, 'spawn' AS event_type, "+
 			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, computer_name AS host, "+
 			"parent_image AS parent_label, toDate(ingest_timestamp) AS iday FROM %s FINAL WHERE %s%s",
-		aPath("parent_image"), "child_image", procLineage, inTree("process_guid"), frac())
+		aPath("parent_image"), "child_image", procLineage, treeKeys(""), frac())
 
 	// Leaf edges (file/net/dns) come from the process_edges rollup keyed by
 	// (fractal_id, process_guid, event_type, dst_node): a PRIMARY-KEY lookup on the tree's guids
@@ -441,6 +483,11 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 	if want("dns_query") {
 		leafTypes = append(leafTypes, "'dns_query'")
 	}
+	for _, t := range []string{"remote_thread", "process_access"} {
+		if want(t) {
+			leafTypes = append(leafTypes, "'"+t+"'")
+		}
+	}
 	leafEdges := ""
 	if len(leafTypes) > 0 {
 		edgeFrac := ""
@@ -451,7 +498,7 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 			"SELECT process_guid AS src_node, dst_node, label, event_type, fkey_src, fkey_tgt, log_id, "+
 				"toString(timestamp) AS timestamp, fractal_id, computer_name AS host, '' AS parent_label, toDate(ingest_timestamp) AS iday "+
 				"FROM %s WHERE %s%s AND %s AND event_type IN (%s)",
-			edgeTable, edgeFrac, userWin, inTree("process_guid"), strings.Join(leafTypes, ", "))
+			edgeTable, edgeFrac, userWin, treeKeys(""), strings.Join(leafTypes, ", "))
 	}
 
 	// Process->process edges (injection / handle-access): source_process_guid in the tree,
@@ -462,9 +509,9 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 			"SELECT fields.source_process_guid::String AS src_node, fields.target_process_guid::String AS dst_node, "+
 				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host, '' AS parent_label, toDate(ingest_timestamp) AS iday "+
 				"FROM %[3]s WHERE %[4]s%[5]s AND %[6]s "+
-				"AND fields.bifract_category = '%[8]s' AND fields.image::String != '' AND fields.target_image::String != '' "+
+				"AND fields.bifract_category = '%[8]s' AND %[9]s AND fields.image::String != '' AND fields.target_image::String != '' "+
 				"AND fields.target_process_guid::String != ''",
-			aPath("fields.image::String"), aPath("fields.target_image::String"), logs, userWin, frac(), inTree("fields.source_process_guid::String"), eventType, category)
+			aPath("fields.image::String"), aPath("fields.target_image::String"), logs, userWin, frac(), inTree("fields.source_process_guid::String"), eventType, category, p2pBeforeRollup(opts))
 	}
 
 	// spawn is always present (the tree spine); file/net/dns ride the process_edges rollup in one
@@ -726,13 +773,13 @@ func BuildProvenanceScoringSQL(threshold float64, edgeTypes map[string]bool, dif
 	// exec_hd above. Same keyhole lookup and filter as proc_freq's spawn MV.
 	procLineage := procLineageTable(opts)
 	b.WriteString(fmt.Sprintf("sx AS (SELECT child_image AS node, length(groupUniqArray((computer_name, toDate(ingest_timestamp)))) AS self_exec FROM %[1]s FINAL WHERE %[2]s%[3]s AND parent_image != '' AND image != '' GROUP BY node), ",
-		procLineage, inTree("process_guid"), frac()))
+		procLineage, treeKeys(""), frac()))
 	// pm = per-node command line + user from the node's own lineage row (pl), a primary-key lookup.
 	// Only nodes need one (a node is its own member), not every member of a collapsed group.
 	// A row written before proc_lineage carried the user reads '\0' there and falls back to its
 	// logs row (pu), found by the logs primary key the lineage row holds; a guid filter defeats the
 	// bloom on large trees. Truncated: command lines can be enormous.
-	nodes := fmt.Sprintf("process_guid GLOBAL IN (SELECT guid FROM %s WHERE guid = node)", ProvenanceTreeTable)
+	nodes := treeKeys(" WHERE guid = node")
 	b.WriteString(fmt.Sprintf("pl AS (SELECT process_guid AS guid, any(substring(commandline, 1, 300)) AS command_line, max(proc_user) AS lineage_user FROM %[1]s WHERE %[2]s%[3]s AND %[4]s GROUP BY guid), ",
 		procLineage, timeWin, frac(), nodes))
 	b.WriteString(fmt.Sprintf("pu AS (SELECT fields.process_guid::String AS guid, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s "+
@@ -946,7 +993,7 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 	// pass to bridge; et is the proc_freq event_type. Shared by net/dns. It aggregates only the
 	// tree's own targets, which are all the callers test, instead of every target in the fractal.
 	rareGate := func(et string) string {
-		treeTargets := fmt.Sprintf("SELECT fkey_tgt FROM %s WHERE %sevent_type = '%s' AND %s", edgeTable, edgeFrac, et, inTree("process_guid"))
+		treeTargets := fmt.Sprintf("SELECT fkey_tgt FROM %s WHERE %sevent_type = '%s' AND %s", edgeTable, edgeFrac, et, treeKeys(""))
 		return fmt.Sprintf("SELECT target_norm FROM %s WHERE event_type = '%s'%s AND target_norm GLOBAL IN (%s) GROUP BY target_norm "+
 			"HAVING length(groupUniqArrayMerge(%d)(hosts)) <= %s AND uniqExact(src_image) <= %s",
 			procFreq, et, fracAnd, treeTargets, procFreqHostsCap, hostGate, imageGate)
@@ -958,7 +1005,7 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 		writtenPaths := fmt.Sprintf(
 			"SELECT lower(label) AS p, any(process_guid) AS writer FROM %[1]s WHERE %[2]sevent_type = 'file_write' "+
 				"AND %[3]s AND label != '' GROUP BY p ORDER BY p LIMIT %[4]d",
-			edgeTable, edgeFrac, inTree("process_guid"), maxReconnectCandidateArtifacts)
+			edgeTable, edgeFrac, treeKeys(""), maxReconnectCandidateArtifacts)
 		// Latest row per process running a written path, looked up by image_lc (the by_image
 		// projection). Deduped with LIMIT BY rather than FINAL, which on a Distributed table only
 		// dedupes within each shard.
@@ -985,7 +1032,7 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 		rareIP := fmt.Sprintf(
 			"SELECT fkey_tgt AS ip, any(process_guid) AS toucher FROM %[1]s WHERE %[2]sevent_type = 'net_connect' "+
 				"AND %[3]s AND %[4]s AND fkey_tgt GLOBAL IN (%[5]s) GROUP BY ip ORDER BY ip LIMIT %[6]d",
-			edgeTable, edgeFrac, inTree("process_guid"), extOnly, rareGate("net_connect"), maxReconnectCandidateArtifacts)
+			edgeTable, edgeFrac, treeKeys(""), extOnly, rareGate("net_connect"), maxReconnectCandidateArtifacts)
 		peerScan := fmt.Sprintf(
 			"SELECT process_guid AS peer_guid, fkey_tgt AS ip, dst_node, fkey_src AS img, log_id, "+
 				"toString(timestamp) AS ts, fractal_id, computer_name AS host FROM %[1]s WHERE %[2]sevent_type = 'net_connect' "+
@@ -1005,7 +1052,7 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 		rareDom := fmt.Sprintf(
 			"SELECT fkey_tgt AS q, any(process_guid) AS toucher FROM %[1]s WHERE %[2]sevent_type = 'dns_query' "+
 				"AND %[3]s AND NOT %[6]s AND fkey_tgt GLOBAL IN (%[4]s) GROUP BY q ORDER BY q LIMIT %[5]d",
-			edgeTable, edgeFrac, inTree("process_guid"), rareGate("dns_query"), maxReconnectCandidateArtifacts, internalDomainExpr("fkey_tgt"))
+			edgeTable, edgeFrac, treeKeys(""), rareGate("dns_query"), maxReconnectCandidateArtifacts, internalDomainExpr("fkey_tgt"))
 		peerScan := fmt.Sprintf(
 			"SELECT process_guid AS peer_guid, fkey_tgt AS q, dst_node, fkey_src AS img, log_id, "+
 				"toString(timestamp) AS ts, fractal_id, computer_name AS host FROM %[1]s WHERE %[2]sevent_type = 'dns_query' "+
@@ -1021,16 +1068,18 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 
 	// remote_thread / process_access: target guids this tree acted on. pass-2 already emits
 	// the source->target edge, so these are expansion candidates only (src_guid/object_id empty).
+	// Targets come from the rollup, and from logs for what was ingested before it began.
 	p2p := func(reconType, category string, anomaly string) string {
+		targets := fmt.Sprintf(
+			"SELECT dst_node AS peer_guid, label AS image, computer_name AS host FROM %[1]s WHERE %[2]s%[3]s AND %[4]s AND event_type = '%[5]s' AND dst_node != '' AND %[6]s "+
+				"UNION ALL SELECT fields.target_process_guid::String, fields.target_image::String, fields.computer_name::String FROM %[7]s WHERE %[3]s%[8]s AND fields.bifract_category = '%[5]s' AND %[9]s "+
+				"AND %[10]s AND fields.target_process_guid::String != '' AND %[11]s",
+			edgeTable, edgeFrac, timeWin, treeKeys(""), category, notInTree("dst_node"), logs, fracAnd, p2pBeforeRollup(opts),
+			inTree("fields.source_process_guid::String"), notInTree("fields.target_process_guid::String"))
 		return fmt.Sprintf(
-			"SELECT '%[1]s' AS recon_type, fields.target_process_guid::String AS peer_guid, '' AS src_guid, '' AS object_id, "+
-				"any(fields.target_image::String) AS label, toFloat64(%[2]s) AS anomaly, any(fields.target_image::String) AS peer_image, "+
-				"'' AS peer_log_id, '' AS peer_ts, '' AS peer_fractal, any(fields.computer_name::String) AS peer_host "+
-				"FROM %[3]s WHERE %[4]s%[5]s AND fields.bifract_category = '%[6]s' "+
-				"AND %[7]s AND fields.target_process_guid::String != '' "+
-				"AND %[9]s GROUP BY peer_guid ORDER BY peer_guid LIMIT %[8]d",
-			reconType, anomaly, logs, timeWin, fracAnd, category, inTree("fields.source_process_guid::String"), maxReconnectPeers,
-			notInTree("fields.target_process_guid::String"))
+			"SELECT '%[1]s' AS recon_type, peer_guid, '' AS src_guid, '' AS object_id, any(image) AS label, toFloat64(%[2]s) AS anomaly, any(image) AS peer_image, "+
+				"'' AS peer_log_id, '' AS peer_ts, '' AS peer_fractal, any(host) AS peer_host FROM (%[3]s) GROUP BY peer_guid ORDER BY peer_guid LIMIT %[4]d",
+			reconType, anomaly, targets, maxReconnectPeers)
 	}
 	if want("remote_thread") {
 		parts = append(parts, p2p("remote_thread", "remote_thread", "0.95"))
