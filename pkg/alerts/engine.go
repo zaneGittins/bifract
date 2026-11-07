@@ -666,7 +666,7 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 				scopeFractals = []string{alert.FractalID}
 			}
 			resolver := tlshresolve.NewResolver(e.modelManager, e.dictManager, e.ch)
-			res, rerr := resolver.Resolve(storage.UncappedReadContext(ctx), params, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: alert.PrismID})
+			res, rerr := resolver.Resolve(alertReadContext(ctx, opts), params, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: alert.PrismID})
 			if rerr != nil {
 				return opts, rerr
 			}
@@ -766,6 +766,16 @@ func missingBaseColumn(code int32, err error) string {
 	return ""
 }
 
+// alertReadContext is what an evaluation's ClickHouse reads run on: the read-only
+// identity, confined to the fractals opts translate to.
+func alertReadContext(ctx context.Context, opts parser.QueryOptions) context.Context {
+	ctx = storage.UncappedReadContext(ctx)
+	if scope, ok := query.FractalScope(opts); ok {
+		ctx = storage.ScopeContext(ctx, scope)
+	}
+	return ctx
+}
+
 // runAlertQuery translates and executes an alert query with timeout handling.
 // On timeout or an unrecoverable CH error the alert is auto-disabled and a
 // health notification is raised.
@@ -773,14 +783,11 @@ func missingBaseColumn(code int32, err error) string {
 // buildQueryOpts; rows completing before it were reported by an earlier window.
 func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.QueryOptions, timeoutSec int, windowStart time.Time) ([]map[string]interface{}, error) {
 	// Every read below is built from the rule's BQL, so none may run as admin.
-	readCtx := storage.TagContext(storage.UncappedReadContext(ctx), storage.QueryTag{
+	readCtx := storage.TagContext(alertReadContext(ctx, opts), storage.QueryTag{
 		Source:  storage.SourceAlert,
 		Fractal: alert.FractalID,
 		Label:   alert.Name,
 	})
-	if scope, ok := query.FractalScope(opts); ok {
-		readCtx = storage.ScopeContext(readCtx, scope)
-	}
 	if _, err := query.ResolveProcessTree(readCtx, e.ch, alert.ParsedQuery, &opts); err != nil {
 		return nil, err
 	}

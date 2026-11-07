@@ -1,14 +1,17 @@
 package models
 
 import (
+	"context"
 	"errors"
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"bifract/internal/fakedb"
+	"bifract/pkg/storage"
 )
 
 // The scorer end to end: rolling state in, scored rows out, through the same
@@ -250,4 +253,66 @@ func TestScorerLoop(t *testing.T) {
 	e.Start(5 * time.Millisecond)
 	defer e.Stop()
 	waitFor(t, "a scoring tick", func() bool { return len(env.ch.QueriedMatching("AS network_size")) > 0 })
+}
+
+// recordReads captures the class and sent id of every read, and how many there were.
+func recordReads(env *fakeEnv) func() []string {
+	var mu sync.Mutex
+	var reads []string
+	env.ch.CtxArgs = func(ctx context.Context) []any {
+		mu.Lock()
+		defer mu.Unlock()
+		reads = append(reads, storage.QueryClassOf(ctx)+" "+storage.SentQueryIDOf(ctx))
+		return nil
+	}
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), reads...)
+	}
+}
+
+func assertScoringReads(t *testing.T, reads []string, min int) {
+	t.Helper()
+	if len(reads) < min {
+		t.Fatalf("%d reads, want at least %d", len(reads), min)
+	}
+	for _, read := range reads {
+		if !strings.HasPrefix(read, storage.QueryAlertClass+" ") || !strings.HasSuffix(read, "~bfscope~"+fracA+",") {
+			t.Errorf("read sent as %q", read)
+		}
+	}
+}
+
+// Scoring reads embed the model's source BQL, so they run read-only and confined to
+// the model's fractal, and the scored rows are still written.
+func TestScorerReadsRunOnTheAlertIdentity(t *testing.T) {
+	env, e, _ := scorerEnv(t, false, ModelTypeLongConnection, ModelDefinition{})
+	now := uint32(time.Now().Unix())
+	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(100)))
+	env.ch.On("AS prev_total", prevalenceRows(map[string]uint64{"203.0.113.5": 1}))
+	env.ch.On("groupArraySortedMerge", fakedb.CHResult{Cols: stateCols, Rows: [][]any{
+		statePair("10.1.1.1", "203.0.113.5", 3, []uint32{now - 7200, now - 3600, now - 600}, []float64{1, 1, 1}, 28800),
+	}})
+	reads := recordReads(env)
+
+	e.scoreCycle()
+
+	assertScoringReads(t, reads(), 3)
+	if b := env.ch.Batches(); len(b) != 1 || !b[0].Sent {
+		t.Fatalf("batches: %+v", b)
+	}
+}
+
+// analytics_models.fractal_id is nullable and the scorer reads NULL as empty. That
+// must stay a read of the unassigned rows, not a read the scope refuses.
+func TestScoringReadWithNoFractalIsUnassigned(t *testing.T) {
+	env := newEnv(t)
+	reads := recordReads(env)
+	if _, err := env.ch.client.Query(scoringReadContext(context.Background(), ""), "SELECT 1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reads(); len(got) != 1 || !strings.HasSuffix(got[0], "~bfscope~,") {
+		t.Errorf("reads: %q", got)
+	}
 }

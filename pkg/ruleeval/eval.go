@@ -214,6 +214,8 @@ func (s *Scratch) Evaluate(ctx context.Context, pipeline *parser.PipelineNode, u
 	if name := parser.FirstPgrFilter(pipeline); name != "" {
 		return 0, "", fmt.Errorf("%s() cannot be evaluated in this test runner: it reads the provenance tables, which test events never reach", name)
 	}
+	// Only the rule's own reads: the client still creates and writes the scratch table.
+	ctx = storage.UncappedReadContext(storage.ScopeContext(ctx, storage.FractalScope{FractalIDs: []string{u.FractalID}}))
 	opts := s.QueryOptions(u, w)
 	if err := s.resolveTLSH(ctx, pipeline, &opts, u); err != nil {
 		return 0, "", err

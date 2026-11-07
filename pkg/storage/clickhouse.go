@@ -108,6 +108,9 @@ type ClickHouseClient struct {
 	// identityMu serializes identity reconciles: a settings save and the background
 	// repair would otherwise each open a pool for the same class.
 	identityMu sync.Mutex
+	// pinRetryAfter throttles EnsurePinnedIdentity on a pinned client whose node
+	// refused the identity. Guarded by identityMu.
+	pinRetryAfter time.Time
 
 	// queryPool sizes the class pools; see identityPool.
 	queryPool ClickHousePoolConfig
@@ -1244,14 +1247,19 @@ func (c *ClickHouseClient) nodeConnOptions(addr string, pool ClickHousePoolConfi
 // on three different nodes and the table appears to vanish between them. The returned
 // client is single-node, so it also never rewrites a table name to its distributed
 // counterpart. Callers must Close it.
-func (c *ClickHouseClient) PinnedNodeClient(addr string) (*ClickHouseClient, error) {
-	return NewClickHouseClient(ClientOptions{
+func (c *ClickHouseClient) PinnedNodeClient(ctx context.Context, addr string) (*ClickHouseClient, error) {
+	client, err := NewClickHouseClient(ClientOptions{
 		Conn: c.nodeConnOptions(addr, adminNodePool),
 		Topo: Topology{Kind: DeploymentSingleNode},
 		// Never RoleControlPlane: a pinned client borrows an existing deployment and
 		// must not try to provision its database.
 		Role: RoleArchive,
 	})
+	if err != nil {
+		return nil, err
+	}
+	c.EnsurePinnedIdentity(ctx, client, addr)
+	return client, nil
 }
 
 // OpenNodeConn opens a short-lived direct connection to one node, so a reading
@@ -1927,8 +1935,8 @@ func (c *ClickHouseClient) QueryLowPriorityBounded(ctx context.Context, query st
 
 // Provenance scan budget: bounds each pgr ClickHouse scan server-side so a pathological (giant or
 // firehose-host) process tree ABORTS at a hard limit instead of scanning the whole time window and
-// pegging every shard. pgr's resolver passes run on the raw request context (before the
-// request-level QueryTimeoutSeconds ctx is built), and even the downstream scoring scan's Go-ctx
+// pegging every shard. pgr's resolver passes run before the request-level
+// QueryTimeoutSeconds ctx is built, and even the downstream scoring scan's Go-ctx
 // timeout does not reliably stop a running ClickHouse scan -- so these server-enforced ceilings
 // (throw on overflow) are the real guard. ProvenanceQuerySettings mirrors them as a top-level
 // SETTINGS suffix for the downstream query (SETTINGS are illegal inside the pgr subquery).
@@ -2277,9 +2285,14 @@ func (c *ClickHouseClient) CountFractalLogs(ctx context.Context, fractalID strin
 }
 
 // QueryRows executes a query and returns the raw driver.Rows for streaming iteration.
-// The caller is responsible for closing the returned Rows.
+// The caller is responsible for closing the returned Rows. Settings ctx implies replace
+// any set on ctx with clickhouse.WithSettings, so put per-query settings in the SQL.
 func (c *ClickHouseClient) QueryRows(ctx context.Context, query string, args ...interface{}) (driver.Rows, error) {
-	return c.conn.Query(ctx, query, args...)
+	conn, ctx, err := c.rawReadConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return conn.Query(ctx, query, args...)
 }
 
 // StreamQuery executes a query and invokes onRow for each row as ClickHouse
@@ -2355,9 +2368,14 @@ func (c *ClickHouseClient) streamRows(ctx context.Context, query string, onRow f
 	return nil
 }
 
-// QueryRow executes a query that is expected to return at most one row
+// QueryRow executes a query that is expected to return at most one row. Settings
+// behave as for QueryRows.
 func (c *ClickHouseClient) QueryRow(ctx context.Context, query string, args ...interface{}) driver.Row {
-	return c.conn.QueryRow(ctx, query, args...)
+	conn, ctx, err := c.rawReadConn(ctx)
+	if err != nil {
+		return refusedRow{err}
+	}
+	return conn.QueryRow(ctx, query, args...)
 }
 
 // GetLogByTimestamp fetches a single log by log_id, optionally pinned by an

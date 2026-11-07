@@ -153,3 +153,50 @@ func TestFieldStatsAndExportRunOnTheUncappedIdentity(t *testing.T) {
 		})
 	}
 }
+
+// The reads prepareQuery makes to resolve a command belong to the query that asked
+// for them: the same class and the same scope, before any translated SQL exists.
+func TestResolverReadsRunInTheQuerysClassAndScope(t *testing.T) {
+	search := func(q string, vals ctxVals, fractal string) func(t *testing.T, e *testEnv) {
+		return func(t *testing.T, e *testEnv) {
+			runQuery(t, e, QueryRequest{Query: q, FractalID: fractal}, vals)
+		}
+	}
+	export := func(t *testing.T, e *testEnv) {
+		e.h.HandleExport(httptest.NewRecorder(), testRequest(http.MethodPost, searchBody(t, QueryRequest{Query: `ptg(start="seed")`, FractalID: "f1"}), adminCtx()))
+	}
+	stats := func(t *testing.T, e *testEnv) { runFieldStats(t, e, `ptg(start="seed")`) }
+	prism := ctxVals{"user": testAdmin, "selected_prism": "p1"}
+	cases := []struct {
+		name  string
+		run   func(t *testing.T, e *testEnv)
+		class string
+		scope string
+	}{
+		{"search ptg", search(`ptg(start="seed")`, adminCtx(), "f1"), storage.QuerySearchWorkload, "f1,"},
+		{"search pgr", search(`pgr(start="seed")`, adminCtx(), "f1"), storage.QuerySearchWorkload, "f1,"},
+		{"search ptg default fractal", search(`ptg(start="seed")`, adminCtx(), "fdef"), storage.QuerySearchWorkload, "fdef,,"},
+		{"search ptg prism", search(`ptg(start="seed")`, prism, ""), storage.QuerySearchWorkload, "f1,f2,"},
+		{"field stats ptg", stats, storage.QueryAlertClass, "f1,"},
+		{"export ptg", export, storage.QueryAlertClass, "f1,"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, 1000)
+			e.members["p1"] = []string{"f1", "f2"}
+			reads := recordCtx(e, func(ctx context.Context) string {
+				return storage.QueryClassOf(ctx) + " " + storage.SentQueryIDOf(ctx)
+			})
+			tc.run(t, e)
+			got := reads()
+			if len(got) == 0 {
+				t.Fatal("no ClickHouse reads")
+			}
+			for _, read := range got {
+				if !strings.HasPrefix(read, tc.class+" ") || !strings.HasSuffix(read, "~bfscope~"+tc.scope) {
+					t.Errorf("read sent as %q, want class %q scope %q", read, tc.class, tc.scope)
+				}
+			}
+		})
+	}
+}

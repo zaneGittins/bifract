@@ -104,7 +104,11 @@ func hydrateQuery(table string, bounded, scoped bool) string {
 
 // collectLogFields runs one hydration query and merges its rows into out.
 func (c *ClickHouseClient) collectLogFields(ctx context.Context, out map[string]map[string]interface{}, query string, args []interface{}) error {
-	rows, err := c.conn.Query(ctx, query, args...)
+	conn, ctx, err := c.readConn(ctx)
+	if err != nil {
+		return fmt.Errorf("hydrate log fields: %w", err)
+	}
+	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("hydrate log fields: %w", err)
 	}
@@ -281,7 +285,11 @@ func missingLogIDs(ids []string, found map[string]map[string]interface{}) []stri
 
 // collectLogDisplayRows runs one display-row query and merges its rows into out.
 func (c *ClickHouseClient) collectLogDisplayRows(ctx context.Context, out map[string]map[string]interface{}, query string, args []interface{}) error {
-	rows, err := c.conn.Query(ctx, query, args...)
+	conn, ctx, err := c.readConn(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch log display rows: %w", err)
+	}
+	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("fetch log display rows: %w", err)
 	}
