@@ -242,6 +242,7 @@ type QueryPlan struct {
 	ModelLookupKeyExprs []string // key expressions over the log scan: the scan-level ON's left side and the prefilter's
 	ModelLookupStrict   bool     // true (default) = INNER JOIN: keep only rows the model scored
 	ModelLookupCmd      int      // index of the model_lookup command
+	lookupName          string   // the command holding the lookup join: modelLookup or pgrContext
 	// ModelLookupWhere: filters on model columns alone, applied to the model side of a
 	// strict join (and so to its scan prefilter) rather than to the joined rows. Each
 	// is a property of the key, so the join keeps exactly the rows it would have kept.

@@ -278,8 +278,11 @@ func TestClearAllLogDataTruncatesEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 	marked := indexOf(f.Executed(), "INSERT INTO "+provenanceFillCleared)
-	if marked < 0 || f.ExecArgs()[marked][0] != provenanceFillAll || marked != len(f.Executed())-2 {
-		t.Errorf("fill marker: %q", f.Executed())
+	if marked < 0 || f.ExecArgs()[marked][0] != provenanceFillAll || !strings.Contains(f.Executed()[marked+1], "TRUNCATE TABLE IF EXISTS `"+provenanceSummaryTable+"`") {
+		t.Errorf("fill marker must come right before the summary goes: %q", f.Executed())
+	}
+	if last := f.Executed()[len(f.Executed())-1]; !strings.Contains(last, "INSERT INTO "+provenanceMarksTable) {
+		t.Errorf("a clear must move the injection edge mark past the rows it removed; last was %s", last)
 	}
 
 	c, f = newFakeClient()
@@ -464,6 +467,7 @@ func TestReconcileTTLsAreMetadataOnly(t *testing.T) {
 	c.ReconcileProcFreqTTL(context.Background(), 30)
 	want := []string{
 		"ALTER TABLE proc_lineage MODIFY TTL toDateTime(ingest_timestamp) + INTERVAL 400 DAY SETTINGS materialize_ttl_after_modify = 0",
+		"ALTER TABLE proc_ancestry MODIFY TTL toDateTime(ingest_timestamp) + INTERVAL 400 DAY SETTINGS materialize_ttl_after_modify = 0",
 		"ALTER TABLE proc_freq MODIFY TTL day + INTERVAL 30 DAY SETTINGS materialize_ttl_after_modify = 0",
 	}
 	if got := f.Executed(); !reflect.DeepEqual(got, want) {
@@ -476,8 +480,8 @@ func TestReconcileTTLsAreMetadataOnly(t *testing.T) {
 func TestReconcileProvenanceSummaryTTL(t *testing.T) {
 	describe := func(f *fakedb.CH, table, ttl string) {
 		f.OnArg("FROM system.tables", table, fakedb.CHResult{
-			Cols: []fakedb.Col{{Column: "partition_key", Type: "String"}, {Column: "engine_full", Type: "String"}},
-			Rows: [][]any{{"fractal_id", "ReplacingMergeTree PARTITION BY fractal_id ORDER BY x TTL " + ttl + " SETTINGS index_granularity = 8192"}},
+			Cols: []fakedb.Col{{Column: "partition_key", Type: "String"}, {Column: "sorting_key", Type: "String"}, {Column: "engine_full", Type: "String"}},
+			Rows: [][]any{{"fractal_id", "", "ReplacingMergeTree PARTITION BY fractal_id ORDER BY x TTL " + ttl + " SETTINGS index_granularity = 8192"}},
 		})
 	}
 	c, f := newFakeClient()

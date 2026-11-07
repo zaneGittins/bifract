@@ -5,12 +5,13 @@
 //
 //	docker run -d --name bfrepart -e CLICKHOUSE_PASSWORD=bifract -p 19011:9000 \
 //	  clickhouse/clickhouse-server:26.8.34.13-alpine
-//	go test -tags chrepartition ./pkg/storage/ -run TestConvertPartitioning -v
+//	go test -tags chrepartition ./pkg/storage/ -run TestConvertLayouts -v
 package storage
 
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -61,7 +62,7 @@ func repartClient(t *testing.T) (*ClickHouseClient, driver.Conn) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ddl = strings.Replace(ddl, "\nPARTITION BY "+target.key+"\n", "\n", 1)
+		ddl = strings.Replace(ddl, "\nPARTITION BY "+target.partitionKey+"\n", "\n", 1)
 		if err := conn.Exec(ctx, ddl); err != nil {
 			t.Fatalf("create %s: %v", target.table, err)
 		}
@@ -98,8 +99,8 @@ func assertConverted(t *testing.T, conn driver.Conn) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.partitionKey != target.key {
-			t.Errorf("%s partition key = %q, want %q", target.table, info.partitionKey, target.key)
+		if info.partitionKey != target.partitionKey {
+			t.Errorf("%s partition key = %q, want %q", target.table, info.partitionKey, target.partitionKey)
 		}
 		for _, suffix := range []string{repartOld, repartStage, repartDone, repartSkip} {
 			if w, _ := describeTable(context.Background(), conn, target.table+suffix); w.exists {
@@ -111,7 +112,7 @@ func assertConverted(t *testing.T, conn driver.Conn) {
 
 var repartKeep = map[string]bool{"a": true, "b": true, "": true}
 
-func TestConvertPartitioning(t *testing.T) {
+func TestConvertLayouts(t *testing.T) {
 	c, conn := repartClient(t)
 	ctx := context.Background()
 	before := map[string]map[string]uint64{}
@@ -119,7 +120,7 @@ func TestConvertPartitioning(t *testing.T) {
 		before[target.table] = repartTotals(t, conn, target.table)
 	}
 
-	if err := c.ConvertPartitioning(ctx, repartKeep); err != nil {
+	if err := c.ConvertLayouts(ctx, repartKeep); err != nil {
 		t.Fatalf("convert: %v", err)
 	}
 	assertConverted(t, conn)
@@ -136,7 +137,7 @@ func TestConvertPartitioning(t *testing.T) {
 	}
 
 	// Idempotent: a second start finds nothing to do.
-	if err := c.ConvertPartitioning(ctx, repartKeep); err != nil {
+	if err := c.ConvertLayouts(ctx, repartKeep); err != nil {
 		t.Fatalf("second convert: %v", err)
 	}
 	assertConverted(t, conn)
@@ -145,7 +146,7 @@ func TestConvertPartitioning(t *testing.T) {
 // A crash after the swap, with one fractal's copy half written and another copied but
 // never moved, must still end with every row exactly once, plus rows that arrived after
 // the swap.
-func TestConvertPartitioningResumes(t *testing.T) {
+func TestConvertLayoutsResumes(t *testing.T) {
 	c, conn := repartClient(t)
 	ctx := context.Background()
 	before := map[string]map[string]uint64{}
@@ -180,7 +181,7 @@ func TestConvertPartitioningResumes(t *testing.T) {
 		}
 	}
 
-	if err := c.ConvertPartitioning(ctx, repartKeep); err != nil {
+	if err := c.ConvertLayouts(ctx, repartKeep); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	assertConverted(t, conn)
@@ -201,7 +202,7 @@ func TestConvertPartitioningResumes(t *testing.T) {
 
 // Clearing a fractal while a conversion is in progress must not have its earlier rows
 // copied back afterwards.
-func TestConvertPartitioningSkipsClearedFractal(t *testing.T) {
+func TestConvertLayoutsSkipsClearedFractal(t *testing.T) {
 	c, conn := repartClient(t)
 	ctx := context.Background()
 	before := map[string]map[string]uint64{}
@@ -218,7 +219,7 @@ func TestConvertPartitioningSkipsClearedFractal(t *testing.T) {
 	if err := c.DeleteLogsByFractalID(ctx, "a", false); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-	if err := c.ConvertPartitioning(ctx, repartKeep); err != nil {
+	if err := c.ConvertLayouts(ctx, repartKeep); err != nil {
 		t.Fatalf("convert: %v", err)
 	}
 	assertConverted(t, conn)
@@ -253,7 +254,7 @@ func TestConvertPartitioningSkipsClearedFractal(t *testing.T) {
 // An upgrade landing mid-conversion migrates the live table, but the stage and old tables
 // an earlier release created keep its columns. The stage gains the new columns, so a
 // copied-but-unmoved fractal still moves, and columns old lacks take their defaults.
-func TestConvertPartitioningResumesAcrossMigration(t *testing.T) {
+func TestConvertLayoutsResumesAcrossMigration(t *testing.T) {
 	c, conn := repartClient(t)
 	ctx := context.Background()
 	target := repartitionTargets[1]
@@ -291,7 +292,7 @@ func TestConvertPartitioningResumesAcrossMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := c.ConvertPartitioning(ctx, repartKeep); err != nil {
+	if err := c.ConvertLayouts(ctx, repartKeep); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	assertConverted(t, conn)
@@ -301,4 +302,199 @@ func TestConvertPartitioningResumesAcrossMigration(t *testing.T) {
 			t.Errorf("fractal %q: %d after, %d before", f, after[f], before[f])
 		}
 	}
+}
+
+// previousLayoutDDL is a table as the release before proc_key created it: no key columns,
+// sorted and projected by GUID, and optionally from before its per-fractal partition key.
+func previousLayoutDDL(t *testing.T, table string, partitioned bool) string {
+	t.Helper()
+	ddl, err := initTableDDL(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cut := func(from, to string) {
+		t.Helper()
+		if !strings.Contains(ddl, from) {
+			t.Fatalf("%s: no %q to revert", table, from[:min(60, len(from))])
+		}
+		ddl = strings.Replace(ddl, from, to, 1)
+	}
+	for _, col := range []string{"proc_key", "parent_key"} {
+		if line := keyColumnDDL(ddl, col); line != "" {
+			cut(line, "")
+		}
+	}
+	switch table {
+	case "proc_lineage":
+		cut("PROJECTION by_parent (SELECT fractal_id, parent_key, parent_guid, process_guid, timestamp, child_image, child_cmd_key ORDER BY (fractal_id, parent_key))",
+			"PROJECTION by_parent (SELECT fractal_id, parent_guid, process_guid, timestamp, child_image, child_cmd_key ORDER BY (fractal_id, parent_guid))")
+		cut("ORDER BY (fractal_id, proc_key)\n", "ORDER BY (fractal_id, process_guid)\n")
+	case "process_edges":
+		cut("ORDER BY (fractal_id, proc_key, process_guid, event_type, dst_node)\n", "ORDER BY (fractal_id, process_guid, event_type, dst_node)\n")
+	}
+	if !partitioned {
+		cut("\nPARTITION BY fractal_id\n", "\n")
+	}
+	return strings.Replace(ddl, "index_granularity = 1024", "index_granularity = 8192", 1)
+}
+
+// keyColumnDDL returns col's definition line in ddl, through its trailing comma and newline.
+func keyColumnDDL(ddl, col string) string {
+	i := strings.Index(ddl, "    "+col+" ")
+	if i < 0 {
+		return ""
+	}
+	return ddl[i : i+strings.Index(ddl[i:], ",\n")+2]
+}
+
+// procKeyFromDDL is proc_key's expression as init-clickhouse.sql defines it.
+func procKeyFromDDL(t *testing.T) string {
+	t.Helper()
+	ddl, err := initTableDDL("proc_lineage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := keyColumnDDL(ddl, "proc_key")
+	_, expr, ok := strings.Cut(line, " MATERIALIZED ")
+	if !ok {
+		t.Fatal("proc_key has no MATERIALIZED expression")
+	}
+	return strings.TrimSuffix(expr, ",\n")
+}
+
+// sortKeyFixture seeds Sysmon-shaped and other GUIDs, with repeated edges that must aggregate.
+var sortKeyFixture = map[string]string{
+	"proc_lineage": `INSERT INTO proc_lineage (fractal_id, timestamp, ingest_timestamp, log_id, process_guid, parent_guid, image) SELECT ['a','b','','z'][number % 4 + 1], now64(), now64(), toString(number), ` +
+		`if(number % 5 = 0, hex(number), concat('{63047898-', leftPad(lower(hex(toUInt16(number % 65536))), 4, '0'), '-', leftPad(lower(hex(toUInt16(26720 + intDiv(number, 7)))), 4, '0'), '-0000-', leftPad(toString(number), 12, '0'), '}')), ` +
+		`if(number % 5 = 0, '', concat('{63047898-', leftPad(lower(hex(toUInt16((number + 1) % 65536))), 4, '0'), '-6860-0000-000000000001}')), 'x.exe' FROM numbers(SEED_FROM, SEED_COUNT)`,
+	"process_edges": `INSERT INTO process_edges (fractal_id, process_guid, event_type, dst_node, cnt, ingest_timestamp) SELECT ['a','b','','z'][number % 4 + 1], ` +
+		`concat('{63047898-', leftPad(lower(hex(toUInt16(number % 100))), 4, '0'), '-6860-0000-000000000001}'), 'dns_query', toString(number % 7), 1, now64() FROM numbers(SEED_FROM, SEED_COUNT)`,
+}
+
+// seed is a sortKeyFixture insert for count rows numbered from from.
+func seed(table string, from, count int) string {
+	return strings.NewReplacer("SEED_FROM", fmt.Sprint(from), "SEED_COUNT", fmt.Sprint(count)).Replace(sortKeyFixture[table])
+}
+
+// migration022 runs the statements that add the key columns to the live tables.
+func migration022(t *testing.T, conn driver.Conn) {
+	t.Helper()
+	b, err := os.ReadFile("../../db/migrations/clickhouse/022_proc_key.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range splitClickHouseSQL(string(b)) {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if err := conn.Exec(context.Background(), stmt); err != nil {
+			t.Fatalf("migration 022: %v\n%s", err, stmt)
+		}
+	}
+}
+
+// finalRows counts a table's rows once merged, for the kept fractals.
+func finalRows(t *testing.T, conn driver.Conn, from string) uint64 {
+	t.Helper()
+	var n uint64
+	if err := conn.QueryRow(context.Background(), "SELECT count() FROM "+from+" WHERE fractal_id IN ('a', 'b', '')").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// assertSortKeyed checks a converted provenance table: the target keys, every row's key
+// computed from its own GUID, Sysmon GUIDs reordered, and every row found by its key.
+func assertSortKeyed(t *testing.T, conn driver.Conn, target repartitionTarget, wantRows uint64) {
+	t.Helper()
+	ctx := context.Background()
+	info, err := describeTable(ctx, conn, target.table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.sortingKey != target.sortingKey || info.partitionKey != target.partitionKey {
+		t.Errorf("%s keys = (%q, %q), want (%q, %q)", target.table, info.partitionKey, info.sortingKey, target.partitionKey, target.sortingKey)
+	}
+	key := procKeyFromDDL(t)
+	var rows, wrongKey, reordered, found uint64
+	q := fmt.Sprintf("SELECT count(), countIf(proc_key != %[1]s), countIf(proc_key != process_guid), "+
+		"(SELECT count() FROM %[2]s FINAL WHERE proc_key IN (SELECT %[1]s FROM %[2]s)) FROM %[2]s FINAL", key, target.table)
+	if err := conn.QueryRow(ctx, q).Scan(&rows, &wrongKey, &reordered, &found); err != nil {
+		t.Fatal(err)
+	}
+	if rows != wantRows || wrongKey != 0 || reordered == 0 || found != rows {
+		t.Errorf("%s: rows %d (want %d), wrong keys %d, reordered %d, found by key %d", target.table, rows, wantRows, wrongKey, reordered, found)
+	}
+}
+
+// From the previous release's layout, the migration plus a conversion leave each provenance
+// table sorted by key with every row and every aggregate kept.
+func TestConvertLayoutsSortKey(t *testing.T) {
+	c, conn := repartClient(t)
+	ctx := context.Background()
+	sums, rows := map[string]map[string]uint64{}, map[string]uint64{}
+	for _, target := range repartitionTargets {
+		if target.sortingKey == "" {
+			continue
+		}
+		rows0 := seed(target.table, 0, 4000)
+		for _, stmt := range []string{"DROP TABLE " + target.table + " SYNC", previousLayoutDDL(t, target.table, true), rows0, rows0} {
+			if err := conn.Exec(ctx, stmt); err != nil {
+				t.Fatalf("%s: %v", target.table, err)
+			}
+		}
+		sums[target.table] = repartTotals(t, conn, target.table)
+		rows[target.table] = finalRows(t, conn, target.table+" FINAL")
+	}
+	migration022(t, conn)
+	if err := c.ConvertLayouts(ctx, repartKeep); err != nil {
+		t.Fatal(err)
+	}
+	assertConverted(t, conn)
+	for _, target := range repartitionTargets {
+		if target.sortingKey == "" {
+			continue
+		}
+		got := repartTotals(t, conn, target.table)
+		for f := range repartKeep {
+			if got[f] != sums[target.table][f] {
+				t.Errorf("%s fractal %q: %d after, %d before", target.table, f, got[f], sums[target.table][f])
+			}
+		}
+		assertSortKeyed(t, conn, target, rows[target.table])
+	}
+}
+
+// An earlier conversion that swapped and stopped part way is finished before the new layout
+// swaps in, so rows still waiting in its __old reach the new table too. Its working tables
+// predate the key columns, as on a real upgrade.
+func TestConvertLayoutsFinishesEarlierConversion(t *testing.T) {
+	c, conn := repartClient(t)
+	ctx := context.Background()
+	target := repartitionTargets[1]
+	stage, old := target.table+repartStage, target.table+repartOld
+	named := func(ddl, name string) string {
+		return strings.Replace(ddl, "EXISTS proc_lineage (", "EXISTS "+name+" (", 1)
+	}
+	for _, stmt := range []string{
+		"DROP TABLE proc_lineage SYNC",
+		previousLayoutDDL(t, target.table, true),
+		named(previousLayoutDDL(t, target.table, false), old),
+		named(previousLayoutDDL(t, target.table, true), stage),
+		"CREATE TABLE " + target.table + repartDone + " (fractal_id String) ENGINE = MergeTree ORDER BY fractal_id",
+		"CREATE TABLE " + target.table + repartSkip + " (fractal_id String) ENGINE = MergeTree ORDER BY fractal_id",
+		strings.Replace(seed(target.table, 0, 4000), "INSERT INTO proc_lineage ", "INSERT INTO "+old+" ", 1),
+		seed(target.table, 4000, 1000),
+	} {
+		if err := conn.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%v\n%s", err, stmt[:min(120, len(stmt))])
+		}
+	}
+	want := finalRows(t, conn, "(SELECT * FROM "+old+" UNION ALL SELECT * FROM proc_lineage)")
+	migration022(t, conn)
+	if err := c.ConvertLayouts(ctx, repartKeep); err != nil {
+		t.Fatal(err)
+	}
+	assertConverted(t, conn)
+	assertSortKeyed(t, conn, target, want)
 }

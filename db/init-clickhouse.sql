@@ -289,27 +289,37 @@ CREATE TABLE IF NOT EXISTS proc_lineage (
     parent_guid      String,
     image            LowCardinality(String),
     parent_image     LowCardinality(String),
-    commandline      String,
+    -- ZSTD: lookups read this column for every process they return.
+    commandline      String CODEC(ZSTD(1)),
     -- '\0' marks a row written before the column existed (see migration 019).
     proc_user        String DEFAULT '\0',
+    -- Read by pgrContext(); rows written before the columns read ''.
+    hash             String DEFAULT '',
+    original_file_name String DEFAULT '',
     computer_name    LowCardinality(String),
     -- pgr/ptg lookup keys (see migration 019): the sibling-collapse key, computed once per row,
     -- and the lowercased image the dropped-then-ran reconnection matches on.
     child_image      LowCardinality(String) MATERIALIZED lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(image, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')),
     child_cmd_key    UInt64 MATERIALIZED cityHash64(lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(commandline, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*'))),
     image_lc         LowCardinality(String) MATERIALIZED lower(image),
+    -- Sort keys (see parser.procKeyExpr): a Sysmon GUID reordered so one time window is
+    -- contiguous, which keeps a lookup's cost to the processes it asks for.
+    proc_key         String MATERIALIZED if(match(process_guid, '^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}$'), concat(substring(process_guid, 1, 10), substring(process_guid, 16, 5), substring(process_guid, 11, 5), substring(process_guid, 21)), process_guid),
+    parent_key       String MATERIALIZED if(match(parent_guid, '^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}$'), concat(substring(parent_guid, 1, 10), substring(parent_guid, 16, 5), substring(parent_guid, 11, 5), substring(parent_guid, 21)), parent_guid),
     INDEX idx_parent_guid parent_guid TYPE bloom_filter(0.001) GRANULARITY 1,
-    PROJECTION by_parent (SELECT fractal_id, parent_guid, process_guid, timestamp, child_image, child_cmd_key ORDER BY (fractal_id, parent_guid)),
+    -- The ancestry builder and its readers find recent rows by ingest time.
+    INDEX idx_ingest_ts ingest_timestamp TYPE minmax GRANULARITY 1,
+    PROJECTION by_parent (SELECT fractal_id, parent_key, parent_guid, process_guid, timestamp, child_image, child_cmd_key ORDER BY (fractal_id, parent_key)),
     PROJECTION by_image (SELECT _part_offset ORDER BY (fractal_id, image_lc))
 ) ENGINE = ReplacingMergeTree(timestamp)
 -- Per fractal so clearing or deleting one drops its rows without a mutation (the same
 -- for proc_freq and process_edges). Converted in place by pkg/storage/repartition.go.
 PARTITION BY fractal_id
-ORDER BY (fractal_id, process_guid)
+ORDER BY (fractal_id, proc_key)
 -- Retention on the ingest axis, matching logs. On event time a source with a skewed
 -- clock (an event dated years back) has its lineage row deleted at the first merge.
 TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY
-SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
+SETTINGS index_granularity = 1024, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
 
 -- Populates proc_lineage from process-create events, keyed on the normalized
 -- category (Phase A). ::String is safe whether or not the type hint is applied yet.
@@ -326,9 +336,45 @@ SELECT
     fields.parent_image::String        AS parent_image,
     fields.commandline::String         AS commandline,
     fields.user::String                AS proc_user,
+    fields.hash::String                AS hash,
+    fields.original_file_name::String  AS original_file_name,
     fields.computer_name::String       AS computer_name
 FROM logs
 WHERE fields.bifract_category = 'process_creation' AND fields.process_guid != '';
+
+-- proc_ancestry: each process's ancestors to depth 8, one row per (process, depth), filled by the
+-- background builder (storage.ProcAncestryBuilder) from proc_lineage so the ancestor and
+-- descendant filters are one key lookup instead of a walk. Depth 0 is the process itself:
+-- open_key names the ancestor its known chain stops at when that ancestor has no lineage yet,
+-- so readers know which rows a late creation could still extend. Rows are replaced on
+-- (process, depth), and readers fall back to proc_lineage for anything not yet built.
+CREATE TABLE IF NOT EXISTS proc_ancestry (
+    fractal_id   LowCardinality(String),
+    proc_key     String,
+    depth        UInt8,
+    process_guid String,
+    image        LowCardinality(String),
+    anc_key      String,
+    anc_image    LowCardinality(String),
+    open_key     String,
+    -- The process's own lineage ingest, so its ancestry expires with its lineage.
+    ingest_timestamp DateTime64(3, 'UTC'),
+    version      DateTime64(3, 'UTC'),
+    PROJECTION by_ancestor (SELECT _part_offset ORDER BY (fractal_id, anc_key))
+) ENGINE = ReplacingMergeTree(version)
+PARTITION BY fractal_id
+ORDER BY (fractal_id, proc_key, depth)
+TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY
+SETTINGS index_granularity = 1024, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
+
+-- The builder's progress: every lineage row ingested before at is reflected in proc_ancestry. The
+-- latest write wins, so a lineage backfill can move it back to rows it added.
+CREATE TABLE IF NOT EXISTS proc_ancestry_watermark (
+    id     UInt8,
+    at     DateTime64(3, 'UTC'),
+    set_at DateTime64(3, 'UTC') DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree(set_at)
+ORDER BY id;
 
 -- proc_freq: NoDoze frequency baseline for pgr() edge scoring. Abstracted + aggregated
 -- behavioral patterns (src process -> relationship -> abstracted target) with count + host
@@ -476,13 +522,15 @@ CREATE TABLE IF NOT EXISTS process_edges (
     ingest_timestamp SimpleAggregateFunction(max, DateTime64(3, 'UTC')),
     computer_name    SimpleAggregateFunction(anyLast, String),
     cnt              SimpleAggregateFunction(sum, UInt64),
+    -- Sort key, as on proc_lineage.
+    proc_key         String MATERIALIZED if(match(process_guid, '^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}$'), concat(substring(process_guid, 1, 10), substring(process_guid, 16, 5), substring(process_guid, 11, 5), substring(process_guid, 21)), process_guid),
     PROJECTION by_target (SELECT _part_offset ORDER BY (fractal_id, event_type, fkey_tgt))
 ) ENGINE = AggregatingMergeTree()
 PARTITION BY fractal_id
-ORDER BY (fractal_id, process_guid, event_type, dst_node)
+ORDER BY (fractal_id, proc_key, process_guid, event_type, dst_node)
 -- Ingest axis (see proc_lineage). max() means an edge lives 730 days past its last ingest.
 TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY
-SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
+SETTINGS index_granularity = 1024, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
 
 -- Single MV feeding process_edges for the three default pgr leaf categories. One pass over each
 -- insert block (WHERE category IN (...)), per-category projection via multiIf. Abstraction regexes
@@ -523,6 +571,38 @@ WHERE fields.bifract_category::String IN ('file_write', 'network_connect', 'dns_
               fields.bifract_category = 'network_connect', fields.dst_ip::String != '',
               fields.query::String != '' AND NOT match(fields.query::String, '^([0-9]{1,3}\\.){3}[0-9]{1,3}$'))
 GROUP BY fractal_id, process_guid, event_type, dst_node;
+
+-- Injection and handle-access edges, keyed by the acting process (source_process_guid) like the leaf
+-- edges above, so pgr reads them by key instead of scanning logs. Same filters and abstraction as
+-- the logs read it replaced, which still serves logs ingested before provenance_marks' p2p_edges.
+CREATE MATERIALIZED VIEW IF NOT EXISTS process_edges_p2p_mv TO process_edges
+DEFINER = default SQL SECURITY DEFINER AS
+SELECT
+    fractal_id,
+    fields.source_process_guid::String AS process_guid,
+    fields.bifract_category::String AS event_type,
+    fields.target_process_guid::String AS dst_node,
+    anyLast(fields.target_image::String) AS label,
+    anyLast(lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*'))) AS fkey_src,
+    anyLast(lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*'))) AS fkey_tgt,
+    anyLast(log_id) AS log_id,
+    max(timestamp) AS timestamp,
+    max(ingest_timestamp) AS ingest_timestamp,
+    anyLast(fields.computer_name::String) AS computer_name,
+    count() AS cnt
+FROM logs
+WHERE fields.bifract_category::String IN ('remote_thread', 'process_access')
+  AND fields.image::String != '' AND fields.target_image::String != ''
+  AND fields.source_process_guid::String != '' AND fields.target_process_guid::String != ''
+GROUP BY fractal_id, process_guid, event_type, dst_node;
+
+-- When each provenance rollup began, so readers take older history from logs. The latest write wins.
+CREATE TABLE IF NOT EXISTS provenance_marks (
+    name   LowCardinality(String),
+    at     DateTime64(3, 'UTC'),
+    set_at DateTime64(3, 'UTC') DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree(set_at)
+ORDER BY name;
 
 -- Fleet-wide facts pgr reads per call, one row per (fractal, kind, value): lineage hosts,
 -- baseline hosts and source images, baseline days. Each row lives as long as the newest row

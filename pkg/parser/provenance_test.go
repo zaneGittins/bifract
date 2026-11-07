@@ -59,6 +59,7 @@ func TestAbstractExprMatchesMVs(t *testing.T) {
 		{"../../db/migrations/clickhouse/009_proc_freq_events.sql", delta009},
 		{"../../db/migrations/clickhouse/011_process_edges.sql", delta011},
 		{"../../db/migrations/clickhouse/019_provenance_access_paths.sql", delta019},
+		{"../../db/migrations/clickhouse/025_process_edges_p2p.sql", []use{{"fields.image::String", AbstractPath}, {"fields.target_image::String", AbstractPath}}},
 	}
 	// Compare whitespace-insensitively: ClickHouse ignores SQL whitespace, so the abstracted VALUE
 	// (what must match proc_freq) is identical regardless of spacing between args. The abstraction
@@ -342,7 +343,7 @@ func TestScoringSQLReadsCommandLinesFromLineage(t *testing.T) {
 			pl := cteBody(t, sql, "pl")
 			for _, want := range []string{
 				"any(substring(commandline, 1, 300)) AS command_line, max(proc_user) AS lineage_user FROM proc_lineage WHERE ",
-				"' AND " + c.scope + " AND process_guid GLOBAL IN (SELECT guid FROM _pgr_tree WHERE guid = node) GROUP BY guid",
+				"' AND " + c.scope + " AND proc_key GLOBAL IN (SELECT " + procKeyExpr("guid") + " FROM _pgr_tree WHERE guid = node) GROUP BY guid",
 			} {
 				if !strings.Contains(pl, want) {
 					t.Errorf("want %q in pl:\n%s", want, pl)
@@ -350,7 +351,7 @@ func TestScoringSQLReadsCommandLinesFromLineage(t *testing.T) {
 			}
 			pu := cteBody(t, sql, "pu")
 			for _, want := range []string{
-				"(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM proc_lineage WHERE process_guid GLOBAL IN (SELECT guid FROM _pgr_tree WHERE guid = node) AND " + c.scope + " AND proc_user = '\\0')",
+				"(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM proc_lineage WHERE proc_key GLOBAL IN (SELECT " + procKeyExpr("guid") + " FROM _pgr_tree WHERE guid = node) AND " + c.scope + " AND proc_user = '\\0')",
 				"' AND " + c.scope + " AND (timestamp, log_id)",
 			} {
 				if !strings.Contains(pu, want) {
@@ -464,7 +465,7 @@ func TestScoringSQLLeavesOneOut(t *testing.T) {
 	}
 	// sx must count executions exactly as the spawn MV does, or self_exec drifts from exec_hd.
 	sx := cteBody(t, sql, "sx")
-	for _, want := range []string{"FROM proc_lineage FINAL", "parent_image != '' AND image != ''", "process_guid GLOBAL IN (SELECT guid FROM _pgr_tree)", "toDate(ingest_timestamp)"} {
+	for _, want := range []string{"FROM proc_lineage FINAL", "parent_image != '' AND image != ''", "proc_key GLOBAL IN (SELECT " + procKeyExpr("guid") + " FROM _pgr_tree)", "toDate(ingest_timestamp)"} {
 		if !strings.Contains(sx, want) {
 			t.Errorf("sx missing %q: %s", want, sx)
 		}
@@ -576,7 +577,7 @@ func TestProcessGroupHopSQL(t *testing.T) {
 		"GROUP BY parent_node, c.child_image, c.child_cmd_key",
 		"uniqExact(c.process_guid) AS n",
 		"FROM proc_lineage AS c GLOBAL INNER JOIN _pgr_frontier AS f ON c.parent_guid = f.guid WHERE ",
-		"c.fractal_id = 'f1' AND c.parent_guid GLOBAL IN (SELECT guid FROM _pgr_frontier)",
+		"c.fractal_id = 'f1' AND c.parent_key GLOBAL IN (SELECT " + procKeyExpr("guid") + " FROM _pgr_frontier)",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("hop SQL missing %q:\n%s", want, sql)
@@ -586,7 +587,7 @@ func TestProcessGroupHopSQL(t *testing.T) {
 		t.Errorf("hop SQL abstracts per row:\n%s", sql)
 	}
 	// Only the by_parent projection's columns, or ClickHouse reads the table instead.
-	byParent := map[string]bool{"fractal_id": true, "parent_guid": true, "process_guid": true, "timestamp": true, "child_image": true, "child_cmd_key": true}
+	byParent := map[string]bool{"fractal_id": true, "parent_key": true, "parent_guid": true, "process_guid": true, "timestamp": true, "child_image": true, "child_cmd_key": true}
 	for _, m := range regexp.MustCompile(`\bc\.(\w+)`).FindAllStringSubmatch(sql, -1) {
 		if !byParent[m[1]] {
 			t.Errorf("hop reads c.%s, which by_parent does not hold", m[1])
@@ -601,7 +602,7 @@ func TestScoringSQLMapsMembersOntoNodes(t *testing.T) {
 	for _, want := range []string{
 		"LEFT JOIN _pgr_tree AS ms ON ms.guid = ev.src_node LEFT JOIN _pgr_tree AS md ON md.guid = ev.dst_node",
 		"if(ms.node = '', ev.src_node, ms.node) AS src_node",
-		"process_guid GLOBAL IN (SELECT guid FROM _pgr_tree) AND event_type IN ('file_write')",
+		"proc_key GLOBAL IN (SELECT " + procKeyExpr("guid") + " FROM _pgr_tree) AND event_type IN ('file_write')",
 		// A collapsed node's spawn edge carries the node's own creation log (whichever member is
 		// the node, however timestamps tie), a leaf its latest event.
 		"ev.dst_node AS raw_dst",
@@ -684,7 +685,7 @@ func TestProvenanceSummarySQL(t *testing.T) {
 func TestReconnectionRarityGateScopedToTree(t *testing.T) {
 	sql := BuildReconnectionSQL(ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{}}, 100, 50, reconOpts())
 	for _, et := range []string{"net_connect", "dns_query"} {
-		want := "FROM proc_freq WHERE event_type = '" + et + "' AND fractal_id = 'f1' AND target_norm GLOBAL IN (SELECT fkey_tgt FROM process_edges WHERE fractal_id = 'f1' AND event_type = '" + et + "' AND process_guid GLOBAL IN (SELECT guid FROM _pgr_tree)) GROUP BY target_norm"
+		want := "FROM proc_freq WHERE event_type = '" + et + "' AND fractal_id = 'f1' AND target_norm GLOBAL IN (SELECT fkey_tgt FROM process_edges WHERE fractal_id = 'f1' AND event_type = '" + et + "' AND proc_key GLOBAL IN (SELECT " + procKeyExpr("guid") + " FROM _pgr_tree)) GROUP BY target_norm"
 		if !strings.Contains(sql, want) {
 			t.Errorf("%s gate not scoped to the tree:\n%s", et, sql)
 		}
@@ -732,6 +733,29 @@ func TestReconnectionPeerLimitPrefersRareArtifacts(t *testing.T) {
 	} {
 		if got := strings.Count(sql, want); got != n {
 			t.Errorf("%q appears %d times, want %d", want, got, n)
+		}
+	}
+}
+
+// Injection and handle-access edges come from the rollup, and from logs only for what was ingested
+// before the rollup recorded them, so a graph over older history keeps them.
+func TestP2PEdgesReadTheRollup(t *testing.T) {
+	cutoff := "ingest_timestamp < (SELECT argMax(at, set_at) FROM provenance_marks WHERE name = 'p2p_edges')"
+	union := buildProvenanceEdgeUnion(map[string]bool{"remote_thread": true, "process_access": true}, reconOpts())
+	for _, want := range []string{
+		"FROM process_edges WHERE fractal_id = 'f1' AND ",
+		"AND event_type IN ('remote_thread', 'process_access')",
+		"AND fields.bifract_category = 'remote_thread' AND " + cutoff,
+		"AND fields.bifract_category = 'process_access' AND " + cutoff,
+	} {
+		if !strings.Contains(union, want) {
+			t.Errorf("edge union missing %q:\n%s", want, union)
+		}
+	}
+	recon := BuildReconnectionSQL(ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{"remote_thread": true}}, 100, 50, reconOpts())
+	for _, want := range []string{"event_type = 'remote_thread' AND dst_node != ''", "fields.bifract_category = 'remote_thread' AND " + cutoff} {
+		if !strings.Contains(recon, want) {
+			t.Errorf("reconnection missing %q:\n%s", want, recon)
 		}
 	}
 }

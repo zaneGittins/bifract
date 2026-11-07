@@ -608,6 +608,8 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 	if e.ch != nil {
 		opts.ProcLineageTable = e.ch.ProcLineageReadTable()
 		opts.ProcEdgesTable = e.ch.ProcEdgesReadTable()
+		opts.ProcAncestryTable = e.ch.Topology().Table("proc_ancestry")
+		opts.ProcAncestryMarkTable = e.ch.Topology().Table("proc_ancestry_watermark")
 	}
 	if alert.PrismID != "" {
 		ids, err := e.resolvePrismFractalIDs(ctx, alert.PrismID, cache)

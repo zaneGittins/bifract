@@ -11,16 +11,21 @@ import (
 )
 
 const (
-	describeQuery  = "SELECT partition_key, engine_full FROM system.tables"
+	describeQuery  = "SELECT partition_key, sorting_key, engine_full FROM system.tables"
 	partsQuery     = "SELECT DISTINCT partition_id FROM system.parts"
 	positionsQuery = "ORDER BY position"
 	colTypesQuery  = "SELECT name, type FROM system.columns"
 )
 
-var lineage = repartitionTarget{table: "proc_lineage", key: "fractal_id"}
+var lineage = repartitionTarget{table: "proc_lineage", partitionKey: "fractal_id"}
 
-func describes(key, engine string) fakedb.CHResult {
-	return fakedb.CHResult{Cols: []fakedb.Col{{Column: "partition_key", Type: "String"}, {Column: "engine_full", Type: "String"}}, Rows: [][]any{{key, engine}}}
+// sortedLineage is proc_lineage as converted for its sort key.
+var sortedLineage = repartitionTarget{table: "proc_lineage", partitionKey: "fractal_id", sortingKey: "fractal_id, proc_key"}
+
+func describes(key, engine string) fakedb.CHResult { return describesSorted(key, "", engine) }
+
+func describesSorted(key, sort, engine string) fakedb.CHResult {
+	return fakedb.CHResult{Cols: []fakedb.Col{{Column: "partition_key", Type: "String"}, {Column: "sorting_key", Type: "String"}, {Column: "engine_full", Type: "String"}}, Rows: [][]any{{key, sort, engine}}}
 }
 
 // stdColumns scripts identical column lists for every table, which is what
@@ -66,12 +71,14 @@ func TestConvertTargetAlreadyConverted(t *testing.T) {
 	}
 }
 
-// A leftover __old on an unexpected key means something other than this converter
-// made it; copying from it would be guessing.
+// A leftover __old on an unexpected key, holding rows, means something other than this converter
+// made it; copying from it would be guessing. An empty one is dropped instead (see
+// TestConvertTargetDropsEmptyEarlierOld).
 func TestConvertTargetRefusesForeignOldTable(t *testing.T) {
 	c, f := newFakeClient()
 	f.OnArg(describeQuery, "proc_lineage", describes("tuple()", ""))
 	f.OnArg(describeQuery, "proc_lineage__old", describes("toYYYYMM(day)", ""))
+	f.On("SELECT count() FROM `proc_lineage__old`", fakedb.Count(3))
 	err := c.convertTarget(context.Background(), f, lineage, nil)
 	if err == nil || !strings.Contains(err.Error(), "proc_lineage__old exists with partition key") {
 		t.Fatalf("err = %v", err)
@@ -100,6 +107,10 @@ func TestConvertTargetSwapsThenCopiesEachKeptFractalOnce(t *testing.T) {
 	}
 	execs := f.Executed()
 
+	// A stage left from an earlier attempt is dropped first: nothing is staged before a swap.
+	if drop, create := indexOf(execs, "DROP TABLE IF EXISTS `proc_lineage__stage`"), indexOf(execs, "CREATE TABLE IF NOT EXISTS proc_lineage__stage ("); drop < 0 || create < drop {
+		t.Errorf("stale stage not dropped before it is created (drop=%d create=%d)", drop, create)
+	}
 	// Built from init SQL under the working names, carrying the live TTL.
 	if indexOf(execs, "CREATE TABLE IF NOT EXISTS proc_lineage__old (") < 0 || indexOf(execs, "CREATE TABLE IF NOT EXISTS proc_lineage__stage (") < 0 {
 		t.Errorf("working tables not created from init SQL: %v", execs)
@@ -139,6 +150,72 @@ func TestConvertTargetSwapsThenCopiesEachKeptFractalOnce(t *testing.T) {
 		if !strings.HasPrefix(last[i], "DROP TABLE IF EXISTS `proc_lineage"+name+"`") {
 			t.Errorf("final drops = %v", last)
 		}
+	}
+}
+
+// A sort key change converts a table already on its partition key, the same way.
+func TestConvertTargetSwapsForSortKey(t *testing.T) {
+	c, f := newFakeClient()
+	f.OnArg(describeQuery, "proc_lineage", describesSorted("fractal_id", "fractal_id, process_guid", "MergeTree ORDER BY x"))
+	stdColumns(f)
+	if err := c.convertTarget(context.Background(), f, sortedLineage, nil); err != nil {
+		t.Fatal(err)
+	}
+	if indexOf(f.Executed(), "EXCHANGE TABLES `proc_lineage` AND `proc_lineage__old`") < 0 {
+		t.Errorf("no swap for a changed sort key: %v", f.Executed())
+	}
+}
+
+// An earlier conversion that swapped but did not finish copying leaves __old in its own layout,
+// and a stage in the live table's. Its copy finishes first, so no row is left behind in a table
+// the new swap would replace.
+func TestConvertTargetFinishesEarlierConversionFirst(t *testing.T) {
+	c, f := newFakeClient()
+	f.OnArg(describeQuery, "proc_lineage", describesSorted("fractal_id", "fractal_id, process_guid", "MergeTree ORDER BY x"))
+	f.OnArg(describeQuery, "proc_lineage__old", describesSorted("tuple()", "fractal_id, process_guid", "MergeTree ORDER BY x"))
+	f.OnArg(describeQuery, "proc_lineage__stage", describesSorted("fractal_id", "fractal_id, process_guid", "MergeTree ORDER BY x"))
+	f.OnOnce("SELECT count() FROM `proc_lineage__old`", fakedb.Count(5))
+	f.OnOnce("SELECT DISTINCT fractal_id FROM `proc_lineage__old`", fakedb.Strs("fractal_id", "f1"))
+	f.On("SELECT count() FROM `proc_lineage__skip`", fakedb.Count(0))
+	f.OnArg(partsQuery, []string{"f1"}, fakedb.Strs("partition_id", "pid"))
+	// The stage exists and needs no columns added.
+	f.On("SELECT name, type, default_kind, default_expression FROM system.columns", fakedb.CHResult{})
+	stdColumns(f)
+
+	if err := c.convertTarget(context.Background(), f, sortedLineage, map[string]bool{"f1": true}); err != nil {
+		t.Fatal(err)
+	}
+	execs := f.Executed()
+	earlier := indexOf(execs, "INSERT INTO `proc_lineage__stage`")
+	moved := indexOf(execs, "MOVE PARTITION ID 'pid' TO TABLE `proc_lineage`")
+	dropped := indexOf(execs, "DROP TABLE IF EXISTS `proc_lineage__old`")
+	swap := indexOf(execs, "EXCHANGE TABLES `proc_lineage` AND `proc_lineage__old`")
+	if earlier < 0 || moved < earlier || dropped < moved || swap < dropped {
+		t.Fatalf("earlier copy must finish before the swap (copy=%d move=%d drop=%d swap=%d):\n%s", earlier, moved, dropped, swap, strings.Join(execs, "\n"))
+	}
+	if indexOf(execs[:earlier], "CREATE TABLE IF NOT EXISTS proc_lineage__stage (") >= 0 {
+		t.Error("the earlier copy must use its own stage, not one in the new layout")
+	}
+}
+
+// An empty __old in another layout was set aside by an earlier conversion before its swap, so
+// nothing depends on it.
+func TestConvertTargetDropsEmptyEarlierOld(t *testing.T) {
+	c, f := newFakeClient()
+	f.OnArg(describeQuery, "proc_lineage", describesSorted("tuple()", "fractal_id, process_guid", "MergeTree ORDER BY x"))
+	f.OnArg(describeQuery, "proc_lineage__old", describesSorted("fractal_id", "fractal_id, process_guid", "MergeTree ORDER BY x"))
+	f.On("SELECT count() FROM `proc_lineage__old`", fakedb.Count(0))
+	stdColumns(f)
+	if err := c.convertTarget(context.Background(), f, sortedLineage, nil); err != nil {
+		t.Fatal(err)
+	}
+	execs := f.Executed()
+	drop, create := indexOf(execs, "DROP TABLE IF EXISTS `proc_lineage__old`"), indexOf(execs, "CREATE TABLE IF NOT EXISTS proc_lineage__old (")
+	if drop < 0 || create < drop || indexOf(execs, "EXCHANGE") < create {
+		t.Errorf("empty earlier __old not replaced:\n%s", strings.Join(execs, "\n"))
+	}
+	if copied := indexOf(execs, "FROM `proc_lineage__old` WHERE fractal_id"); copied >= 0 && copied < indexOf(execs, "EXCHANGE") {
+		t.Error("copied from an empty table before the swap")
 	}
 }
 

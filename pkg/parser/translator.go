@@ -100,6 +100,9 @@ type QueryOptions struct {
 	ProcFreqTable          string       // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
 	ProcEdgesTable         string       // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
 	ProvenanceSummaryTable string       // Fleet-totals read table for pgr() ("provenance_summary" or "provenance_summary_distributed")
+	ProcAncestryTable      string       // Ancestry read table for the pgrHas filters ("proc_ancestry" or "proc_ancestry_distributed")
+	ProcAncestryMarkTable  string       // The ancestry builder's watermark ("proc_ancestry_watermark" or its _distributed table)
+	ProvenanceMarksTable   string       // When each provenance rollup began ("provenance_marks" or its _distributed table)
 	IncludeShardNum        bool         // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
 	// IncludeIngestTime projects ingest_timestamp as the hidden _ingest_timestamp
 	// column for the detail panel. Set by the paths feeding it (search, recall); off
@@ -350,7 +353,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	// the model's columns per row. After an aggregation it enriches the aggregated
 	// rows instead, joined below the stage that reads them. Decided before Execute so
 	// the handlers route model-column references accordingly.
-	if mlIdx := commandIndex(pipeline.Commands, "modelLookup"); mlIdx >= 0 {
+	if mlIdx := lookupCommandIndex(pipeline.Commands); mlIdx >= 0 {
 		plan.ModelLookupAtScan = firstAggregatingCommandIndex(pipeline.Commands) > mlIdx
 	}
 

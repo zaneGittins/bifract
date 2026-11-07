@@ -104,3 +104,36 @@ func TestReconcileEndpointAnalysisMVsToleratesPeerWins(t *testing.T) {
 		t.Errorf("DETACH of a detached view: %v", err)
 	}
 }
+
+// Turning the injection edge view on or off moves the mark after the view, so pgr reads those
+// edges from logs exactly while the view is not recording them.
+func TestEndpointToggleMovesTheInjectionEdgeMark(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		c, f := newFakeClient()
+		if enabled {
+			f.On("FROM system.detached_tables", fakedb.Strs("table", p2pEdgesView))
+		} else {
+			f.On("FROM system.tables", fakedb.Strs("name", p2pEdgesView))
+		}
+		if err := c.ReconcileEndpointAnalysisMVs(context.Background(), enabled); err != nil {
+			t.Fatal(err)
+		}
+		execs := f.Executed()
+		toggle, mark := indexOf(execs, p2pEdgesView), indexOf(execs, "INSERT INTO "+provenanceMarksTable)
+		want := p2pMarkNever
+		if enabled {
+			want = p2pMarkNow
+		}
+		if toggle < 0 || mark < toggle || !strings.Contains(execs[mark], want) {
+			t.Errorf("enabled=%v: %q", enabled, execs)
+		}
+	}
+	// A view already in the wanted state leaves the mark alone.
+	c, f := newFakeClient()
+	if err := c.ReconcileEndpointAnalysisMVs(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if indexOf(f.Executed(), provenanceMarksTable) >= 0 {
+		t.Errorf("mark moved without a toggle: %q", f.Executed())
+	}
+}

@@ -37,7 +37,7 @@ func TestProvenanceSQLAcrossShards(t *testing.T) {
 		`('f1', '2026-10-01 00:00:03', now64(), 'l3', 'c3', 'root', 'C:\\x.exe', 'C:\\w.exe', 'x.exe', 'WS2')`)
 	// Baseline rows on both shards, so the summary's freq kinds have something to agree on.
 	for i, addr := range chTestHosts {
-		execOnShard(t, addr, fmt.Sprintf("INSERT INTO logs.proc_freq SELECT 'f1', 'img%[1]d', 'spawn', 't', toDate('2026-09-0%[2]d'), toDate('2026-09-0%[2]d'), 1, groupUniqArrayState(256)(h) "+
+		execOnShard(t, addr, fmt.Sprintf("INSERT INTO logs.proc_freq (fractal_id, src_image, event_type, target_norm, day, first_day, event_count, hosts) SELECT 'f1', 'img%[1]d', 'spawn', 't', toDate('2026-09-0%[2]d'), toDate('2026-09-0%[2]d'), 1, groupUniqArrayState(256)(h) "+
 			"FROM (SELECT arrayJoin(['WS1', 'WS%[2]d']) AS h)", i, i+2))
 	}
 
@@ -139,7 +139,7 @@ func TestBackfillProvenancePathsAcrossShards(t *testing.T) {
 		for _, f := range []string{"f1", "f2"} {
 			execOnShard(t, addr, fmt.Sprintf("INSERT INTO logs.proc_lineage (fractal_id, timestamp, ingest_timestamp, log_id, process_guid, parent_guid, image, parent_image, commandline, computer_name) "+
 				"SELECT '%[1]s', now64(), now64(), toString(number), concat('%[1]s-%[2]d-', toString(number)), 'p', 'C:\\\\a.exe', 'C:\\\\p.exe', 'a', concat('WS', toString(number %% 5 + %[2]d)) FROM numbers(1000)", f, i))
-			execOnShard(t, addr, fmt.Sprintf("INSERT INTO logs.proc_freq SELECT '%[1]s', 'img%[2]d', 'spawn', 't', today() - %[2]d, today() - %[2]d, 1, groupUniqArrayState(256)(h) FROM (SELECT arrayJoin(['WS1', 'WS9']) AS h)", f, i))
+			execOnShard(t, addr, fmt.Sprintf("INSERT INTO logs.proc_freq (fractal_id, src_image, event_type, target_norm, day, first_day, event_count, hosts) SELECT '%[1]s', 'img%[2]d', 'spawn', 't', today() - %[2]d, today() - %[2]d, 1, groupUniqArrayState(256)(h) FROM (SELECT arrayJoin(['WS1', 'WS9']) AS h)", f, i))
 			execOnShard(t, addr, fmt.Sprintf("INSERT INTO logs.process_edges (fractal_id, process_guid, event_type, dst_node, cnt, ingest_timestamp) VALUES ('%s', 'g', 'dns_query', 'dns:x', 1, now64())", f))
 		}
 		// Old parts: their projections removed, and nothing summarized.

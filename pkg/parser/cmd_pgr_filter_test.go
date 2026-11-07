@@ -29,14 +29,15 @@ const pgrRowRef = "fields.`process_guid`::String"
 const pgrWindow = "timestamp >= '2026-11-01 00:00:00.000' AND timestamp <= '2026-11-02 00:00:00.000' AND fractal_id = 'f'"
 
 func TestPgrHasAncestorSQL(t *testing.T) {
-	cand := "(SELECT " + pgrRowRef + " FROM logs WHERE " + pgrWindow + ")"
+	cand := "(SELECT " + procKeyExpr(pgrRowRef) + " FROM logs WHERE " + pgrWindow + ")"
 	cases := []struct {
 		name  string
 		query string
 		want  []string
 	}{
-		{"depth 1 is one key lookup", `pgrHasAncestor(/a/, depth=1)`, []string{
-			pgrRowRef + " IN (SELECT process_guid FROM proc_lineage WHERE fractal_id = 'f' AND match(parent_image, '(?i)a') AND process_guid IN " + cand + ")",
+		{"depth 1 answers closed processes from one ancestry row", `pgrHasAncestor(/a/, depth=1)`, []string{
+			pgrRowRef + " IN (SELECT process_guid FROM proc_ancestry WHERE fractal_id = 'f' AND depth BETWEEN 1 AND 1 AND match(anc_image, '(?i)a') AND proc_key IN (SELECT proc_key FROM (" + pgrStatusSQL(cand) + ")",
+			" OR " + pgrRowRef + " IN (SELECT process_guid FROM proc_lineage WHERE fractal_id = 'f' AND match(parent_image, '(?i)a') AND proc_key IN (SELECT proc_key FROM proc_lineage WHERE fractal_id = 'f' AND proc_key IN " + cand + " AND proc_key NOT IN (SELECT proc_key FROM (",
 		}},
 		{"bare name matches the file name", `pgrHasAncestor("RunDLL32.exe")`, []string{
 			`(lower(parent_image) = lower('RunDLL32.exe') OR endsWith(lower(parent_image), lower('\\RunDLL32.exe')) OR endsWith(lower(parent_image), lower('/RunDLL32.exe')))`,
@@ -61,9 +62,9 @@ func TestPgrHasAncestorSQL(t *testing.T) {
 }
 
 func TestPgrHasNetworkSQL(t *testing.T) {
-	cand := "(SELECT " + pgrRowRef + " FROM logs WHERE " + pgrWindow + ")"
+	cand := "(SELECT " + procKeyExpr(pgrRowRef) + " FROM logs WHERE " + pgrWindow + ")"
 	for q, want := range map[string]string{
-		`pgrHasNetwork()`:               pgrRowRef + " IN (SELECT process_guid FROM process_edges WHERE fractal_id = 'f' AND event_type = 'net_connect' AND process_guid IN " + cand + ")",
+		`pgrHasNetwork()`:               pgrRowRef + " IN (SELECT process_guid FROM process_edges WHERE fractal_id = 'f' AND event_type = 'net_connect' AND proc_key IN " + cand + ")",
 		`pgrHasNetwork("2A00:1450::1")`: "fkey_tgt = '2A00:1450::1'",
 		`pgrHasNetwork(/^203/)`:         `match(fkey_tgt, '^203')`,
 		`NOT pgrHasNetwork()`:           pgrRowRef + " NOT IN (SELECT process_guid FROM process_edges",
@@ -100,16 +101,25 @@ func TestPgrNetworkInternalValues(t *testing.T) {
 	}
 }
 
+// pgrStatusSQL is the status lookup of the candidates' ancestry.
+func pgrStatusSQL(cand string) string {
+	return "SELECT proc_key, argMax(open_key, version) AS open_key FROM proc_ancestry WHERE fractal_id = 'f' AND depth = 0 AND proc_key IN " + cand + " GROUP BY proc_key"
+}
+
+// Processes the ancestry cannot answer yet walk up proc_lineage, as before the closure existed.
 func TestPgrHasAncestorWalksUp(t *testing.T) {
-	cand := "(SELECT " + pgrRowRef + " FROM logs WHERE " + pgrWindow + ")"
-	parents := "(SELECT parent_guid FROM proc_lineage WHERE fractal_id = 'f' AND process_guid IN " + cand + ")"
+	cand := "(SELECT " + procKeyExpr(pgrRowRef) + " FROM logs WHERE " + pgrWindow + ")"
+	status := pgrStatusSQL(cand)
+	closed := "SELECT proc_key FROM (" + status + ") WHERE open_key = '' OR open_key NOT IN (SELECT proc_key FROM proc_lineage WHERE fractal_id = 'f' AND proc_key IN (SELECT open_key FROM (" + status + ") WHERE open_key != ''))"
+	fallback := "(SELECT proc_key FROM proc_lineage WHERE fractal_id = 'f' AND proc_key IN " + cand + " AND proc_key NOT IN (" + closed + "))"
+	parents := "(SELECT parent_key FROM proc_lineage WHERE fractal_id = 'f' AND proc_key IN " + fallback + ")"
 	m := "match(parent_image, '(?i)a')"
-	want := "SELECT process_guid FROM proc_lineage WHERE fractal_id = 'f' AND (" + m + " OR parent_guid IN " +
-		"(SELECT process_guid FROM proc_lineage WHERE fractal_id = 'f' AND " + m + " AND process_guid IN " + parents + ")) AND process_guid IN " + cand
+	want := "SELECT process_guid FROM proc_lineage WHERE fractal_id = 'f' AND (" + m + " OR parent_key IN " +
+		"(SELECT proc_key FROM proc_lineage WHERE fractal_id = 'f' AND " + m + " AND proc_key IN " + parents + ")) AND proc_key IN " + fallback
 	if sql := mustTranslate(t, `pgrHasAncestor(/a/, depth=2)`, pgrOpts()); !strings.Contains(sql, want) {
 		t.Errorf("missing %q in:\n%s", want, sql)
 	}
-	if one := mustTranslate(t, `pgrHasAncestor("a.exe", depth=1)`, pgrOpts()); strings.Contains(one, "SELECT parent_guid") {
+	if one := mustTranslate(t, `pgrHasAncestor("a.exe", depth=1)`, pgrOpts()); strings.Contains(one, "SELECT parent_key FROM proc_lineage") {
 		t.Errorf("depth=1 reads only the row's own lineage:\n%s", one)
 	}
 	if def := mustTranslate(t, `pgrHasAncestor("a.exe")`, pgrOpts()); def != mustTranslate(t, `pgrHasAncestor("a.exe", depth=5)`, pgrOpts()) {
@@ -128,14 +138,23 @@ func TestPgrFilterHasNoTimeBoundOnProvenance(t *testing.T) {
 	}
 }
 
+// pgrNarrowedBy reports whether every candidate scan in sql is narrowed by exactly cond.
+func pgrNarrowedBy(sql, cond string) bool {
+	scan := "SELECT " + procKeyExpr(pgrRowRef) + " FROM logs WHERE " + pgrWindow
+	n := strings.Count(sql, scan)
+	return n > 0 && strings.Count(sql, scan+" AND "+cond+")") == n
+}
+
 func TestPgrCandidatesAreNarrowedByOtherFilters(t *testing.T) {
-	sql := mustTranslate(t, `user=bob | pgrHasAncestor("a.exe", depth=1)`, pgrOpts())
-	if !strings.Contains(sql, "FROM logs WHERE "+pgrWindow+" AND ") || strings.Count(sql, "bob") != 2 {
-		t.Errorf("candidates not narrowed:\n%s", sql)
-	}
-	sql = mustTranslate(t, `pgrHasAncestor("a.exe", depth=1) | pgrHasAncestor("b.exe", depth=1) | user=bob`, pgrOpts())
-	if strings.Count(sql, "bob") != 3 {
-		t.Errorf("each filter should narrow by the plain filter only:\n%s", sql)
+	bob := "fields.`user`::String = 'bob'"
+	for _, q := range []string{
+		`user=bob | pgrHasAncestor("a.exe", depth=1)`,
+		`pgrHasAncestor("a.exe", depth=1) | pgrHasAncestor("b.exe", depth=1) | user=bob`,
+		`user=bob | pgrHasDescendant("a.exe")`,
+	} {
+		if sql := mustTranslate(t, q, pgrOpts()); !pgrNarrowedBy(sql, bob) {
+			t.Errorf("%s: every candidate scan should be narrowed by the plain filter only:\n%s", q, sql)
+		}
 	}
 }
 
@@ -150,7 +169,7 @@ func TestPgrCandidatesIgnoreOROperands(t *testing.T) {
 // One filter's own subquery is not a scan filter, so it must not narrow another.
 func TestPgrCandidatesDoNotEmbedOtherFilters(t *testing.T) {
 	sql := mustTranslate(t, `user=bob | pgrHasNetwork() | pgrHasAncestor("a", depth=1)`, pgrOpts())
-	if strings.Count(sql, "FROM process_edges") != 1 || strings.Count(sql, "FROM proc_lineage") != 1 {
+	if strings.Count(sql, "FROM process_edges") != 1 || !pgrNarrowedBy(sql, "fields.`user`::String = 'bob'") {
 		t.Errorf("a filter reached another's candidates:\n%s", sql)
 	}
 }
@@ -194,7 +213,7 @@ func TestPgrHasAncestorOnDistributedLogs(t *testing.T) {
 		if !strings.Contains(sql, want) {
 			t.Errorf("%s: missing %q in:\n%s", q, want, sql)
 		}
-		if strings.Contains(sql, "FROM logs WHERE") || !strings.Contains(sql, "SELECT "+pgrRowRef+" FROM logs_distributed WHERE") {
+		if strings.Contains(sql, "FROM logs WHERE") || !strings.Contains(sql, "SELECT "+procKeyExpr(pgrRowRef)+" FROM logs_distributed WHERE") {
 			t.Errorf("%s: candidates must read the same table as the rows:\n%s", q, sql)
 		}
 		if plain := strings.NewReplacer("GLOBAL IN (", "", "GLOBAL NOT IN (", "").Replace(sql); strings.Contains(plain, " IN (SELECT") {
@@ -332,6 +351,7 @@ func TestFirstPgrFilter(t *testing.T) {
 		`pgrHasAncestor("a")`:       "pgrHasAncestor",
 		`user=x OR PGRHASNETWORK()`: "pgrHasNetwork",
 		`let &s := pgrHasAncestor("a") | groupby(user); user=x | in(user, &s)`: "pgrHasAncestor",
+		`user=x | groupby(process_guid) | pgrContext(commandline)`:             "pgrContext",
 	} {
 		pl, err := ParseQuery(q)
 		if err != nil {
@@ -380,5 +400,67 @@ func TestInternalRangesMatchIngest(t *testing.T) {
 		if !strings.Contains(ipAbstractTmpl, strings.ReplaceAll(prefix, `\`, `\\`)) {
 			t.Errorf("%s is not in ipAbstractTmpl", prefix)
 		}
+	}
+}
+
+// Descendants named in the ancestry match by the descendant's own image; processes added since the
+// builder's watermark, and those below them, walk up proc_lineage to find their ancestors.
+func TestPgrHasDescendantSQL(t *testing.T) {
+	cand := "(SELECT " + procKeyExpr(pgrRowRef) + " FROM logs WHERE " + pgrWindow + ")"
+	m := "match(image, '(?i)who')"
+	since := "ingest_timestamp >= (SELECT argMax(at, set_at) FROM proc_ancestry_watermark)"
+	ready := "(SELECT throwIf(count() > 1000000, 'pgrHasDescendant() is not available yet: process ancestry is still being recorded. Try again later.') FROM proc_lineage WHERE fractal_id = 'f' AND " + since + ") = 0"
+	recent := "SELECT proc_key FROM proc_lineage WHERE fractal_id = 'f' AND " + ready + " AND " + since
+	below := "SELECT proc_key FROM proc_ancestry WHERE fractal_id = 'f' AND anc_key IN (" + recent + ")"
+	l0 := "SELECT proc_key FROM proc_lineage WHERE fractal_id = 'f' AND " + m + " AND (proc_key IN (" + recent + ") OR proc_key IN (" + below + "))"
+	l1 := "SELECT parent_key FROM proc_lineage WHERE fractal_id = 'f' AND parent_key != '' AND proc_key IN (" + l0 + ")"
+	l2 := "SELECT parent_key FROM proc_lineage WHERE fractal_id = 'f' AND parent_key != '' AND proc_key IN (" + l1 + ")"
+	row := procKeyExpr(pgrRowRef)
+	want := "(" + row + " IN (SELECT anc_key FROM proc_ancestry WHERE fractal_id = 'f' AND depth BETWEEN 1 AND 2 AND " + m + " AND anc_key != '' AND anc_key IN " + cand + ")" +
+		" OR " + row + " IN (" + l1 + ") OR " + row + " IN (" + l2 + "))"
+	if sql := mustTranslate(t, `pgrHasDescendant(/who/, depth=2)`, pgrOpts()); !strings.Contains(sql, want) {
+		t.Errorf("missing %q in:\n%s", want, sql)
+	}
+	for q, want := range map[string]string{
+		`NOT pgrHasDescendant("whoami.exe")`: procKeyExpr(pgrRowRef) + " NOT IN (SELECT anc_key FROM proc_ancestry",
+		`pgrHasDescendant("whoami.exe")`:     "depth BETWEEN 1 AND 5",
+		`pgrHasDescendant("C:\\x\\w.exe")`:   `lower(image) = lower('C:\\x\\w.exe')`,
+	} {
+		if sql := mustTranslate(t, q, pgrOpts()); !strings.Contains(sql, want) {
+			t.Errorf("%s: missing %q in:\n%s", q, want, sql)
+		}
+	}
+	o := pgrOpts()
+	o.TableName, o.ProcLineageTable, o.ProcAncestryTable, o.ProcAncestryMarkTable = "logs_distributed", "proc_lineage_distributed", "proc_ancestry_distributed", "proc_ancestry_watermark_distributed"
+	sql := mustTranslate(t, `pgrHasDescendant("whoami.exe")`, o)
+	if plain := strings.NewReplacer("GLOBAL IN (", "", "GLOBAL NOT IN (", "").Replace(sql); strings.Contains(plain, " IN (SELECT") {
+		t.Errorf("a plain IN over Distributed tables:\n%s", sql)
+	}
+	for _, q := range []string{`pgrHasDescendant()`, `pgrHasDescendant("a", depth=9)`, `groupby(user) | pgrHasDescendant("a")`} {
+		if _, err := translateNoFatal(q, pgrOpts()); err == nil {
+			t.Errorf("%s: want an error", q)
+		}
+	}
+}
+
+// Ancestry is built per fractal, so a scope over several fractals walks lineage as before, where a
+// parent in another member fractal still counts.
+func TestPgrHasAncestorAcrossFractalsWalks(t *testing.T) {
+	o := pgrOpts()
+	o.FractalID, o.FractalIDs = "", []string{"a", "b"}
+	if sql := mustTranslate(t, `pgrHasAncestor("x.exe")`, o); strings.Contains(sql, "proc_ancestry") {
+		t.Errorf("a multi-fractal scope read the per-fractal ancestry:\n%s", sql)
+	}
+	o.FractalIDs = []string{"a"}
+	if sql := mustTranslate(t, `pgrHasAncestor("x.exe")`, o); !strings.Contains(sql, "proc_ancestry") {
+		t.Errorf("one fractal should read the ancestry:\n%s", sql)
+	}
+}
+
+// Until the ancestry has caught up, the descendant filter would walk all lineage, so it says so.
+func TestPgrHasDescendantRefusesWhileAncestryCatchesUp(t *testing.T) {
+	sql := mustTranslate(t, `pgrHasDescendant("x.exe")`, pgrOpts())
+	if !strings.Contains(sql, "throwIf(count() > 1000000, 'pgrHasDescendant() is not available yet: process ancestry is still being recorded. Try again later.')") {
+		t.Errorf("no readiness check:\n%s", sql)
 	}
 }

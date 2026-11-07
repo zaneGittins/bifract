@@ -12,19 +12,26 @@ import (
 	dbsql "bifract/db"
 )
 
-// repartitionTarget is a table whose partition key gained fractal_id, so a fractal's rows
-// leave with a partition drop instead of a mutation. init-clickhouse.sql carries the key
-// for new installs; ConvertPartitioning rebuilds tables provisioned before the change.
+// repartitionTarget is a table whose layout changed after installs had it: partition keys gained
+// fractal_id, so a fractal's rows leave with a partition drop instead of a mutation, and the
+// provenance tables sort by proc_key. init-clickhouse.sql carries the layout for new installs;
+// ConvertLayouts rebuilds tables provisioned before the change.
 type repartitionTarget struct {
-	table string
-	key   string // partition_key as system.tables reports it
+	table        string
+	partitionKey string // as system.tables reports it
+	sortingKey   string // as system.tables reports it, or "" if it never changed
 }
 
 var repartitionTargets = []repartitionTarget{
-	{table: "logs_histogram", key: "(fractal_id, ingest_day)"},
-	{table: "proc_lineage", key: "fractal_id"},
-	{table: "proc_freq", key: "fractal_id"},
-	{table: "process_edges", key: "fractal_id"},
+	{table: "logs_histogram", partitionKey: "(fractal_id, ingest_day)"},
+	{table: "proc_lineage", partitionKey: "fractal_id", sortingKey: "fractal_id, proc_key"},
+	{table: "proc_freq", partitionKey: "fractal_id"},
+	{table: "process_edges", partitionKey: "fractal_id", sortingKey: "fractal_id, proc_key, process_guid, event_type, dst_node"},
+}
+
+// matches reports whether a table already has the target layout.
+func (t repartitionTarget) matches(info tableInfo) bool {
+	return info.partitionKey == t.partitionKey && (t.sortingKey == "" || info.sortingKey == t.sortingKey)
 }
 
 // Working tables a conversion keeps while in progress: old holds the rows from before the
@@ -59,13 +66,13 @@ func repartitionWorkingTables() []string {
 	return names
 }
 
-// ConvertPartitioning rebuilds every repartition target still on its old partition key,
-// on every shard, without losing a row or running a mutation:
+// ConvertLayouts rebuilds every repartition target still on an old layout, on every shard,
+// without losing a row or running a mutation:
 //
-//  1. A partitioned copy of the table is created empty, checked by moving a probe row
+//  1. A copy of the table in the new layout is created empty, checked by moving a probe row
 //     through it, and swapped in with EXCHANGE TABLES. The swap is atomic and the
 //     materialized views write by name, so ingest never sees a missing table and every
-//     row from then on lands partitioned. The old table, now t__old, holds exactly the
+//     row from then on lands in the new layout. The old table, now t__old, holds exactly the
 //     rows from before the swap.
 //  2. Each fractal's rows are copied into t__stage and moved into the live table with
 //     MOVE PARTITION. A fractal is recorded in t__done once its copy completes; a copy
@@ -76,8 +83,8 @@ func repartitionWorkingTables() []string {
 //
 // keep lists the fractal ids whose rows are worth copying; rows of deleted fractals are
 // left behind. Every step is resumable, so callers run this on every startup.
-func (c *ClickHouseClient) ConvertPartitioning(ctx context.Context, keep map[string]bool) error {
-	return c.onEveryShard(ctx, "convert partitioning", func(conn driver.Conn) error {
+func (c *ClickHouseClient) ConvertLayouts(ctx context.Context, keep map[string]bool) error {
+	return c.onEveryShard(ctx, "convert layouts", func(conn driver.Conn) error {
 		for _, t := range repartitionTargets {
 			if err := c.convertTarget(ctx, conn, t, keep); err != nil {
 				return fmt.Errorf("convert %s: %w", t.table, err)
@@ -115,9 +122,12 @@ func (c *ClickHouseClient) convertTarget(ctx context.Context, conn driver.Conn, 
 		return err
 	}
 
-	if live.partitionKey != t.key {
-		if old.exists && old.partitionKey != t.key {
-			return fmt.Errorf("%s exists with partition key %q, expected %q", oldName, old.partitionKey, t.key)
+	if !t.matches(live) {
+		if old.exists && !t.matches(old) {
+			if err := c.settleEarlierConversion(ctx, conn, t, live, old, keep); err != nil {
+				return err
+			}
+			old.exists = false
 		}
 		if err := c.swapIn(ctx, conn, t, live, old.exists); err != nil {
 			return err
@@ -129,11 +139,39 @@ func (c *ClickHouseClient) convertTarget(ctx context.Context, conn driver.Conn, 
 	return c.copyOld(ctx, conn, t, keep)
 }
 
-// swapIn creates the partitioned table (unless a crash left it from an earlier attempt),
+// settleEarlierConversion clears the way for a new layout when __old holds an earlier
+// conversion's tables. Empty, it was set aside before that conversion's swap and is dropped.
+// Holding rows behind a live table on the target partition key, that conversion swapped, so its
+// copy is finished through its own stage first. Anything else was not made by this converter.
+func (c *ClickHouseClient) settleEarlierConversion(ctx context.Context, conn driver.Conn, t repartitionTarget, live, old tableInfo, keep map[string]bool) error {
+	oldName := t.table + repartOld
+	var n uint64
+	if err := conn.QueryRow(ctx, "SELECT count() FROM "+quoteCHIdent(oldName)).Scan(&n); err != nil {
+		return fmt.Errorf("count %s: %w", oldName, err)
+	}
+	if n == 0 {
+		return dropTables(ctx, conn, oldName, t.table+repartStage, t.table+repartDone, t.table+repartSkip)
+	}
+	stage, err := describeTable(ctx, conn, t.table+repartStage)
+	if err != nil {
+		return err
+	}
+	if live.partitionKey != t.partitionKey || !stage.exists {
+		return fmt.Errorf("%s exists with partition key %q, expected %q", oldName, old.partitionKey, t.partitionKey)
+	}
+	log.Printf("[ClickHouse] finishing an earlier %s conversion before changing its layout", t.table)
+	return c.copyOld(ctx, conn, t, keep)
+}
+
+// swapIn creates the new table (unless a crash left it from an earlier attempt),
 // proves rows can move into it, and exchanges it with the live table.
 func (c *ClickHouseClient) swapIn(ctx context.Context, conn driver.Conn, t repartitionTarget, live tableInfo, oldExists bool) error {
 	oldName, stageName := t.table+repartOld, t.table+repartStage
 	if !oldExists {
+		// Nothing has been staged before a swap, so a stage left in another layout is dropped.
+		if err := dropTables(ctx, conn, stageName); err != nil {
+			return err
+		}
 		if err := c.createLike(ctx, conn, t.table, oldName, live.ttl); err != nil {
 			return err
 		}
@@ -155,7 +193,7 @@ func (c *ClickHouseClient) swapIn(ctx context.Context, conn driver.Conn, t repar
 	if err := conn.Exec(ctx, "EXCHANGE TABLES "+quoteCHIdent(t.table)+" AND "+quoteCHIdent(oldName)); err != nil {
 		return fmt.Errorf("swap: %w", err)
 	}
-	log.Printf("[ClickHouse] %s now partitioned by %s; copying earlier rows from %s", t.table, t.key, oldName)
+	log.Printf("[ClickHouse] %s now in its new layout; copying earlier rows from %s", t.table, oldName)
 	return nil
 }
 
@@ -259,6 +297,7 @@ func markRepartitionSkip(ctx context.Context, conn driver.Conn, ids []string) er
 type tableInfo struct {
 	exists       bool
 	partitionKey string
+	sortingKey   string
 	ttl          string
 }
 
@@ -266,7 +305,7 @@ var engineTTLRe = regexp.MustCompile(` TTL (.+?)(?: SETTINGS |$)`)
 
 func describeTable(ctx context.Context, conn driver.Conn, name string) (tableInfo, error) {
 	rows, err := conn.Query(ctx,
-		"SELECT partition_key, engine_full FROM system.tables WHERE database = currentDatabase() AND name = ?", name)
+		"SELECT partition_key, sorting_key, engine_full FROM system.tables WHERE database = currentDatabase() AND name = ?", name)
 	if err != nil {
 		return tableInfo{}, fmt.Errorf("describe %s: %w", name, err)
 	}
@@ -274,11 +313,11 @@ func describeTable(ctx context.Context, conn driver.Conn, name string) (tableInf
 	if !rows.Next() {
 		return tableInfo{}, rows.Err()
 	}
-	var key, engine string
-	if err := rows.Scan(&key, &engine); err != nil {
+	var key, sort, engine string
+	if err := rows.Scan(&key, &sort, &engine); err != nil {
 		return tableInfo{}, err
 	}
-	info := tableInfo{exists: true, partitionKey: key}
+	info := tableInfo{exists: true, partitionKey: key, sortingKey: sort}
 	if m := engineTTLRe.FindStringSubmatch(engine); m != nil {
 		info.ttl = m[1]
 	}
