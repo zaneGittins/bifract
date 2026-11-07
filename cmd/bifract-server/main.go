@@ -579,7 +579,7 @@ func main() {
 	// metadata and hand the scan to ClickHouse: they have no spool affinity, and
 	// running them in the always-on app tier means scaling ingest down cannot
 	// leave archive jobs stuck at 'pending'.
-	stopArchiveJobWorkers, recallEstimator := startArchiveJobWorkers(db.Topology())
+	stopArchiveJobWorkers, recallEstimator := startArchiveJobWorkers(db)
 
 	// Queue depth at which alert evaluation is deferred to protect ingestion.
 	// Clamp the configured percentage to a sane (1, 100] range so a bad value
@@ -1200,12 +1200,14 @@ func archiveReadBlockedReason(obj objstore.Config, managedCH bool) string {
 // cancelled job is left 'running' and picked up by the stale reaper, exactly as
 // after a pod kill) plus a scan Estimator for the Recall pre-flight endpoint,
 // nil when no object-storage backend is configured.
-func startArchiveJobWorkers(topo storage.Topology) (func(), *archive.Estimator) {
+func startArchiveJobWorkers(ch *storage.ClickHouseClient) (func(), *archive.Estimator) {
+	topo := ch.Topology()
 	cfg, err := archive.ConfigFromEnv()
 	if err != nil {
 		log.Printf("Warning: archive job workers disabled, bad config: %v", err)
 		return func() {}, nil
 	}
+	cfg.Identities = ch
 	if archiveCHReadBlocked = archiveReadBlockedReason(cfg.Obj, topo.ManagedStorage); archiveCHReadBlocked != "" {
 		if cfg.Obj.Backend != objstore.BackendDisk && cfg.Obj.Backend != "" {
 			log.Printf("Warning: archive restore/recall disabled: %s", archiveCHReadBlocked)

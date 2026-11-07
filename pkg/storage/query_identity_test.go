@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -11,10 +12,8 @@ import (
 // stubConn is an identity marker for routing assertions; no method is ever called.
 type stubConn struct{ driver.Conn }
 
-// Untagged work must never run on a class identity. Inserts, merges, mutations and
-// materialized views all reach ClickHouse through the same helpers as search, and
-// routing any of them onto a capped user would subject non-optional work to a query
-// class's memory ceiling.
+// Untagged work must never run on a capped class identity: internal reads share the
+// helpers search uses, and a search ceiling must not throttle them.
 func TestConnForRoutesOnlyTaggedWork(t *testing.T) {
 	c := &ClickHouseClient{}
 	marker := &stubConn{}
@@ -64,6 +63,36 @@ func TestUncappedReadsCarryNoWorkloadOrCeiling(t *testing.T) {
 	got := c.applyQuerySettings(UncappedReadContext(context.Background()), nil)
 	if len(got) != 0 {
 		t.Errorf("settings = %v, want none", got)
+	}
+}
+
+// An unmarked read runs read-only, so a caller that forgets its marker never gains
+// admin. Admin is an explicit opt-in for reads with no class.
+func TestConnForRoutesUnmarkedReadsToTheReader(t *testing.T) {
+	ctx := context.Background()
+	c := &ClickHouseClient{}
+	reader, search := &stubConn{}, &stubConn{}
+	if got := c.connFor(ctx); got != nil {
+		t.Errorf("no reader provisioned: expected the default connection, got %v", got)
+	}
+	c.queryConns.Store(&map[string]*queryIdentity{QueryReaderClass: {conn: reader}, QuerySearchWorkload: {conn: search}})
+	if got := c.connFor(ctx); got != reader {
+		t.Error("an unmarked read must run on the reader identity")
+	}
+	if got := c.connFor(UserSearchContext(ctx, FractalScope{})); got != search {
+		t.Error("a marked read must keep its class identity")
+	}
+	if got := c.connFor(AdminReadContext(ctx)); got != nil {
+		t.Errorf("an admin read must run on the default connection, got %v", got)
+	}
+	if got := c.connFor(AdminReadContext(UserSearchContext(ctx, FractalScope{}))); got != search {
+		t.Errorf("a class must win over a leaked admin marker, got %v", got)
+	}
+	// The reader has no workload and no ceiling, like the alert class.
+	c.setActiveWorkloads(map[string]bool{QuerySearchWorkload: true})
+	c.setQueryMemoryCaps(map[string]int64{QuerySearchWorkload: 100})
+	if got := c.applyQuerySettings(ctx, nil); len(got) != 0 {
+		t.Errorf("unmarked read settings = %v, want none", got)
 	}
 }
 
@@ -206,5 +235,51 @@ func TestEnsurePinnedIdentityThrottlesARefusingNode(t *testing.T) {
 	}
 	if !pinned.pinRetryAfter.After(time.Now()) {
 		t.Errorf("no retry backoff after a refusal: %v", pinned.pinRetryAfter)
+	}
+}
+
+// Keeper holds a cluster's DDL verbatim, including every CREATE/ALTER USER password,
+// so no least-privilege identity may read it.
+func TestPrivateSystemTablesIncludeKeeper(t *testing.T) {
+	for _, want := range []string{"zookeeper", "query_log", "processes"} {
+		if !slices.Contains(privateSystemTables, want) {
+			t.Errorf("system.%s is readable by the identities", want)
+		}
+	}
+}
+
+// A client that shares another's identities (the archive client) runs its reads as
+// that client's classes, with its workloads and ceilings, keeps its own connection for
+// admin work, and never closes the pools it borrowed.
+func TestSharedIdentitiesRouteReads(t *testing.T) {
+	ctx := context.Background()
+	src := &ClickHouseClient{}
+	recall, reader := &stubConn{}, &stubConn{}
+	src.queryConns.Store(&map[string]*queryIdentity{QueryRecallWorkload: {conn: recall}, QueryReaderClass: {conn: reader}})
+	src.setActiveWorkloads(map[string]bool{QueryRecallWorkload: true})
+	src.setQueryMemoryCaps(map[string]int64{QueryRecallWorkload: 4096})
+
+	own := &stubConn{}
+	c := &ClickHouseClient{conn: own}
+	if got := c.connFor(RecallContext(ctx)); got != own {
+		t.Fatal("a client sharing nothing must use its own connection")
+	}
+	c.ShareQueryIdentities(src)
+	if got := c.connFor(RecallContext(ctx)); got != recall {
+		t.Error("a recall read must run on the shared recall identity")
+	}
+	if got := c.connFor(ctx); got != reader {
+		t.Error("an unmarked read must run on the shared reader identity")
+	}
+	if got := c.connFor(AdminReadContext(ctx)); got != own {
+		t.Error("an admin read must use the client's own connection")
+	}
+	s := c.applyQuerySettings(RecallContext(ctx), nil)
+	if s["workload"] != QueryRecallWorkload || s["max_memory_usage"] != int64(4096) {
+		t.Errorf("recall settings = %v, want the shared workload and ceiling", s)
+	}
+	c.closeQueryIdentities()
+	if !src.hasQueryIdentity(QueryRecallWorkload) {
+		t.Error("closing the borrower closed the shared identities")
 	}
 }

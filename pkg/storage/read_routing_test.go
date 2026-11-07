@@ -98,3 +98,46 @@ func TestDisplayRowReadsGoThroughReadConn(t *testing.T) {
 	}
 	assertSentScoped(t, *ids, 1)
 }
+
+// Point reads by log id take ids from the request, so they route like every other read
+// rather than straight to the privileged connection.
+func TestPointReadsGoThroughReadConn(t *testing.T) {
+	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for name, read := range map[string]func(c *storage.ClickHouseClient, ctx context.Context) error{
+		"GetLogByTimestamp": func(c *storage.ClickHouseClient, ctx context.Context) error {
+			_, err := c.GetLogByTimestamp(ctx, ts, "l1", "f1")
+			return err
+		},
+		"GetLogFieldsByID": func(c *storage.ClickHouseClient, ctx context.Context) error {
+			_, err := c.GetLogFieldsByID(ctx, "l1", ts, "f1")
+			return err
+		},
+		"GetLogFieldsByIDs": func(c *storage.ClickHouseClient, ctx context.Context) error {
+			_, err := c.GetLogFieldsByIDs(ctx, []string{"l1"}, []string{"f1"})
+			return err
+		},
+		"CountLogs": func(c *storage.ClickHouseClient, ctx context.Context) error {
+			_, err := c.CountLogs(ctx, ts, ts)
+			return err
+		},
+		"CountFractalLogs": func(c *storage.ClickHouseClient, ctx context.Context) error {
+			_, err := c.CountFractalLogs(ctx, "f1")
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, ch := storagetest.ClickHouse()
+			ids := recordSentIDs(ch)
+			ch.On("count()", fakedb.Count(0))
+			_ = read(client, storage.ScopeContext(context.Background(), scopeF1))
+			if len(*ids) == 0 {
+				t.Fatal("no reads")
+			}
+			for _, id := range *ids {
+				if !strings.HasSuffix(id, "~bfscope~f1,") {
+					t.Errorf("read sent as %q", id)
+				}
+			}
+		})
+	}
+}

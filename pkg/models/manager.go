@@ -693,13 +693,14 @@ func (m *Manager) stateLayoutOK(ctx context.Context, id, tableName string, def M
 			q, bad, from("columns"), storage.EscCHStr(chModelDistName(id)))
 	}
 	var wrong uint64
-	if err := m.ch.QueryRow(ctx, q).Scan(&wrong); err != nil {
+	if err := m.ch.QueryRow(storage.AdminReadContext(ctx), q).Scan(&wrong); err != nil {
 		return false, err
 	}
 	return wrong == 0, nil
 }
 
-// systemTable is a system table read across every replica on a cluster.
+// systemTable is a system table read across every replica on a cluster. Reads of it
+// are admin reads, since clusterAllReplicas needs the privileged connection.
 func (m *Manager) systemTable(table string) string {
 	if c := m.ch.Topology().FanoutCluster; c != "" {
 		return fmt.Sprintf("clusterAllReplicas('%s', system.%s)", storage.EscCHStr(c), table)
@@ -716,7 +717,7 @@ func (m *Manager) netStateLayoutOK(ctx context.Context, id string) (bool, error)
 		storage.EscCHStr(netStatePointsType), m.systemTable("columns"),
 		storage.EscCHStr(chModelStateName(id)), storage.EscCHStr(chModelStateDistName(id)))
 	var wrong uint64
-	if err := m.ch.QueryRow(ctx, q).Scan(&wrong); err != nil {
+	if err := m.ch.QueryRow(storage.AdminReadContext(ctx), q).Scan(&wrong); err != nil {
 		return false, err
 	}
 	return wrong == 0, nil

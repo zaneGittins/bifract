@@ -4,8 +4,11 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 
 	dbsql "bifract/db"
 )
@@ -42,6 +45,40 @@ func TestAlertIdentityAcrossCluster(t *testing.T) {
 	if n := count(UncappedReadContext(ctx)); n != 2*uint64(len(chTestHosts)) {
 		t.Errorf("unscoped read saw %d rows, want every row", n)
 	}
+	// An unmarked read runs as the reader on every shard it fans out to.
+	if n := count(ScopeContext(ctx, FractalScope{FractalIDs: []string{"fb"}})); n != uint64(len(chTestHosts)) {
+		t.Errorf("scoped unmarked read saw %d rows, want one per shard", n)
+	}
+	var who string
+	if err := c.QueryRow(ctx, "SELECT currentUser()").Scan(&who); err != nil || who != ReaderCHUser {
+		t.Errorf("unmarked read ran as %q: %v", who, err)
+	}
+
+	// Keeper holds the cluster's DDL verbatim, identity passwords included: only an
+	// admin read may see it, never the reader or the ingest user.
+	const keeper = "SELECT count() FROM system.zookeeper WHERE path = '/clickhouse/task_queue/ddl'"
+	var entries uint64
+	if err := c.QueryRow(AdminReadContext(ctx), keeper).Scan(&entries); err != nil || entries == 0 {
+		t.Errorf("admin Keeper read: %d %v", entries, err)
+	}
+	var denied *proto.Exception
+	if err := c.QueryRow(ctx, keeper).Scan(&entries); !errors.As(err, &denied) || denied.Code != 497 {
+		t.Errorf("reader read Keeper: %v", err)
+	}
+	if err := c.EnsureIngestUser(ctx, "IngestPw1!x"); err != nil {
+		t.Fatalf("ingest user: %v", err)
+	}
+	ingest, err := openClickHouseConn(ConnOptions{Addrs: []string{chTestHosts[0]}, Database: "logs", User: IngestCHUser, Password: "IngestPw1!x", Pool: chTestPool()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingest.Close()
+	if err := ingest.QueryRow(ctx, keeper).Scan(&entries); !errors.As(err, &denied) || denied.Code != 497 {
+		t.Errorf("ingest user read Keeper: %v", err)
+	}
+	if err := ingest.QueryRow(ctx, "SELECT count() FROM system.tables WHERE database = 'logs'").Scan(&entries); err != nil {
+		t.Errorf("ingest user lost its system read: %v", err)
+	}
 
 	for _, addr := range chTestHosts {
 		pinned, err := c.PinnedNodeClient(ctx, addr)
@@ -62,6 +99,9 @@ func TestAlertIdentityAcrossCluster(t *testing.T) {
 		}
 		if len(rows) != 1 || rows[0]["msg"] != addr || rows[0]["who"] != AlertCHUser {
 			t.Errorf("%s: pinned read = %v", addr, rows)
+		}
+		if rows, err := pinned.Query(ctx, "SELECT currentUser() AS who"); err != nil || rows[0]["who"] != ReaderCHUser {
+			t.Errorf("%s: pinned unmarked read = %v %v", addr, rows, err)
 		}
 	}
 }

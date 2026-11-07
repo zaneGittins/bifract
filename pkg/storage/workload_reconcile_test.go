@@ -252,6 +252,7 @@ func TestEnsureQueryIdentityStatementOrder(t *testing.T) {
 		"REVOKE ON CLUSTER 'c1' SELECT ON system.processes FROM bifract_recall",
 		"REVOKE ON CLUSTER 'c1' SELECT ON system.text_log FROM bifract_recall",
 		"REVOKE ON CLUSTER 'c1' SELECT ON system.query_cache FROM bifract_recall",
+		"REVOKE ON CLUSTER 'c1' SELECT ON system.zookeeper FROM bifract_recall",
 		"GRANT ON CLUSTER 'c1' CREATE TEMPORARY TABLE ON *.* TO bifract_recall",
 		"GRANT ON CLUSTER 'c1' REMOTE ON *.* TO bifract_recall",
 		"GRANT ON CLUSTER 'c1' S3 ON *.* TO bifract_recall",

@@ -413,7 +413,7 @@ func (c *ClickHouseClient) setActiveWorkloads(active map[string]bool) {
 }
 
 func (c *ClickHouseClient) workloadActive(name string) bool {
-	m := c.activeWorkloads.Load()
+	m := c.identityState().activeWorkloads.Load()
 	if m == nil || *m == nil {
 		return false
 	}
@@ -428,7 +428,7 @@ func (c *ClickHouseClient) setQueryMemoryCaps(caps map[string]int64) {
 // queryMemoryCap returns the class's per-query memory ceiling in bytes, or 0 when it
 // is uncapped or reconcile has not succeeded.
 func (c *ClickHouseClient) queryMemoryCap(name string) int64 {
-	m := c.queryMemoryCaps.Load()
+	m := c.identityState().queryMemoryCaps.Load()
 	if m == nil || *m == nil {
 		return 0
 	}
@@ -463,6 +463,23 @@ func RecallContext(ctx context.Context) context.Context {
 // runs on the read-only alert identity, with no memory ceiling and no workload.
 func UncappedReadContext(ctx context.Context) context.Context {
 	return WorkloadContext(ctx, QueryAlertClass)
+}
+
+// adminReadKey marks a read that must run on the privileged connection.
+type adminReadKey struct{}
+
+// AdminReadContext marks ctx for reads the read-only identities cannot serve: other
+// queries' text (system.query_log, processes), cluster fan-outs (clusterAllReplicas,
+// cluster), table functions and other databases. Never for user-derived SQL; a class
+// marker on the same ctx wins over it.
+func AdminReadContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, adminReadKey{}, true)
+}
+
+// IsAdminRead reports whether ctx was marked by AdminReadContext.
+func IsAdminRead(ctx context.Context) bool {
+	admin, _ := ctx.Value(adminReadKey{}).(bool)
+	return admin
 }
 
 // QueryClassOf returns the class ctx was marked with, or "".
@@ -502,7 +519,7 @@ func contextQueryBudget(ctx context.Context) int {
 // query per shard; the setting goes only to a server known to have it, since an
 // unknown setting fails the query.
 func (c *ClickHouseClient) canSkipStatistics() bool {
-	return c.caps.state(CapStatisticsSetting) == CapAvailable
+	return c.identityState().caps.state(CapStatisticsSetting) == CapAvailable
 }
 
 // applyQuerySettings adds the settings ctx implies -- the workload tag when it is

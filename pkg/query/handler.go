@@ -3251,7 +3251,8 @@ func escCHStr(s string) string {
 // fetchProfileData polls system.query_log until the query finishes, then
 // returns per-shard metrics. Returns nil if the log entry never appears.
 func (h *QueryHandler) fetchProfileData(queryID string) *ProfileData {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// query_log holds other queries' text, which only the privileged connection reads.
+	ctx, cancel := context.WithTimeout(storage.AdminReadContext(context.Background()), 15*time.Second)
 	defer cancel()
 
 	// Poll the coordinator's local query_log until the entry appears.

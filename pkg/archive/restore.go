@@ -15,13 +15,21 @@ import (
 // mode (CLICKHOUSE_CLUSTER + CLICKHOUSE_HOSTS both set) it is cluster-aware, so
 // ch.WriteTable()/ch.ReadTable() resolve to logs_distributed and restored rows
 // shard across nodes with cluster-wide dedup/counts. Otherwise it is a plain
-// single-node client targeting the local logs table.
+// single-node client targeting the local logs table. With cfg.Identities set its
+// reads run on the server's query identities; writes stay on its own connection.
 func NewCHClient(cfg Config) (*storage.ClickHouseClient, error) {
 	opts, err := cfg.CH.ClientOptions(storage.DefaultQueryPoolConfig(), storage.RoleArchive)
 	if err != nil {
 		return nil, err
 	}
-	return storage.NewClickHouseClient(opts)
+	ch, err := storage.NewClickHouseClient(opts)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Identities != nil {
+		ch.ShareQueryIdentities(cfg.Identities)
+	}
+	return ch, nil
 }
 
 // chIcebergTableFunc builds the ClickHouse iceberg*() table-function expression
@@ -417,7 +425,8 @@ func (c *Catalog) countIceberg(ctx context.Context, ch *storage.ClickHouseClient
 			"AND ingest_timestamp >= %s AND ingest_timestamp < %s",
 		tf, chQuote(fractalID), chQuote(chDate(from)), chQuote(chDate(to)),
 		chQuote(chTime(from)), chQuote(chTime(to)))
-	return scalarCount(ctx, ch, q)
+	// An object-store table function, which only the privileged connection may use.
+	return scalarCount(storage.AdminReadContext(ctx), ch, q)
 }
 
 // countLogs counts hot-store rows in an ingest-time window, matching the axis

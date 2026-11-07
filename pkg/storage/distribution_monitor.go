@@ -129,7 +129,7 @@ func (m *DistributionMonitor) run() {
 }
 
 func (m *DistributionMonitor) poll(prevErrorCount *int64, wasDegraded *bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(AdminReadContext(context.Background()), 15*time.Second)
 	defer cancel()
 
 	// In cluster mode query all replicas so the count reflects the full

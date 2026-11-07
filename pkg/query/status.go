@@ -170,7 +170,7 @@ func (h *StatusHandler) fetchStatus() StatusResponse {
 			formatReadableSize(sum(bytes_on_disk)) as size,
 			sum(bytes_on_disk) as bytes
 		FROM system.parts
-		WHERE database = 'logs' AND table = 'logs' AND active = 1
+		WHERE database = currentDatabase() AND table = 'logs' AND active = 1
 	`
 	results, err := h.db.Query(ctx, sizeQuery)
 	if err == nil && len(results) > 0 {
@@ -188,7 +188,7 @@ func (h *StatusHandler) fetchStatus() StatusResponse {
 	countQuery := `
 		SELECT sum(rows) as count
 		FROM system.parts
-		WHERE database = 'logs' AND table = 'logs' AND active = 1
+		WHERE database = currentDatabase() AND table = 'logs' AND active = 1
 	`
 	results, err = h.db.Query(ctx, countQuery)
 	if err == nil && len(results) > 0 {
@@ -207,7 +207,7 @@ func (h *StatusHandler) fetchStatus() StatusResponse {
 				min(min_time) as oldest,
 				max(max_time) as newest
 			FROM system.parts
-			WHERE database = 'logs' AND table = 'logs' AND active = 1
+			WHERE database = currentDatabase() AND table = 'logs' AND active = 1
 		`
 		results, err = h.db.Query(ctx, minMaxQuery)
 		if err == nil && len(results) > 0 {
