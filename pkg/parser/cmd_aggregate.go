@@ -344,8 +344,12 @@ func (h *headtailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type selectfirstHandler struct{}
 
 func (h *selectfirstHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Args) > 0 {
-		ctx.Plan.IsAggregated = true
+	if len(cmd.Args) == 0 {
+		return nil
+	}
+	ctx.Plan.IsAggregated = true
+	if alias, err := commandAggAlias(cmd, "first"); err == nil {
+		ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
 	}
 	return nil
 }
@@ -385,8 +389,12 @@ func (h *selectfirstHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 type selectlastHandler struct{}
 
 func (h *selectlastHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Args) > 0 {
-		ctx.Plan.IsAggregated = true
+	if len(cmd.Args) == 0 {
+		return nil
+	}
+	ctx.Plan.IsAggregated = true
+	if alias, err := commandAggAlias(cmd, "last"); err == nil {
+		ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
 	}
 	return nil
 }

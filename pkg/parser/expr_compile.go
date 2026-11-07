@@ -71,13 +71,13 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 		if entry.Inline {
 			// An inline field is a pre-aggregation assignment folded in at each
 			// reference. Its expression is already numeric.
-			return "(" + registry.Resolve(name) + ")", TypeNumber, nil
+			return "(" + ctx.export(registry.Resolve(name), name) + ")", TypeNumber, nil
 		}
 		// A row-level value is folded in as it is here, so a later reassignment
 		// of the name cannot change it.
 		if entry.ResolveAs != "" && registry.IsRowLevel(name) {
 			if expr := registry.Resolve(name); expr != name {
-				return "(" + expr + ")", TypeAny, nil
+				return "(" + ctx.export(expr, name) + ")", TypeAny, nil
 			}
 		}
 		// The bare alias, not Resolve(): an aggregate output registers with

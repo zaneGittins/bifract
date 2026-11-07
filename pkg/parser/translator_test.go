@@ -1333,19 +1333,15 @@ func TestAnalyzeFields(t *testing.T) {
 	})
 
 	t.Run("with post-filter", func(t *testing.T) {
+		// Its columns are built around the finished query, where no filter reaches:
+		// this one used to filter log rows on a field named _events instead.
 		pipeline, err := ParseQuery("* | analyzeFields() | _events < 10")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
-		result, err := TranslateToSQLWithOrder(pipeline, opts)
-		if err != nil {
-			t.Fatalf("Failed to translate: %v", err)
+		if _, err := TranslateToSQLWithOrder(pipeline, opts); err == nil || !strings.Contains(err.Error(), "filter before it") {
+			t.Errorf("a filter after analyzeFields() should be rejected, got %v", err)
 		}
-		sql := result.SQL
-		if !strings.Contains(sql, "_events") {
-			t.Errorf("Expected _events in SQL, got: %s", sql)
-		}
-		t.Logf("SQL: %s", sql)
 	})
 
 	t.Run("field order", func(t *testing.T) {
@@ -5400,16 +5396,15 @@ func TestAggregationPipelineFixes(t *testing.T) {
 		}
 	})
 
-	t.Run("compound filter mixing aggregate and projection column binds where both coexist", func(t *testing.T) {
-		// The aggregate is carried into the projection stage as a plain column, so
-		// the whole compound can be satisfied there via WHERE; it must not go to
-		// the groupby HAVING (where the projection column does not exist).
+	t.Run("compound filter mixing aggregate and projection column splits by stage", func(t *testing.T) {
+		// AND distributes, so the aggregate conjunct filters the groups and the
+		// projection column, absent from that HAVING, filters the stage computing it.
 		sql := mustTranslate(t, `a=x | groupby(h) | sprintf("%s", h, as=hx) | _count > 5 AND hx = "a"`, opts)
-		if !strings.Contains(sql, ") WHERE (_count > 5 AND hx = 'a')") {
-			t.Errorf("mixed aggregate/projection compound not bound to projection stage: %s", sql)
+		if !strings.Contains(sql, "HAVING _count > 5") || !strings.Contains(sql, ") WHERE hx = 'a'") {
+			t.Errorf("mixed aggregate/projection compound not split by stage: %s", sql)
 		}
-		if strings.Contains(sql, "HAVING") {
-			t.Errorf("mixed compound wrongly placed in HAVING (projection column absent there): %s", sql)
+		if strings.Contains(sql, "HAVING (_count > 5 AND hx") {
+			t.Errorf("projection column placed in HAVING, where it is absent: %s", sql)
 		}
 	})
 

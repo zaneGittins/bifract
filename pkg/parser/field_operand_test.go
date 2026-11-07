@@ -85,7 +85,7 @@ func TestFieldOperandSQL(t *testing.T) {
 		},
 		{
 			name:        "a dotted group key resolves to its quoted alias",
-			query:       `* | groupBy(winlog.user) | count() | count > field(winlog.user)`,
+			query:       `* | groupBy(winlog.user) | count > field(winlog.user)`,
 			wantContain: []string{"toFloat64OrDefault(`winlog.user`, nan)"},
 		},
 		{
@@ -93,7 +93,7 @@ func TestFieldOperandSQL(t *testing.T) {
 			// aggregate has to be coerced through toString like any other
 			// pipeline output.
 			name:           "an aggregate may be compared with a group key",
-			query:          `* | groupBy(user) | count() | count > field(user)`,
+			query:          `* | groupBy(user) | count > field(user)`,
 			wantContain:    []string{"HAVING toFloat64OrDefault(toString(_count), nan) > toFloat64OrDefault(user, nan)"},
 			wantNotContain: []string{"toFloat64OrDefault(_count"},
 		},
@@ -111,7 +111,7 @@ func TestFieldOperandSQL(t *testing.T) {
 		},
 		{
 			name:        "a bare aggregate on the right resolves to its alias",
-			query:       `* | groupBy(user) | count() | user = field(count)`,
+			query:       `* | groupBy(user) | user = field(count)`,
 			wantContain: []string{"toString(_count)"},
 			// never a JSON field literally named "count"
 			wantNotContain: []string{"fields.`count`"},
@@ -182,14 +182,14 @@ func TestFieldOperandErrors(t *testing.T) {
 		{
 			name:    "per-row field compared with an aggregate",
 			query:   `* | groupBy(user) | count() | count > field(threshold)`,
-			wantErr: "does not survive the aggregation",
+			wantErr: "threshold does not exist after count()",
 		},
 		{
 			// A name the query never grouped by is gone after the aggregation, and
 			// the message has to say which side is the problem.
 			name:    "field that was never grouped",
 			query:   `* | groupBy(user) | count() | count > field(other)`,
-			wantErr: "other is a per-row field and does not survive the aggregation",
+			wantErr: "other does not exist after count()",
 		},
 	}
 

@@ -81,11 +81,13 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *inHandler) appliesNegate() {}
+func (h *inHandler) filtersOutput() {}
 
 // cidrHandler handles cidr(field, "range") - filter by CIDR range
 type cidrHandler struct{}
 
 func (h *cidrHandler) appliesNegate() {}
+func (h *cidrHandler) filtersOutput() {}
 
 func (h *cidrHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	return nil
@@ -148,6 +150,9 @@ func cidrPredicateSQL(fieldRef, quotedRange string) string {
 
 // commentHandler handles comment() - filter to logs with matching comments
 type commentHandler struct{}
+
+func (h *commentHandler) filtersOutput() {}
+func (h *commentHandler) readsLogRows()  {}
 
 func (h *commentHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	return nil

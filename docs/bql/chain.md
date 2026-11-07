@@ -22,7 +22,7 @@ chain(field, ..., within=DURATION, sequence=strict|any) { step1; step2; ... }
 - Commands that reshape or aggregate (`groupby()`, `sort()`, `table()`, assignments) are rejected, and so is a step with no condition.
 - A step can test [`modelLookup()`](enrichment.md#modellookup) columns when `modelLookup()` comes before `chain()`.
 
-**Returns:** one row per entity with the identity field (named `_entity` when several fields were given) and `chain_count`, the number of times the full sequence occurred. Rows are sorted by `chain_count`, highest first.
+**Returns:** one row per entity with the identity field (named `_entity` when several fields were given) and `chain_count`, the number of times the full sequence occurred. Rows are sorted by `chain_count`, highest first. A filter after `chain()` reads only these columns; to narrow the events a step matches, write the filter in the step or before `chain()`.
 
 ## Examples
 

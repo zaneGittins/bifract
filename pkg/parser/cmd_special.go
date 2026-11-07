@@ -268,6 +268,8 @@ const analyzeFieldsMaxScan = 200000
 // analyzefieldsHandler handles analyzefields(field1, field2, limit=N)
 type analyzefieldsHandler struct{}
 
+func (h *analyzefieldsHandler) buildsOutputLater() {}
+
 func (h *analyzefieldsHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Registry.Register("field_name", FieldKindPerRow, "field_name", ctx.CmdIndex)
 	ctx.Registry.Register("_events", FieldKindPerRow, "_events", ctx.CmdIndex)
@@ -488,6 +490,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.GroupBy = append(source.Layer.GroupBy, "_entity")
 		ctx.Registry.Register("_entity", FieldKindPerRow, "_entity", ctx.CmdIndex)
 		ctx.Registry.SetResolveExpr("_entity", entityExpr)
+		ctx.Registry.AddGroupKeyAlias("_entity", "_entity")
 		meta.EntityColumn = "_entity"
 		meta.MultiIdentity = true
 	} else {
@@ -510,6 +513,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", fieldRef, safeField)})
 		source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)
 		ctx.Registry.SetResolveExpr(safeField, fieldRef)
+		ctx.Registry.AddGroupKeyAlias(chainField, safeField)
 		meta.EntityColumn = safeField
 		meta.EntityExpr = fieldRef
 	}
@@ -638,6 +642,9 @@ func (h *heatmapHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	source.Layer.GroupBy = append(source.Layer.GroupBy, xRef, yRef)
 	source.Layer.OrderBy = append(source.Layer.OrderBy, "_heatmap_value DESC")
+	ctx.Registry.Register("_heatmap_value", FieldKindAggregate, "_heatmap_value", ctx.CmdIndex)
+	declareChartKey(ctx, "_heatmap_x", "_heatmap_x")
+	declareChartKey(ctx, "_heatmap_y", "_heatmap_y")
 	ctx.Plan.IsAggregated = true
 	source.Layer.Limit = fmt.Sprintf("LIMIT %d", limit*limit)
 

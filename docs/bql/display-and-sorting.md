@@ -21,7 +21,7 @@ After an aggregation, list its output columns by name (`_count`, `_sum`, or your
 ```
 
 !!! note "Filters after an aggregation"
-    After `groupBy()` or another aggregate, only its group keys and output columns exist. Filtering on any other name is an error that lists the columns that do exist. Move log-field filters before the aggregation.
+    After `groupBy()` or another aggregate, only its group keys and output columns exist. Filtering on any other name, or searching log text, is an error that lists the columns that do exist, and so is naming such a field in `table()`, `sort()` or a transform. Move log-field filters before the aggregation. `boxplot()`, `histogram()` and `analyzeFields()` build their columns after the query runs, so no filter may follow them.
 
 ### Built-in columns
 
@@ -64,7 +64,7 @@ Returns at most N rows.
 * | head(50)
 ```
 
-`head(n)` returns the earliest N events and `tail(n)` the latest, by `timestamp`. Default N is 200. After an aggregation they take the first or last N rows of the current order instead.
+`head(n)` returns the earliest N events and `tail(n)` the latest, by `timestamp`. Default N is 200. After an aggregation they take the first or last N rows of the current order instead, and anything after them reads only those rows.
 
 ## Dedup
 

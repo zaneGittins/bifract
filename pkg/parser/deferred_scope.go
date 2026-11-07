@@ -44,7 +44,8 @@ func (s *deferredScope) ref(expr, label string) string {
 		return expr
 	}
 	trimmed := strings.TrimSpace(expr)
-	if trimmed == "" || isBareIdentifier(trimmed) {
+	// norm_log is the one bare column a projection such as table() drops.
+	if trimmed == "" || isBareIdentifier(trimmed) && trimmed != normLogColumn {
 		return expr
 	}
 	if name, ok := s.alias[trimmed]; ok {

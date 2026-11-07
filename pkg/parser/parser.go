@@ -1348,8 +1348,12 @@ func commandHavingCondition(cmd CommandNode) HavingCondition {
 // commandIsBooleanOperand reports whether the command just parsed takes part in a
 // boolean expression: an operator follows it, one preceded it and is still
 // waiting for its right-hand side, or it is a condition command with an operand
-// written straight after it.
+// written straight after it. An output filter after an aggregation is one too, so
+// it binds as a field comparison there does.
 func (p *Parser) commandIsBooleanOperand(pipeline *PipelineNode, name string) bool {
+	if commandFiltersOutput(name) && firstAggregatingCommandIndex(pipeline.Commands) < len(pipeline.Commands) {
+		return true
+	}
 	if p.current().Type == TokenAnd || p.current().Type == TokenOr {
 		return true
 	}

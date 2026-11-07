@@ -152,6 +152,9 @@ type QueryStage struct {
 	// Aggregates marks a stage pushed to aggregate the previous stage's rows,
 	// which may have no GROUP BY (count() after groupby() is one COUNT(*)).
 	Aggregates bool
+	// AfterCap marks a stage that wraps a cap on aggregated rows, so filters after
+	// the cap read only the rows it kept.
+	AfterCap bool
 }
 
 // QueryPlan holds the structured representation of a query before rendering to SQL.
@@ -279,6 +282,17 @@ type QueryPlan struct {
 	// positionAt is the registry a condition after the first command resolves
 	// against, keyed by the commands and assignments that precede it.
 	positionAt map[[2]int]*FieldRegistry
+	// stageAt is the stage in effect at each position, keyed as positionAt.
+	stageAt map[[2]int]int
+	// outputsAfter[i] is the columns the query returns once command i has run.
+	outputsAfter map[int][]string
+	// declaredBy[i] is what command i registers as its outputs.
+	declaredBy [][]FieldEntry
+	// firstAggregation is the index of the first aggregating command, or the
+	// number of commands when none aggregates.
+	firstAggregation int
+	// commands is the pipeline being planned.
+	commands []CommandNode
 	// baseWhereLen counts the source WHERE entries that scope the scan (time range,
 	// fractal) rather than filter it. First-stage conditions follow them, ahead of
 	// anything a command adds.
@@ -329,6 +343,48 @@ func (p *QueryPlan) conditionRegistry(c HavingCondition, registry *FieldRegistry
 	return registry
 }
 
+// rewrittenAfterAggregation reports whether a command between the first
+// aggregation and the first n commands declares field.
+func (p *QueryPlan) rewrittenAfterAggregation(field string, n int) bool {
+	return n > p.firstAggregation+1 && p.declaredBetween(field, p.firstAggregation+1, n)
+}
+
+// declaredBetween reports whether a command in [from, to) declares name.
+func (p *QueryPlan) declaredBetween(name string, from, to int) bool {
+	for _, entries := range p.declaredBy[from:min(to, len(p.declaredBy))] {
+		if slices.ContainsFunc(entries, func(e FieldEntry) bool { return e.Name == name }) {
+			return true
+		}
+	}
+	return false
+}
+
+// outputNames lists the columns the query returns as planned so far: those of the
+// outer aggregation when a stats command wraps the stage, otherwise the stage's
+// selects and, while it groups, its keys.
+func (p *QueryPlan) outputNames(registry *FieldRegistry) []string {
+	var names []string
+	add := func(sel string) { names = append(names, strings.Trim(extractFieldAlias(sel), "`")) }
+	if len(p.outerAggregations) > 0 {
+		for _, expr := range p.outerAggregations {
+			add(expr)
+		}
+		return names
+	}
+	stage := p.CurrentStage()
+	for _, sel := range stage.Layer.Selects {
+		add(sel.String())
+	}
+	if len(stage.Layer.GroupBy) > 0 {
+		for _, alias := range registry.groupKeys {
+			if !slices.Contains(names, alias) {
+				names = append(names, alias)
+			}
+		}
+	}
+	return names
+}
+
 // SourceStage returns the innermost (FROM logs) stage.
 func (p *QueryPlan) SourceStage() *QueryStage {
 	return &p.Stages[0]
@@ -359,6 +415,27 @@ func (p *QueryPlan) havingStageIndexAt(cmdIndex int) int {
 		}
 	}
 	return p.havingStageIndex()
+}
+
+// afterRowKeeping reports whether the last aggregating command among the first n
+// scores each row against all of them.
+func (p *QueryPlan) afterRowKeeping(n int) bool {
+	at := lastAggregatingCommandIndex(p.commands, n)
+	return at >= 0 && commandScoresAgainstAllRows(p.commands[at].Name)
+}
+
+// capStageAt returns the stage wrapping the last cap on aggregated rows before the
+// first n commands, or -1 when none precedes.
+func (p *QueryPlan) capStageAt(n int) int {
+	if n <= 0 || n > len(p.stageAfterCmd) {
+		return -1
+	}
+	for i := p.stageAfterCmd[n-1]; i >= 0; i-- {
+		if p.Stages[i].AfterCap {
+			return i
+		}
+	}
+	return -1
 }
 
 // havingStageIndex returns the index of the stage havingStage() resolves to.

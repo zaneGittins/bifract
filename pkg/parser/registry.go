@@ -232,6 +232,15 @@ func (r *FieldRegistry) SetGroupKeyAlias(field, alias string, cmdIndex int) {
 	r.groupKeys[field] = alias
 }
 
+// AddGroupKeyAlias records a key that joins the keys already in effect, as chain()
+// does by extending the GROUP BY of the stage it runs in.
+func (r *FieldRegistry) AddGroupKeyAlias(field, alias string) {
+	if r.groupKeys == nil {
+		r.groupKeys = map[string]string{}
+	}
+	r.groupKeys[field] = alias
+}
+
 // GroupKeyAlias returns the alias a grouping key is addressable by, and whether the
 // field is a grouping key at all.
 func (r *FieldRegistry) GroupKeyAlias(field string) (string, bool) {
@@ -251,20 +260,6 @@ func (r *FieldRegistry) Register(name string, kind FieldKind, expr string, produ
 		ProducedBy: producedBy,
 		OriginKind: kind,
 	}
-}
-
-// ProducedNames returns the names some command or assignment computes, as
-// opposed to log fields.
-func (r *FieldRegistry) ProducedNames() map[string]bool {
-	out := make(map[string]bool)
-	for name, e := range r.fields {
-		switch e.ClassifyKind() {
-		case FieldKindBase, FieldKindJSON:
-		default:
-			out[name] = true
-		}
-	}
-	return out
 }
 
 // Get returns the field entry for a name, or nil if not found.

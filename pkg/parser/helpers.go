@@ -1467,6 +1467,11 @@ func conditionCommandFields(cmd CommandNode) []string {
 		return nil
 	}
 	first := cmd.Args[0]
+	if b, err := BindCommand(cmd); err == nil {
+		if named, ok := b.First("field"); ok {
+			first = named
+		}
+	}
 	if first.Kind == ArgList && len(first.List) > 0 {
 		first = first.List[0]
 	}
