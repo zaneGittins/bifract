@@ -209,6 +209,7 @@ func (r *TestRunner) newScratch(ctx context.Context) (*ruleeval.Scratch, error) 
 	r.mu.Unlock()
 
 	if pinned != nil {
+		r.ch.EnsurePinnedIdentity(ctx, pinned, pinnedAddr)
 		scratch, err := ruleeval.NewScratch(ctx, pinned)
 		if err == nil {
 			return scratch, nil
@@ -225,7 +226,7 @@ func (r *TestRunner) newScratch(ctx context.Context) (*ruleeval.Scratch, error) 
 		if addr == pinnedAddr {
 			continue
 		}
-		client, err := r.ch.PinnedNodeClient(addr)
+		client, err := r.ch.PinnedNodeClient(ctx, addr)
 		if err != nil {
 			lastErr = err
 			continue

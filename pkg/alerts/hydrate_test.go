@@ -3,11 +3,13 @@ package alerts
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
+	"bifract/pkg/storage/storagetest"
 )
 
 type fakeHydrator struct {
@@ -220,5 +222,41 @@ func TestHydrateRowsCarriesFractalID(t *testing.T) {
 	}
 	if h.gotKeys[0].FractalID != "f1" {
 		t.Errorf("fractal_id = %q, want f1", h.gotKeys[0].FractalID)
+	}
+}
+
+// ctxHydrator records the context hydration runs on.
+type ctxHydrator struct{ ctx context.Context }
+
+func (h *ctxHydrator) HydrateLogFields(ctx context.Context, _ string, _ []storage.LogKey, _, _ time.Time) (map[string]map[string]interface{}, error) {
+	h.ctx = ctx
+	return nil, nil
+}
+
+// A row stored with no fractal_id hydrates with no fractal predicate, so the scope
+// of the query that matched it is what keeps the lookup inside that query's reach.
+func TestHydrationRunsInTheAlertsClassAndScope(t *testing.T) {
+	client, ch := storagetest.ClickHouse()
+	h := &ctxHydrator{}
+	e := &Engine{hydrator: h}
+	row := prunedRow("a", "4624")
+	delete(row, "fractal_id")
+	e.hydrateRows(context.Background(), []map[string]interface{}{row}, parser.QueryOptions{FractalID: "f1", IncludeEmptyFractalID: true, TableName: "logs"}, 1)
+	if h.ctx == nil {
+		t.Fatal("hydrator not called")
+	}
+	if got := storage.QueryClassOf(h.ctx); got != storage.QueryAlertClass {
+		t.Errorf("class = %q", got)
+	}
+	var sent string
+	ch.CtxArgs = func(ctx context.Context) []any {
+		sent = storage.SentQueryIDOf(ctx)
+		return nil
+	}
+	if _, err := client.Query(h.ctx, "SELECT 1"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(sent, "~bfscope~f1,,") {
+		t.Errorf("read sent as %q", sent)
 	}
 }

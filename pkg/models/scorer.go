@@ -87,6 +87,17 @@ func scorerReadSettings() string {
 	return fmt.Sprintf(" SETTINGS max_block_size = %d, max_bytes_before_external_group_by = %d", netReadBlockRows, spill)
 }
 
+// scoringReadContext confines a scoring read to its model's fractal on the read-only
+// identity, since the SQL embeds the model's source BQL. Writes keep the caller's ctx.
+// A model with no fractal reads the rows with an empty fractal_id: the unassigned scope.
+func scoringReadContext(ctx context.Context, fractalID string) context.Context {
+	scope := storage.FractalScope{Unassigned: fractalID == ""}
+	if fractalID != "" {
+		scope.FractalIDs = []string{fractalID}
+	}
+	return storage.ScopeContext(storage.UncappedReadContext(ctx), scope)
+}
+
 // errPairCapReached stops stream iteration once the per-cycle pair cap is hit.
 var errPairCapReached = errors.New("per-model pair cap reached")
 
@@ -255,25 +266,26 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 	stateRead := e.mgr.networkStateReadTable(m.id)
 	now := time.Now()
 	win := netWindowAt(now, windowDays)
+	readCtx := scoringReadContext(ctx, m.fractalID)
 
 	// Prevalence context: distinct-source count per destination, and the total
 	// distinct-source count (network size) as the denominator.
-	networkSize, err := e.readNetworkSize(ctx, stateRead, m.fractalID, win)
+	networkSize, err := e.readNetworkSize(readCtx, stateRead, m.fractalID, win)
 	if err != nil {
 		return fmt.Errorf("network size: %w", err)
 	}
 	if networkSize == 0 {
 		return nil // warming up: no state yet
 	}
-	prevalence, err := e.readPrevalence(ctx, stateRead, m.fractalID, win)
+	prevalence, err := e.readPrevalence(readCtx, stateRead, m.fractalID, win)
 	if err != nil {
 		return fmt.Errorf("prevalence: %w", err)
 	}
 
 	// Modifier context the model links; what cannot be read scores 0.
-	fs, warnings := e.mgr.loadFirstSeen(ctx, m.fractalID, m.def,
+	fs, warnings := e.mgr.loadFirstSeen(readCtx, m.fractalID, m.def,
 		BuildNetPairsQuery(m.def, m.modelType, stateRead, m.fractalID, win), "", now)
-	ti, tiWarnings := e.mgr.threatIntelColumn(ctx, m.fractalID, m.def)
+	ti, tiWarnings := e.mgr.threatIntelColumn(readCtx, m.fractalID, m.def)
 	e.warnModifiers(m.id, append(warnings, tiWarnings...))
 
 	sc := newPairScorer(m.modelType, m.def, windowSecs, fs, prevalence, networkSize, now)
@@ -282,7 +294,7 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 	truncated := false
 
 	readSQL := BuildNetScoreReadQuery(m.def, m.modelType, stateRead, m.fractalID, win, ti) + scorerReadSettings()
-	streamErr := e.ch.StreamQuery(ctx, "", readSQL, func(row map[string]interface{}) error {
+	streamErr := e.ch.StreamQuery(readCtx, "", readSQL, func(row map[string]interface{}) error {
 		if count >= scorerPerModelPairCap {
 			truncated = true
 			return errPairCapReached

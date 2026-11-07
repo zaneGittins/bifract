@@ -71,7 +71,7 @@ func TestFractalScopeLive(t *testing.T) {
 
 	c := NewClickHouseClientFromConn(root, db, Topology{Kind: DeploymentSingleNode})
 	c.addrs = []string{addr}
-	c.Password = pw
+	c.User, c.Password = "default", pw
 	c.reconcileQueryIdentities(ctx, map[string]int64{QuerySearchWorkload: 1 << 30})
 	defer c.closeQueryIdentities()
 	if m := c.queryConns.Load(); m == nil || (*m)[QuerySearchWorkload] == nil {
@@ -178,6 +178,93 @@ func TestFractalScopeLive(t *testing.T) {
 	}
 	if got, err := c.Query(ctx, "SELECT count() AS n FROM system.settings_profile_elements WHERE user_name = '"+AlertCHUser+"' AND setting_name = 'max_memory_usage_for_user'"); err != nil || got[0]["n"].(uint64) != 0 {
 		t.Errorf("alert identity carries a memory ceiling: %v %v", got, err)
+	}
+
+	// Resolver and scoring reads carry settings and external tables the identities must
+	// accept: pgr()'s tree rides as external data, and scoring sets its own limits.
+	tree := ExternalTable{Name: "bfscope_tree", Columns: []string{"guid"}, Rows: [][]string{{"g1"}}}
+	for name, rctx := range map[string]context.Context{"search": a, "alert": alert} {
+		rows, err := c.QueryProvenance(rctx, "SELECT guid, currentUser() AS who FROM bfscope_tree", tree)
+		if err != nil || len(rows) != 1 || rows[0]["guid"] != "g1" {
+			t.Errorf("%s provenance read: %v %v", name, rows, err)
+		}
+	}
+	var scored uint64
+	for _, settings := range []string{
+		" SETTINGS max_block_size = 8192, max_bytes_before_external_group_by = 2000000000",
+		" SETTINGS max_threads=2, max_execution_time=30, max_bytes_before_external_group_by=1000000, priority=10, os_thread_priority=19",
+	} {
+		if err := c.QueryRow(alert, "SELECT count() FROM logs"+settings).Scan(&scored); err != nil || scored != 1 {
+			t.Errorf("scoring read %q: %d %v", settings, scored, err)
+		}
+	}
+	var who string
+	if err := c.QueryRow(alert, "SELECT currentUser()").Scan(&who); err != nil || who != AlertCHUser {
+		t.Errorf("QueryRow ran as %q: %v", who, err)
+	}
+
+	// A pinned client writes its scratch table as itself and reads it as the alert
+	// identity, on the same node, with no reach into a real fractal.
+	pinned, err := c.PinnedNodeClient(ctx, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+	for _, stmt := range []string{
+		"CREATE TABLE bfscope_scratch (fractal_id String, msg String) ENGINE = MergeTree ORDER BY tuple()",
+		"INSERT INTO bfscope_scratch VALUES ('unit', 'hit')",
+	} {
+		if err := pinned.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	unit := UncappedReadContext(ScopeContext(ctx, FractalScope{FractalIDs: []string{"unit"}}))
+	for sql, want := range map[string]string{
+		"SELECT currentUser() AS msg":         AlertCHUser,
+		"SELECT msg FROM bfscope_scratch":     "hit",
+		"SELECT msg FROM " + db + ".logs":     "",
+		"SELECT msg FROM " + db + ".logs_hot": "",
+	} {
+		rows, err := pinned.Query(unit, sql)
+		if err != nil {
+			t.Errorf("pinned %q: %v", sql, err)
+			continue
+		}
+		if want == "" && len(rows) != 0 || want != "" && (len(rows) != 1 || rows[0]["msg"] != want) {
+			t.Errorf("pinned %q: got %v, want %q", sql, rows, want)
+		}
+	}
+	var denied *proto.Exception
+	if _, err := pinned.Query(unit, "INSERT INTO bfscope_scratch SELECT 'unit', 'x'"); !errors.As(err, &denied) || denied.Code != accessDenied {
+		t.Errorf("pinned rule wrote: %v", err)
+	}
+	if rows, err := pinned.Query(ctx, "SELECT currentUser() AS msg"); err != nil || rows[0]["msg"] == AlertCHUser {
+		t.Errorf("unmarked pinned work moved off the default connection: %v %v", rows, err)
+	}
+
+	// A pin taken while the parent lacked the identity picks it up in place once the
+	// parent has it again, without a new client.
+	saved := c.queryConns.Load()
+	c.queryConns.Store(&map[string]*queryIdentity{})
+	late, err := c.PinnedNodeClient(ctx, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer late.Close()
+	lateUser := func() string {
+		rows, err := late.Query(unit, "SELECT currentUser() AS msg")
+		if err != nil {
+			t.Fatalf("late pin: %v", err)
+		}
+		return rows[0]["msg"].(string)
+	}
+	if got := lateUser(); got != "default" {
+		t.Errorf("pin during an outage ran as %q", got)
+	}
+	c.queryConns.Store(saved)
+	c.EnsurePinnedIdentity(ctx, late, addr)
+	if got := lateUser(); got != AlertCHUser {
+		t.Errorf("recovered pin ran as %q", got)
 	}
 
 	// An identity lost at boot comes back through the repair, without a restart.

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
@@ -172,5 +173,38 @@ func TestQueryIdentityPasswordMeetsComplexityPolicy(t *testing.T) {
 			t.Errorf("%s password lacks a required class (lower=%v upper=%v digit=%v special=%v)",
 				user, hasLower, hasUpper, hasDigit, hasSpecial)
 		}
+	}
+}
+
+// A pin taken while the parent has no alert identity stays on the default connection
+// rather than guessing, and a pin that already holds one is not reopened.
+func TestEnsurePinnedIdentityWithoutDialing(t *testing.T) {
+	ctx := context.Background()
+	parent, pinned := &ClickHouseClient{}, &ClickHouseClient{}
+	parent.EnsurePinnedIdentity(ctx, pinned, "unreachable:1")
+	if pinned.hasQueryIdentity(QueryAlertClass) {
+		t.Error("pinned an identity the parent does not have")
+	}
+
+	held := &stubConn{}
+	parent.queryConns.Store(&map[string]*queryIdentity{QueryAlertClass: {conn: &stubConn{}}})
+	pinned.queryConns.Store(&map[string]*queryIdentity{QueryAlertClass: {conn: held}})
+	parent.EnsurePinnedIdentity(ctx, pinned, "unreachable:1")
+	if got := pinned.connFor(UncappedReadContext(ctx)); got != held {
+		t.Error("a held pinned identity was replaced")
+	}
+}
+
+// A node that refuses the identity is not asked again on every rule-test session.
+func TestEnsurePinnedIdentityThrottlesARefusingNode(t *testing.T) {
+	ctx := context.Background()
+	parent, pinned := &ClickHouseClient{}, &ClickHouseClient{}
+	parent.queryConns.Store(&map[string]*queryIdentity{QueryAlertClass: {conn: &stubConn{}}})
+	parent.EnsurePinnedIdentity(ctx, pinned, "127.0.0.1:1")
+	if pinned.hasQueryIdentity(QueryAlertClass) {
+		t.Fatal("pinned an identity the node refused")
+	}
+	if !pinned.pinRetryAfter.After(time.Now()) {
+		t.Errorf("no retry backoff after a refusal: %v", pinned.pinRetryAfter)
 	}
 }

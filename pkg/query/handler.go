@@ -139,6 +139,16 @@ func searchContext(parent context.Context, timeoutSec int, scope storage.Fractal
 	return context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 }
 
+// resolverContext is what prepareQuery's own reads for ptg(), pgr() and tlsh() run on.
+// They are part of the query that asked for them: a search shares the search budget,
+// as dashboard widgets do, and a request already marked keeps its class.
+func resolverContext(ctx context.Context, scope storage.FractalScope) context.Context {
+	if storage.QueryClassOf(ctx) == "" {
+		return storage.UserSearchContext(ctx, scope)
+	}
+	return storage.ScopeContext(ctx, scope)
+}
+
 // abandonSearch kills every ClickHouse query the search issued. Without it an
 // abandoned scan (client gone, request timed out, histogram dropped once the
 // results were in) keeps running unowned, which is how the admin activity view
@@ -1090,6 +1100,13 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 			selectedIndex, startTime.Format(time.RFC3339), endTime.Format(time.RFC3339), commentTags, commentKeyword, len(commentLogIDs))
 	}
 
+	fractalIDForQuery := selectedIndex
+	if isPrismContext {
+		fractalIDForQuery = ""
+	}
+	chScope, _ := fractalScope(fractalIDForQuery, prismFractalIDs, includeEmptyFractalID)
+	readCtx := resolverContext(r.Context(), chScope)
+
 	// Pre-process tlsh(): resolve the digests within threshold of a needle against
 	// the model's distinct-digest index. Comparing a field against many digests has
 	// no workable SQL form, so the distance runs in Go and returns an IN filter.
@@ -1113,7 +1130,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		}
 		// Dictionaries follow the session's prism even for a requested fractal, as match() does above.
 		ctxPrismID, _ := r.Context().Value("selected_prism").(string)
-		matches, rerr := h.tlshResolver().Resolve(r.Context(), tlshParams, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: ctxPrismID})
+		matches, rerr := h.tlshResolver().Resolve(readCtx, tlshParams, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: ctxPrismID})
 		if rerr != nil {
 			// Configuration and input problems both land here (no index, bad digest,
 			// oversized dictionary), and each names the fix, so surface the message.
@@ -1134,10 +1151,6 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	}
 
 	// Translate to SQL
-	fractalIDForQuery := selectedIndex
-	if isPrismContext {
-		fractalIDForQuery = ""
-	}
 	opts := h.logsQueryOptions()
 	opts.StartTime = startTime
 	opts.EndTime = endTime
@@ -1174,7 +1187,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	// and drop it from the pipeline; the rest of the pipeline (filters/aggregations/charts,
 	// including pgraph()) then translates over that source like any other query. Everything
 	// downstream keys off opts.SourceSubquery -- no per-command special-casing.
-	ptgWarnings, perr := ResolveProcessTree(r.Context(), h.db, pipeline, &opts)
+	ptgWarnings, perr := ResolveProcessTree(readCtx, h.db, pipeline, &opts)
 	if perr != nil {
 		log.Printf("[QueryHandler] %v", perr)
 		respondJSON(w, http.StatusInternalServerError, QueryResponse{Success: false, Query: req.Query, Error: "ptg() could not walk the process tree"})
@@ -1189,7 +1202,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		return
 	}
 	pipeline, rs, serr := applySourceCommand(pipeline, &opts, func(src parser.CommandNode) (*resolvedSource, error) {
-		return h.resolveSourceCommand(r.Context(), src, opts)
+		return h.resolveSourceCommand(readCtx, src, opts)
 	})
 	if serr != nil {
 		respondJSON(w, http.StatusBadRequest, QueryResponse{

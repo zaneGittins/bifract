@@ -920,11 +920,12 @@ func TestAlertTLSHReadRunsOnTheAlertIdentity(t *testing.T) {
 	e.modelManager = models.NewManager(pg.client, e.ch)
 	pg.answer("status = 'active' AND model_type = $2", fakedb.Row("m1", "idx", []byte(`{"key_fields":["hash"]}`), "f1"))
 	var mu sync.Mutex
-	var classes []string
+	var classes, ids []string
 	ch.CtxArgs = func(ctx context.Context) []any {
 		mu.Lock()
 		defer mu.Unlock()
 		classes = append(classes, storage.QueryClassOf(ctx))
+		ids = append(ids, storage.SentQueryIDOf(ctx))
 		return nil
 	}
 	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", QueryString: `tlsh(field=hash, hash="T1` + strings.Repeat("A", 70) + `")`})
@@ -934,9 +935,12 @@ func TestAlertTLSHReadRunsOnTheAlertIdentity(t *testing.T) {
 	if len(classes) == 0 {
 		t.Fatal("no digest read")
 	}
-	for _, class := range classes {
+	for i, class := range classes {
 		if class != storage.QueryAlertClass {
 			t.Errorf("read ran as %q", class)
+		}
+		if !strings.HasSuffix(ids[i], "~bfscope~f1,") {
+			t.Errorf("read sent as %q", ids[i])
 		}
 	}
 }

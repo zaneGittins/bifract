@@ -459,8 +459,8 @@ func RecallContext(ctx context.Context) context.Context {
 }
 
 // UncappedReadContext marks ctx as a user-authored read that must not share the search
-// budget: alert evaluation, field stats and exports. It runs on the read-only alert
-// identity, with no memory ceiling and no workload.
+// budget: alert evaluation and rule tests, field stats, exports and model scoring. It
+// runs on the read-only alert identity, with no memory ceiling and no workload.
 func UncappedReadContext(ctx context.Context) context.Context {
 	return WorkloadContext(ctx, QueryAlertClass)
 }

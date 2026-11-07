@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/storage"
 )
 
 // A rule using tlsh() must not fail inside the translator with the opaque
@@ -80,5 +82,31 @@ func TestResolveTLSHHashOnlyNeedsNoDictionary(t *testing.T) {
 	}
 	if len(p.Hashes) != 1 {
 		t.Errorf("expected one literal needle, got %d", len(p.Hashes))
+	}
+}
+
+// The rule under test is user-authored SQL, so it reads as the alert identity and
+// confined to its unit's synthetic fractal: it cannot reach a real one through any
+// table but the scratch.
+func TestEvaluateRunsOnTheAlertIdentityInTheUnitsScope(t *testing.T) {
+	s, ch := newScratch(t)
+	var reads []string
+	ch.CtxArgs = func(ctx context.Context) []any {
+		reads = append(reads, storage.QueryClassOf(ctx)+" "+storage.SentQueryIDOf(ctx))
+		return nil
+	}
+	pipeline, err := parser.ParseQuery(`event_id=1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := Unit{FractalID: "unit-1"}
+	if _, _, err := s.Evaluate(context.Background(), pipeline, u, NewWindow(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if len(reads) != 1 {
+		t.Fatalf("reads: %q", reads)
+	}
+	if !strings.HasPrefix(reads[0], storage.QueryAlertClass+" ") || !strings.HasSuffix(reads[0], "~bfscope~unit-1,") {
+		t.Errorf("read sent as %q", reads[0])
 	}
 }

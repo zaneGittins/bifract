@@ -35,9 +35,10 @@ import (
 // granted read-only, so a write mistakenly issued on one fails loudly instead of
 // silently drawing on a search budget.
 //
-// The alert class has an identity for privilege alone. Alert evaluation, field stats
-// and exports run user-authored SQL, so they get the read-only reach of a search, but
-// no ceiling and no workload: a search class must never throttle them.
+// The alert class has an identity for privilege alone. Alert evaluation and rule tests,
+// field stats, exports and model scoring run user-authored SQL, so they get the
+// read-only reach of a search, but no ceiling and no workload: a search class must
+// never throttle them.
 const (
 	// SearchCHUser and RecallCHUser deliberately match their workload names: the
 	// workload schedules the class's CPU, the user accounts for its memory. ClickHouse
@@ -296,18 +297,55 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 		TLS:      c.tls,
 		Pool:     c.identityPool(),
 	}
-	conn, err := openClickHouseConn(identityConn)
+	return openIdentityConn(ctx, identityConn)
+}
+
+// openIdentityConn connects as an identity and proves the credentials and grants work
+// now rather than on the user's next search.
+func openIdentityConn(ctx context.Context, opts ConnOptions) (driver.Conn, error) {
+	conn, err := openClickHouseConn(opts)
 	if err != nil {
-		return nil, fmt.Errorf("connect as %s: %w", user, err)
+		return nil, fmt.Errorf("connect as %s: %w", opts.User, err)
 	}
-	// Prove the credentials and grants work now rather than on the user's next search.
 	pctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
 	defer cancel()
 	if err := conn.Exec(pctx, "SELECT 1"); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("probe as %s: %w", user, err)
+		return nil, fmt.Errorf("probe as %s: %w", opts.User, err)
 	}
 	return conn, nil
+}
+
+// EnsurePinnedIdentity gives a client pinned to addr the alert identity on that node,
+// so the rule tests that run there read as it. The user already exists on every node,
+// so there is nothing to provision. Like every class it falls back to the default
+// connection when c has no identity or the node refuses it, and a later call picks the
+// identity up in place, so a pin made during an outage does not stay on admin. A node
+// that refuses is retried at the repair interval, not on every call.
+func (c *ClickHouseClient) EnsurePinnedIdentity(ctx context.Context, pinned *ClickHouseClient, addr string) {
+	if !c.hasQueryIdentity(QueryAlertClass) {
+		return
+	}
+	pinned.identityMu.Lock()
+	defer pinned.identityMu.Unlock()
+	if pinned.hasQueryIdentity(QueryAlertClass) || time.Now().Before(pinned.pinRetryAfter) {
+		return
+	}
+	opts := c.nodeConnOptions(addr, adminNodePool)
+	opts.User, opts.Password = AlertCHUser, c.queryIdentityPassword(AlertCHUser)
+	conn, err := openIdentityConn(ctx, opts)
+	if err != nil {
+		log.Printf("[ClickHouse] Query identity %q unavailable on %s, its reads fall back to the default connection: %v", AlertCHUser, addr, err)
+		pinned.pinRetryAfter = time.Now().Add(queryIdentityRepairInterval)
+		return
+	}
+	pinned.queryConns.Store(&map[string]*queryIdentity{QueryAlertClass: {conn: conn}})
+}
+
+// hasQueryIdentity reports whether class has a provisioned identity on c.
+func (c *ClickHouseClient) hasQueryIdentity(class string) bool {
+	m := c.queryConns.Load()
+	return m != nil && (*m)[class] != nil
 }
 
 // queryTextSystemTables expose other queries' text to whoever can read them.
@@ -537,6 +575,23 @@ func (c *ClickHouseClient) readConn(ctx context.Context) (driver.Conn, context.C
 	}
 	return c.connFor(ctx), ctx, nil
 }
+
+// rawReadConn is readConn for helpers that hand the driver's rows to the caller, which
+// have no settings of their own to merge with what ctx implies.
+func (c *ClickHouseClient) rawReadConn(ctx context.Context) (driver.Conn, context.Context, error) {
+	if s := c.applyQuerySettings(ctx, nil); s != nil {
+		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(s))
+	}
+	return c.readConn(ctx)
+}
+
+// refusedRow is the driver.Row of a read readConn refused, since QueryRow has no error
+// return of its own.
+type refusedRow struct{ err error }
+
+func (r refusedRow) Err() error           { return r.err }
+func (r refusedRow) Scan(...any) error    { return r.err }
+func (r refusedRow) ScanStruct(any) error { return r.err }
 
 // connFor returns the connection a query on ctx must run on: the class identity when
 // ctx is marked and that identity is provisioned, otherwise the default connection.

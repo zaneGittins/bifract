@@ -28,6 +28,7 @@ type netRawPass struct {
 // that failed.
 func (m *Manager) scoreNetRaw(ctx context.Context, fractalID string, mt ModelType, def ModelDefinition, w NetWindow, asOf time.Time, settings string, visit func(netScored) error) (netRawPass, error) {
 	var pass netRawPass
+	ctx = scoringReadContext(ctx, fractalID)
 	source := m.ch.ReadTable()
 	ti, tiWarnings := m.threatIntelColumn(ctx, fractalID, def)
 

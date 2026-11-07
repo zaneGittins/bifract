@@ -82,7 +82,7 @@ func (e *Engine) hydrateRows(ctx context.Context, results []map[string]interface
 	// Mirror the table the evaluation read. Both it and logs_hot are partitioned on
 	// ingest_timestamp, and the alert always evaluates over an ingest window
 	// (UseIngestTimestamp), so its own bounds prune the hydration lookup.
-	fields, err := e.hydrator.HydrateLogFields(ctx, opts.TableName, keys, opts.StartTime, opts.EndTime)
+	fields, err := e.hydrator.HydrateLogFields(alertReadContext(ctx, opts), opts.TableName, keys, opts.StartTime, opts.EndTime)
 	if err != nil {
 		log.Printf("[Alert Engine] Hydration failed, forwarding pruned rows: %v", err)
 		return results

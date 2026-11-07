@@ -257,3 +257,20 @@ func TestPreviewNetworkEmptyWindowKeepsModifierWarnings(t *testing.T) {
 		t.Errorf("no modifier warning on an empty window: %v", res.Stats)
 	}
 }
+
+func TestScoreRangeReadsRunOnTheAlertIdentity(t *testing.T) {
+	env, mo, _ := scoreRangeModel(t, ModelTypeLongConnection)
+	from := time.Date(2026, 3, 2, 10, 20, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 4, 17, 45, 0, 0, time.UTC)
+	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(100)))
+	env.ch.On("AS prev_total", prevalenceRows(map[string]uint64{"203.0.113.5": 1}))
+	env.ch.On("AS ts_list", fakedb.CHResult{Cols: stateCols, Rows: [][]any{
+		statePair("10.1.1.1", "203.0.113.5", 3, []uint32{uint32(to.Unix()) - 3600}, []float64{1}, 28800),
+	}})
+	reads := recordReads(env)
+
+	if _, err := env.mgr.ScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
+		t.Fatal(err)
+	}
+	assertScoringReads(t, reads(), 3)
+}
