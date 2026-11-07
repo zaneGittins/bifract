@@ -550,17 +550,9 @@ func parseStateSummary(mt ModelType, rows []map[string]interface{}) *stateSummar
 		return s
 	}
 	r := rows[0]
-	toTime := func(v interface{}) time.Time {
-		sec := numToUint64(v)
-		// An empty table aggregates to the epoch.
-		if sec < 86400 {
-			return time.Time{}
-		}
-		return time.Unix(int64(sec), 0).UTC()
-	}
-	s.oldest, s.newest = toTime(r["oldest"]), toTime(r["newest"])
+	s.oldest, s.newest = stateTime(r["oldest"]), stateTime(r["newest"])
 	if v, ok := r["scored"]; ok {
-		s.scored = toTime(v)
+		s.scored = stateTime(v)
 	}
 	if series, ok := r["series"].([]uint64); ok && len(series) == findingsDays {
 		s.series = series
@@ -570,6 +562,16 @@ func parseStateSummary(mt ModelType, rows []map[string]interface{}) *stateSummar
 		s.findings = &n
 	}
 	return s
+}
+
+// stateTime reads an epoch column of a state summary, zero for an empty table,
+// which aggregates to the epoch.
+func stateTime(v interface{}) time.Time {
+	sec := numToUint64(v)
+	if sec < 86400 {
+		return time.Time{}
+	}
+	return time.Unix(int64(sec), 0).UTC()
 }
 
 // backfillSpan describes what the model's backfill covers, for display.

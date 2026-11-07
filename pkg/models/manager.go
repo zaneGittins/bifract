@@ -993,7 +993,7 @@ func buildRarityScoredSQL(source, fidEsc string, historyDays int) string {
 func fidScope(fidEsc string) string { return "fractal_id = '" + fidEsc + "'" }
 
 func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule, historyDays int) ([]map[string]interface{}, uint64, error) {
-	allowed := map[string]bool{"partition_val": true, "value_val": true, "model_count": true, "percent": true, "coverage": true}
+	allowed := map[string]bool{"partition_val": true, "value_val": true, "model_count": true, "model_total": true, "percent": true, "coverage": true}
 	where, order, none := dataPlan(q, allowed, "coverage", rule, plainSort)
 	if none {
 		return nil, 0, nil
@@ -1148,10 +1148,16 @@ func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) 
 	switch model.ModelType {
 	case ModelTypeRarity:
 		result, err = m.getRarityStats(ctx, qt, fid, rule, now, hist)
+		if err == nil {
+			m.addReadiness(ctx, model, qt, fid, result)
+		}
 	case ModelTypeFirstSeen:
 		result, err = m.getFirstSeenStats(ctx, qt, fid, "entity_key", hist)
 		if err == nil {
 			err = m.addFirstSeenDiscovery(ctx, qt, fid, result, now, hist)
+		}
+		if err == nil {
+			m.addReadiness(ctx, model, qt, fid, result)
 		}
 	case ModelTypeTLSH:
 		return m.getFirstSeenStats(ctx, qt, fid, "digest", 0)
@@ -1657,6 +1663,9 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 		return err
 	}
 	if err := validateHistoryDays(mt, def); err != nil {
+		return err
+	}
+	if err := validateEstimateHalfDays(def); err != nil {
 		return err
 	}
 	switch mt {

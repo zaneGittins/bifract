@@ -161,3 +161,131 @@ test('an ungrouped rarity row reads as its value, with value counts in the summa
   expect(M._rowTitle({ partition_val: '', value_val: 'Atera' }, model)).toBe('Atera');
   expect(M._rowTitle({ partition_val: 'bob', value_val: 'Atera' }, { model_type: 'rarity', definition: {} })).toBe('bob / Atera');
 });
+
+const rarity = { model_type: 'rarity', definition: { partition_key: 'host', alert: { coverage_threshold: 0.9 } } };
+const firstSeen = { model_type: 'first_seen', definition: { alert: { alert_on_new: true } } };
+const ready = {
+  state: 'ready', history_days: 30, needed_days: 28, new_per_day: 1.3,
+  self_check: { half_days: 15, forecast: 20, actual: 17 },
+  groups: { total: 1000, ready: 700, ready_days: 14, above_coverage: 800 },
+};
+const ungrouped = { ...ready, groups: undefined };
+// Numbers localise, so expectations follow the runner's locale.
+const thousand = (1000).toLocaleString(), rate13 = (1.3).toLocaleString(), gate = (0.9).toLocaleString();
+
+test('a ready model labels the rate an estimate and shows its self-check', () => {
+  const e = load()._estimateSummary(ready, rarity);
+  expect(e.badge).toBe('');
+  expect(e.text).toBe(`Estimates: about ${rate13} new alerts a day. Last 15 days: forecast 20, actual 17. 700 of ${thousand} groups have enough history. Coverage above ${gate} in 80% of groups.`);
+  expect(e.title).toContain('self-check');
+});
+
+test('a young model shows its learning state and no rate, even if the server sent one', () => {
+  const e = load()._estimateSummary({ ...ready, state: 'learning', history_days: 9, self_check: undefined }, rarity);
+  expect(e.badge).toBe('Learning 9/28d');
+  expect(e.text).toBe(`No rate until the model has 28 days of history. Estimates: 700 of ${thousand} groups have enough history. Coverage above ${gate} in 80% of groups.`);
+  expect(e.text).not.toContain('a day');
+  expect(e.title).not.toContain('The rate is');
+});
+
+test('a running backfill holds the rate back', () => {
+  const e = load()._estimateSummary({ ...ungrouped, state: 'backfilling' }, rarity);
+  expect(e.badge).toBe('');
+  expect(e.text).toBe('No rate while the backfill runs.');
+});
+
+test('a backfilled model says its rate is not all alerts that fired', () => {
+  const e = load()._estimateSummary({ ...ungrouped, backfilled: true }, rarity);
+  expect(e.text).toContain(`about ${rate13} new alerts a day, including backfilled history.`);
+  expect(e.title).toContain('Backfilled history never alerts');
+});
+
+test('a window too short for a self-check says so, and does not explain one', () => {
+  const e = load()._estimateSummary({ ...ungrouped, self_check: undefined }, rarity);
+  expect(e.text).toBe(`Estimates: about ${rate13} new alerts a day. The history is too short for a self-check.`);
+  expect(e.title).not.toContain('self-check');
+});
+
+test('a model that cannot alert reports new values, not alerts', () => {
+  const M = load();
+  const noThresholds = { model_type: 'rarity', definition: { partition_key: 'host', alert: {} } };
+  const quiet = { model_type: 'first_seen', definition: { alert: { alert_on_new: false } } };
+  expect(M._estimateSummary(ungrouped, noThresholds).text).toContain('new values a day');
+  expect(M._estimateSummary(ungrouped, quiet).text).toContain('new values a day');
+  expect(M._estimateSummary(ungrouped, firstSeen).text).toContain('new alerts a day');
+});
+
+test('the rate reads plainly at both ends, and its noun follows what is shown', () => {
+  const M = load();
+  const line = r => M._estimateSummary({ ...ungrouped, new_per_day: r, self_check: undefined }, rarity).text.split(/ a day/)[0];
+  expect(M._estimateRate(0)).toBe('about 0');
+  expect(M._estimateRate(0.003)).toBe('under 0.1');
+  expect(M._estimateRate(0.1)).toBe(`about ${(0.1).toLocaleString()}`);
+  expect(M._estimateRate(9.96)).toBe('about 10');
+  expect(M._estimateRate(1234.56)).toBe(`about ${(1235).toLocaleString()}`);
+  for (const r of [0.96, 1, 1.04]) expect(line(r)).toBe('Estimates: about 1 new alert');
+  expect(line(2)).toBe('Estimates: about 2 new alerts');
+});
+
+test('group counts read properly at zero, one, and just short of all', () => {
+  const M = load();
+  const text = groups => M._estimateSummary({ ...ungrouped, groups }, rarity).text;
+  expect(text({ total: 0, ready: 0, ready_days: 14, above_coverage: 0 })).not.toContain('group');
+  expect(text({ total: 1, ready: 1, ready_days: 14 })).toContain('1 of 1 group has enough history.');
+  expect(text({ total: 10, ready: 5, ready_days: 14 })).not.toContain('Coverage');
+  expect(text({ total: 1000, ready: 5, ready_days: 14, above_coverage: 999 })).toContain('in 99% of groups');
+  expect(M._estimateSummary({ ...ready }, { model_type: 'rarity' }).text).not.toContain('undefined');
+});
+
+test('no readiness means no estimate line', () => {
+  const M = load();
+  expect(M._estimateSummary(undefined, rarity)).toBeNull();
+  expect(M._estimateHTML(undefined, rarity)).toBe('');
+});
+
+test('the estimate line escapes what it renders', () => {
+  const M = load();
+  M._estimateSummary = () => ({ badge: '<b>', text: '<i>', title: '"><img>' });
+  const html = M._estimateHTML(ready, rarity);
+  for (const raw of ['<b>', '<i>', '"><img>']) expect(html).not.toContain(raw);
+});
+
+test('the Estimate half field shows the default, a set value, and escapes both', () => {
+  const M = load();
+  expect(M._estimateHalfFieldHTML({})).toContain('value="14"');
+  expect(M._estimateHalfFieldHTML({ estimate_half_days: 7 })).toContain('value="7"');
+  expect(M._estimateHalfFieldHTML({ estimate_half_days: '"><img>' })).not.toContain('"><img>');
+  expect(M._estimateHalfLabel({})).toBe('14 days');
+  expect(M._estimateHalfLabel({ alert: { estimate_half_days: 7 } })).toBe('7 days');
+});
+
+test('a bad Estimate half stops a save with its own label, only where the field shows', () => {
+  const M = load();
+  const check = (modelType, half) => {
+    M.editor = { modelType, valueKey: 'v', keyFields: ['k'], network: { src_field: 's', dst_field: 'd' }, alertConfig: { estimate_half_days: half } };
+    return M._validateShape();
+  };
+  for (const bad of [1, 2.5, 183, -3]) expect(check('rarity', bad)).toContain('Estimate half (days)');
+  expect(check('first_seen', 1)).toContain('Estimate half (days)');
+  for (const good of [undefined, 0, 2, 14, 182]) expect(check('rarity', good)).toBeNull();
+  expect(check('beacon', 1)).toBeNull();
+  expect(check('volume_baseline', 1)).toBeNull();
+});
+
+test('Estimate half is sent only for the types that use it', () => {
+  const M = load();
+  const sent = modelType => {
+    M.editor = { modelType, keyFields: ['k'], network: {}, modifiers: {}, alertConfig: { estimate_half_days: 7 } };
+    return M._composeDefinition({}).alert.estimate_half_days;
+  };
+  expect(sent('rarity')).toBe(7);
+  expect(sent('first_seen')).toBe(7);
+  for (const t of ['volume_baseline', 'tlsh', 'beacon', 'long_connection']) expect(sent(t)).toBeUndefined();
+});
+
+test('Group days is a sortable column on a grouped rarity model only', () => {
+  const M = load();
+  const col = M._viewColumns(rarity).find(c => c.col === 'model_total');
+  expect(col).toMatchObject({ label: 'Group days', sortable: true });
+  expect(M._viewColumns({ model_type: 'rarity', definition: {} }).some(c => c.col === 'model_total')).toBe(false);
+});

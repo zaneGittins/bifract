@@ -424,6 +424,14 @@
     white-space: nowrap;
 }
 
+.mv-sum-estimate {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.mv-sum-estimate .model-badge { vertical-align: 1px; margin-right: 2px; }
+
 .mv-spark {
     display: flex;
     flex-direction: column;
