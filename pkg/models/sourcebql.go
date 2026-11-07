@@ -163,6 +163,9 @@ func validateSourcePipeline(pipeline *parser.PipelineNode) error {
 	if unsafe != nil {
 		return unsafe
 	}
+	if name := parser.FirstPgrFilter(pipeline); name != "" {
+		return fmt.Errorf("%s() cannot be a model source: it reads the provenance tables, which change after the window is read", name)
+	}
 	for _, cmd := range pipeline.Commands {
 		name := strings.ToLower(cmd.Name)
 		if parser.IsAggregatingCommand(name) {

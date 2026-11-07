@@ -605,6 +605,10 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 		// Only logs carries the norm_log n-gram index; logs_hot does not.
 		NormLogIndexHints: !hot,
 	}
+	if e.ch != nil {
+		opts.ProcLineageTable = e.ch.ProcLineageReadTable()
+		opts.ProcEdgesTable = e.ch.ProcEdgesReadTable()
+	}
 	if alert.PrismID != "" {
 		ids, err := e.resolvePrismFractalIDs(ctx, alert.PrismID, cache)
 		if err != nil {

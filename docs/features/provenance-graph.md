@@ -31,6 +31,8 @@ For just the spawn tree, without scoring or file, network and DNS activity, use 
 
 Both look up only the rows a tree touches, so their cost follows the size of the tree, not of the fractal or its retention. Command lines come from the lineage table, so they stay visible after the logs behind them age out.
 
+To filter ordinary logs by their process ancestry or connections, without building a graph, see [`pgrHasAncestor()`](../bql/enrichment.md#pgrhasancestor) and [`pgrHasNetwork()`](../bql/enrichment.md#pgrhasnetwork).
+
 ## Required fields
 
 Your [normalizer](normalizers.md) must set `bifract_category` and the fields below (under the `fields` column). Every event also needs `computer_name` and a `timestamp`. `process_creation` alone builds the tree; each extra category adds a layer.

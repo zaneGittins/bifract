@@ -195,6 +195,8 @@ type QueryPlan struct {
 	// its subquery carries its own copy of the time bounds, so a caller must not
 	// re-translate the query over a narrower window.
 	usesBindingSet bool
+	// pgrWhere holds the source conditions this plan's provenance filters wrote.
+	pgrWhere []string
 
 	// bindingCTEs holds the result-set bindings this query reads more than once.
 	bindingCTEs []bindingCTE
