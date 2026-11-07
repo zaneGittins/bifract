@@ -337,6 +337,7 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				return fmt.Errorf("timechart groupby(): %w", err)
 			}
 			refs[i], aliases[i] = ref, alias
+			declareChartKey(ctx, a.FieldName(), alias)
 		}
 		if aggFlag(fn, false, "distinct", "unique") {
 			// Cardinality over time: count distinct values (or tuples) of the
@@ -359,6 +360,13 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	source.Layer.GroupBy = append(source.Layer.GroupBy, bucketExpr)
 	source.Layer.OrderBy = append(source.Layer.OrderBy, "time_bucket ASC")
+	// Its outputs, so a filter after it reads them rather than log fields.
+	declareChartKey(ctx, "time_bucket", "time_bucket")
+	for _, sel := range source.Layer.Selects {
+		if sel.Alias == "_count" || sel.Alias == "_"+fn.Name {
+			ctx.Registry.Register(sel.Alias, FieldKindAggregate, sel.Alias, ctx.CmdIndex)
+		}
+	}
 
 	ctx.Plan.ChartType = "timechart"
 	ctx.Plan.ChartConfig["span"] = span
@@ -532,4 +540,17 @@ func aggFlag(spec *AggSpec, def bool, names ...string) bool {
 		}
 	}
 	return def
+}
+
+// declareChartKey records a column a chart groups by under the alias it outputs.
+func declareChartKey(ctx *CommandContext, field, alias string) {
+	if field == "" {
+		return
+	}
+	ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
+	ctx.Registry.SetResolveExpr(alias, alias)
+	ctx.Registry.SetGroupKeyAlias(field, alias, ctx.CmdIndex)
+	if alias != field {
+		ctx.Registry.SetGroupKeyAlias(alias, alias, ctx.CmdIndex)
+	}
 }

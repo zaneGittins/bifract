@@ -1305,7 +1305,8 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	if strict {
-		ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
+		// The stage it runs in: after an aggregation that is the grouped output.
+		ctx.Plan.CurrentStage().Layer.Where = append(ctx.Plan.CurrentStage().Layer.Where,
 			lk.membership(probeRef))
 	}
 	return nil

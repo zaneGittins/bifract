@@ -48,6 +48,8 @@ func chartNumeric(col string) string {
 // whiskers and outliers are exact whenever fewer than k values lie past a fence.
 type boxplotHandler struct{}
 
+func (h *boxplotHandler) buildsOutputLater() {}
+
 func (h *boxplotHandler) Declare(cmd CommandNode, ctx *CommandContext) error { return nil }
 
 func (h *boxplotHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
@@ -150,6 +152,9 @@ func (h *boxplotHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 // plots rows as they are: after an aggregation one point per group, before one a
 // point per event (the newest limit= events).
 type scatterHandler struct{}
+
+// keepsRows: each point is an event, so a filter after it still reads log rows.
+func (h *scatterHandler) keepsRows() {}
 
 func (h *scatterHandler) Declare(cmd CommandNode, ctx *CommandContext) error { return nil }
 

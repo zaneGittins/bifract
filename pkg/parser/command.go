@@ -106,6 +106,66 @@ func commandAppliesNegate(name string) bool {
 	return ok
 }
 
+// rowKeepingHandler marks an aggregating command that scores rows rather than
+// collapsing them, so its output is every input row plus its own columns.
+type rowKeepingHandler interface {
+	keepsRows()
+}
+
+// windowScoreHandler marks a row-keeping command that scores each row against all
+// of them, so a filter after it must not narrow that baseline.
+type windowScoreHandler interface {
+	rowKeepingHandler
+	scoresAgainstAllRows()
+}
+
+func commandScoresAgainstAllRows(name string) bool {
+	_, ok := getCommandHandler(name).(windowScoreHandler)
+	return ok
+}
+
+// outputIsClosed reports whether a filter after the named aggregating command
+// can read only what it returns.
+func outputIsClosed(name string) bool {
+	_, keeps := getCommandHandler(name).(rowKeepingHandler)
+	return IsAggregatingCommand(name) && !keeps
+}
+
+// laterOutputHandler marks an aggregating command whose output columns are built
+// in layers around the finished query, which no filter after it can reach.
+type laterOutputHandler interface {
+	buildsOutputLater()
+}
+
+func commandBuildsOutputLater(name string) bool {
+	_, ok := getCommandHandler(name).(laterOutputHandler)
+	return ok
+}
+
+// outputFilterHandler marks a filter that is a plain predicate on one field, so
+// after an aggregation it filters the output. Others (tlsh, pgrHas) read log rows
+// and reject that position themselves.
+type outputFilterHandler interface {
+	filtersOutput()
+}
+
+// logRowFilterHandler marks an output filter that tests log rows themselves, so
+// after an aggregation nothing it could test remains.
+type logRowFilterHandler interface {
+	outputFilterHandler
+	readsLogRows()
+}
+
+func commandReadsLogRows(name string) bool {
+	_, ok := getCommandHandler(name).(logRowFilterHandler)
+	return ok
+}
+
+func commandFiltersOutput(name string) bool {
+	_, ok := getCommandHandler(name).(outputFilterHandler)
+	return ok
+}
+
 // registerAggregatingCommand registers a handler whose command aggregates
 // (collapses rows). It registers the handler normally and records every name as
 // aggregating.

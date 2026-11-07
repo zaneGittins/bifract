@@ -23,9 +23,10 @@ func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (stri
 	if b == nil || b.Pipe == nil {
 		return "", fmt.Errorf("%s is not a result set", bindingName(b))
 	}
-	if err := chargeBindingWork(&ctx.Opts); err != nil {
-		return "", err
+	if *ctx.Opts.bindingWork <= 0 {
+		return "", errBindingWorkExhausted
 	}
+	*ctx.Opts.bindingWork--
 	q, err := planQuery(b.Pipe, subqueryOptions(ctx, bindingSetMaxRows))
 	var result *TranslationResult
 	if err == nil {
@@ -39,7 +40,8 @@ func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (stri
 		}
 		return "", fmt.Errorf("%s: %w", b.Name, err)
 	}
-	ctx.Plan.usesBindingSet = true
+	host := ctx.Opts.bindingHost
+	host.usesBindingSet = true
 	column, err := bindingSetColumn(b, result.FieldOrder, field, q.ctx.Registry.IsAggregate)
 	if err != nil {
 		return "", err
@@ -49,7 +51,7 @@ func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (stri
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("SELECT %s FROM %s", quoteIdent(column), ctx.Plan.addBindingCTE(name, result.SQL)), nil
+		return fmt.Sprintf("SELECT %s FROM %s", quoteIdent(column), host.addBindingCTE(name, result.SQL)), nil
 	}
 	return fmt.Sprintf("SELECT %s FROM (%s)", quoteIdent(column), result.SQL), nil
 }
@@ -93,17 +95,3 @@ func bindingName(b *BindingNode) string {
 const bindingWorkBudget = 200
 
 var errBindingWorkExhausted = errors.New("too many result-set bindings to resolve; a binding that another reads more than once multiplies the work at every level")
-
-// chargeBindingWork debits one translation from the query's allowance, starting
-// it on first use so a query without bindings pays nothing.
-func chargeBindingWork(opts *QueryOptions) error {
-	if opts.bindingWork == nil {
-		n := bindingWorkBudget
-		opts.bindingWork = &n
-	}
-	if *opts.bindingWork <= 0 {
-		return errBindingWorkExhausted
-	}
-	*opts.bindingWork--
-	return nil
-}

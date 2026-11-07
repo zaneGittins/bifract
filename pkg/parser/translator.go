@@ -36,6 +36,9 @@ type QueryOptions struct {
 	// translator minutes. Carried through subqueryOptions so nested translations
 	// share one allowance. Unexported: a caller never sets it.
 	bindingWork *int
+	// bindingHost is the plan of the query being translated. A predicate compiles
+	// against a throwaway plan, so what a binding adds to the query goes here.
+	bindingHost *QueryPlan
 
 	StartTime             time.Time
 	EndTime               time.Time
@@ -282,6 +285,11 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 		}
 	}
 	plan := NewQueryPlan()
+	opts.bindingHost = plan
+	if opts.bindingWork == nil {
+		n := bindingWorkBudget
+		opts.bindingWork = &n
+	}
 	ctx := &CommandContext{
 		Registry: registry,
 		Plan:     plan,
@@ -352,9 +360,6 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	for _, assignment := range pipeline.Assignments {
 		registry.Register(assignment.Field, FieldKindAssignment, assignment.Field, -1)
 	}
-	// Captured before Execute, whose stage pushes scope the registry and drop
-	// columns a later command will still add.
-	declared := registry.ProducedNames()
 	ctx.Declared = registry.Clone()
 	var pending []string
 	for _, name := range registry.order {
@@ -448,6 +453,11 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	//     every position is kept for the conditions written there.
 	// ---------------------------------------------------------------
 	plan.positionAt = map[[2]int]*FieldRegistry{}
+	plan.outputsAfter = map[int][]string{}
+	plan.stageAt = map[[2]int]int{}
+	plan.declaredBy = declaredBy
+	plan.firstAggregation = firstAgg
+	plan.commands = pipeline.Commands
 	capture := func(cmds, assigns int) {
 		if cmds == 0 {
 			plan.firstStageAt = append(plan.firstStageAt, registry.firstStageView())
@@ -456,6 +466,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 		view := registry.Clone()
 		view.rowLevel = cmds <= firstAgg
 		plan.positionAt[[2]int{cmds, assigns}] = view
+		plan.stageAt[[2]int{cmds, assigns}] = len(plan.Stages) - 1
 	}
 	next := 0
 	for i := 0; i <= len(pipeline.Commands); i++ {
@@ -483,7 +494,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 		}
 		// A stats command after chain() aggregates the matched entities, not
 		// the events inside each one.
-		if ctx.Plan.CurrentStage().IsChain && closedOutputCommands[strings.ToLower(cmd.Name)] && !strings.EqualFold(cmd.Name, "groupby") {
+		if ctx.Plan.CurrentStage().IsChain && statsCommands[canonicalCommandName(cmd.Name)] {
 			if err := pushAggregationStage(ctx); err != nil {
 				return nil, fmt.Errorf("%s (post-chain stage): %w", cmd.Name, err)
 			}
@@ -510,7 +521,16 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 				}
 			}
 		}
+		// A cap on aggregated rows bounds what follows, which reads only the rows it
+		// kept: the next stage wraps it.
+		if capsAggregatedRows(cmd, ctx) && pipelineContinuesAfter(pipeline, i) {
+			if _, err := pushCarryForwardStage(ctx); err != nil {
+				return nil, fmt.Errorf("%s (after the cap): %w", cmd.Name, err)
+			}
+			ctx.Plan.CurrentStage().AfterCap = true
+		}
 		ctx.Plan.stageAfterCmd = append(ctx.Plan.stageAfterCmd, len(ctx.Plan.Stages)-1)
+		plan.outputsAfter[i] = plan.outputNames(registry)
 	}
 
 	// ---------------------------------------------------------------
@@ -527,7 +547,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	if err := resolveCommandConditions(conditions, registry, plan, opts); err != nil {
 		return nil, err
 	}
-	if err := validatePostAggregationFields(pipeline, registry, declared); err != nil {
+	if err := validatePostAggregationFields(pipeline, registry, plan); err != nil {
 		return nil, err
 	}
 	if err := classifyConditions(conditions, registry, plan); err != nil {
@@ -1874,4 +1894,24 @@ func selectExprStrings(exprs []SelectExpr) []string {
 		result[i] = e.String()
 	}
 	return result
+}
+
+// capsAggregatedRows reports whether cmd, just run, capped the rows of an
+// aggregated stage.
+func capsAggregatedRows(cmd CommandNode, ctx *CommandContext) bool {
+	switch canonicalCommandName(cmd.Name) {
+	case "head", "tail", "limit", "dedup":
+		return !onScan(ctx) && isAggregatedStage(ctx.Plan, ctx.Plan.CurrentStage())
+	}
+	return false
+}
+
+// pipelineContinuesAfter reports whether a command, assignment or filter follows
+// command i.
+func pipelineContinuesAfter(pipeline *PipelineNode, i int) bool {
+	if i+1 < len(pipeline.Commands) {
+		return true
+	}
+	return slices.ContainsFunc(pipeline.Assignments, func(a AssignmentNode) bool { return a.CmdIndex > i }) ||
+		slices.ContainsFunc(pipeline.HavingConditions, func(c HavingCondition) bool { return c.CmdIndex > i })
 }

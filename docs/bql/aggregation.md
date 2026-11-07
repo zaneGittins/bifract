@@ -163,6 +163,8 @@ Adds `_median`, `_mad` and `_modified_z` to each row, where `_modified_z = 0.674
 
 Same as `modifiedZScore()` plus `_is_outlier`: 1 when `|_modified_z|` exceeds `threshold` (default 3.5), else 0. Alias `outlier`.
 
+A filter after either keeps scored rows: `madOutlier(latency) | host="web1"` scores web1 against every row, while `host="web1" | madOutlier(latency)` scores it against itself.
+
 ## Analyze fields
 
 ```

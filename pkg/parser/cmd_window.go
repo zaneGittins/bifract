@@ -10,6 +10,9 @@ const windowValueColumn = "_mz_val"
 // modifiedZScoreHandler handles modifiedzscore/modifiedz/mzscore(field)
 type modifiedZScoreHandler struct{}
 
+func (h *modifiedZScoreHandler) keepsRows()            {}
+func (h *modifiedZScoreHandler) scoresAgainstAllRows() {}
+
 func (h *modifiedZScoreHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_median", FieldKindWindow, "_median", ctx.CmdIndex)
@@ -99,6 +102,9 @@ func setWindowValue(arg Argument, ctx *CommandContext, name string) error {
 // madOutlierHandler handles madoutlier/outlier(field, threshold)
 type madOutlierHandler struct{}
 
+func (h *madOutlierHandler) keepsRows()            {}
+func (h *madOutlierHandler) scoresAgainstAllRows() {}
+
 func (h *madOutlierHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_median", FieldKindWindow, "_median", ctx.CmdIndex)
@@ -133,6 +139,8 @@ func (h *madOutlierHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 
 // histogramHandler handles histogram(field, buckets=20)
 type histogramHandler struct{}
+
+func (h *histogramHandler) buildsOutputLater() {}
 
 func (h *histogramHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	return nil

@@ -28,7 +28,7 @@ func TestNumericComparisonSkipsNonNumbers(t *testing.T) {
 		{"case branch", `* | case { status >= 500 | sev := "crit" ; * | sev := "ok" }`, "toFloat64OrDefault(fields.`status`::String, nan) >= 500"},
 		{"chain step", `* | chain(user) { bytes > 100; ev = "y" }`, "sequenceMatch('(?1)(?2)')(toUInt64(toUnixTimestamp64Milli(timestamp)), toFloat64OrDefault(fields.`bytes`::String, nan) > 100, "},
 		{"field operand", `src_bytes > field(dst_bytes)`, "toFloat64OrDefault(fields.`src_bytes`::String, nan) > toFloat64OrDefault(fields.`dst_bytes`::String, nan)"},
-		{"computed field operand", `* | groupBy(user) | count() | count > field(user)`, "toFloat64OrDefault(toString(_count), nan) > toFloat64OrDefault(user, nan)"},
+		{"computed field operand", `* | groupBy(user) | count > field(user)`, "toFloat64OrDefault(toString(_count), nan) > toFloat64OrDefault(user, nan)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

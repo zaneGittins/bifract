@@ -78,6 +78,8 @@ Works with `=`, `!=`, `>`, `<`, `>=` and `<=`. `=` and `!=` compare as text, the
 - Conditions with no operator between them are ANDed: `event_id=1 image=/powershell/i`.
 - Any term without an operator before it binds like `AND`, whether it is a field condition, `NOT`, a search string, a function or a group: `a=1 OR b=2 NOT c=3` is `a=1 OR (b=2 AND NOT c=3)`. To filter everything before it, start a stage with `|`: `a=1 OR b=2 | NOT c=3`.
 - `in()`, `cidr()` and other condition functions group and negate like any filter: `cidr(dst_ip, "10.0.0.0/8") OR cidr(dst_ip, "192.168.0.0/16")`.
+- A filter reads the rows at its position in the pipe. After `groupBy()`, `chain()`, a stats command or a chart, that is the aggregation's output: `groupBy(src_ip) | cidr(src_ip, "10.0.0.0/8")` keeps those groups, and `timechart(span=1h) | _count > 100` keeps busy buckets. A field the aggregation dropped, a text search or `comment()` is an error. To change what is counted, filter first: `cidr(src_ip, "10.0.0.0/8") | groupBy(user)`.
+- After `head()`, `tail()` or `dedup()` on aggregated rows, a filter reads only the rows they kept: `groupBy(user) | sort(_count, order=desc) | head(10) | user="bob"` is empty unless bob is in the top 10.
 
 ## Variables
 

@@ -88,9 +88,9 @@ func (h *tlshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	// A similarity filter reads as "keep the rows whose digest looks like this".
-	// Hoisting it above an aggregation, the way cidr() and in() do, would silently
-	// turn it into a filter on the pre-aggregation rows instead, which is not what
-	// anyone writing it after a groupby means. Execute runs in pipeline order, so a
+	// Hoisting it above an aggregation would silently turn it into a filter on the
+	// pre-aggregation rows instead, which is not what anyone writing it after a
+	// groupby means. Execute runs in pipeline order, so a
 	// populated GroupBy (or a pushed stage, from chained aggregation) means an
 	// aggregation already happened.
 	if len(ctx.Plan.CurrentStage().Layer.GroupBy) > 0 || ctx.Plan.SourceStage() != ctx.Plan.CurrentStage() {

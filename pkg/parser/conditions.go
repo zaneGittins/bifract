@@ -223,6 +223,9 @@ func compileNestedExprLeaves(cond *HavingCondition, priority int, registry *Fiel
 // leaves through the deferredScope export.
 func classifyExprCondition(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) (string, int, error) {
 	priority := exprPriority(cond.Expr, registry, plan, willHaveAggregation)
+	if plan.afterRowKeeping(cond.CmdIndex) {
+		priority = max(priority, 1)
+	}
 	// A match operator makes the expression the left operand of a comparison
 	// rather than a condition in its own right.
 	if cond.Operator != "" {
@@ -329,6 +332,16 @@ func isGroupKey(registry *FieldRegistry, field string) bool {
 // 0=WHERE, 1=DeferredWhere, 2=HAVING. Both operands count: `a > field(_count)`
 // can only be evaluated where the later-produced side exists.
 func leafPriority(c HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
+	p := fieldsPriority(c, registry, plan, willHaveAggregation)
+	// After a window score a filter keeps scored rows: it never narrows the baseline.
+	if plan.afterRowKeeping(c.CmdIndex) {
+		p = max(p, 1)
+	}
+	return p
+}
+
+// fieldsPriority is the stage the fields a leaf reads need.
+func fieldsPriority(c HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
 	if c.Command != nil {
 		// A condition command binds where the fields it reads exist.
 		p := 0
@@ -389,12 +402,12 @@ func subtreePriority(cond HavingCondition, registry *FieldRegistry, plan *QueryP
 	return highest
 }
 
-// splitMixedAndCompound decomposes a compound that mixes a conjunct read after a
-// window or join with one that is not, so each binds where its fields exist: a
-// log-field predicate then reaches the scan, where skip indexes can prune and
-// where it resolves at all under a join() or window wrap. Distribution over AND is
-// safe; a negated node or an OR connector is not, and a compound that needs no
-// split is left intact so its SQL is unchanged.
+// splitMixedAndCompound decomposes a compound whose conjuncts bind to different
+// stages (the scan, after a window or join, HAVING), so each binds where its fields
+// exist: a log-field or key predicate then reaches the scan, where skip indexes can
+// prune and where it resolves at all under a join() or window wrap. Distribution
+// over AND is safe; a negated node or an OR connector is not, and a compound that
+// needs no split is left intact so its SQL is unchanged.
 func splitMixedAndCompound(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) []HavingCondition {
 	if !cond.IsCompound || cond.Negate || len(cond.Children) < 2 {
 		return nil
@@ -404,15 +417,11 @@ func splitMixedAndCompound(cond HavingCondition, registry *FieldRegistry, plan *
 			return nil
 		}
 	}
-	deferred, other := 0, 0
+	stages := map[int]bool{}
 	for _, c := range cond.Children {
-		if subtreePriority(c, registry, plan, willHaveAggregation) == 1 {
-			deferred++
-		} else {
-			other++
-		}
+		stages[subtreePriority(c, registry, plan, willHaveAggregation)] = true
 	}
-	if deferred == 0 || other == 0 {
+	if len(stages) < 2 {
 		return nil
 	}
 	parts := make([]HavingCondition, len(cond.Children))
@@ -461,8 +470,14 @@ func compoundFitsHavingStage(cond HavingCondition, plan *QueryPlan) bool {
 			}
 			return
 		}
-		if fieldFirstStage(c.Field, plan) > hs {
-			fits = false
+		fields := []string{c.Field}
+		if c.Command != nil {
+			fields = conditionCommandFields(*c.Command)
+		}
+		for _, f := range fields {
+			if fieldFirstStage(f, plan) > hs {
+				fits = false
+			}
 		}
 	}
 	walk(cond)
@@ -510,6 +525,17 @@ func materializeAtPositions(conds []HavingCondition, registry *FieldRegistry, pl
 // source stage, HAVING to the groupby stage, post-aggregation projection-column
 // filters to the projection stage that produces them.
 func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
+	// A filter after a cap on aggregated rows reads the rows the cap kept, so even
+	// an aggregate one is a WHERE above the cap rather than the group's HAVING.
+	having := plan.pendingHavingConditions[:0]
+	for _, c := range plan.pendingHavingConditions {
+		if plan.capStageAt(c.CmdIndex) > plan.havingStageIndexAt(c.CmdIndex) {
+			plan.pendingWhereConditions = append(plan.pendingWhereConditions, c)
+		} else {
+			having = append(having, c)
+		}
+	}
+	plan.pendingHavingConditions = having
 	// WHERE conditions bind to the stage that owns the fields they reference.
 	// Pre-aggregation filters (base/JSON/pre-agg scalars) bind to the source
 	// stage; a filter on a column materialized only by a post-aggregation
@@ -692,7 +718,7 @@ func condTouchesWindowField(cond HavingCondition, registry *FieldRegistry) bool 
 // materialized by a post-aggregation projection stage (base log fields, JSON
 // sub-columns, pre-aggregation scalars) bind to the source stage (index 0).
 func whereBindingStageIndex(cond HavingCondition, plan *QueryPlan) int {
-	maxIdx := 0
+	maxIdx := max(0, plan.capStageAt(cond.CmdIndex))
 	var walk func(c HavingCondition)
 	walk = func(c HavingCondition) {
 		if c.IsCompound {
@@ -701,11 +727,24 @@ func whereBindingStageIndex(cond HavingCondition, plan *QueryPlan) int {
 			}
 			return
 		}
-		if idx := fieldOwningStage(c.Field, plan); idx > maxIdx {
-			maxIdx = idx
+		// A command's predicate reads a carried key as its source expression, so
+		// only the stage computing the field, or rewriting it, binds it.
+		if c.Command != nil {
+			for _, f := range conditionCommandFields(*c.Command) {
+				maxIdx = max(maxIdx, fieldFirstStage(f, plan))
+				if plan.rewrittenAfterAggregation(f, c.CmdIndex) {
+					maxIdx = max(maxIdx, plan.stageAfterCmd[c.CmdIndex-1])
+				}
+			}
+			return
 		}
+		maxIdx = max(maxIdx, fieldOwningStage(c.Field, plan))
 	}
 	walk(cond)
+	// A filter reads the rows at its position, never a stage a later command adds.
+	if at, ok := plan.stageAt[[2]int{cond.CmdIndex, cond.AssignIndex}]; ok {
+		maxIdx = min(maxIdx, at)
+	}
 	return maxIdx
 }
 
@@ -1086,6 +1125,10 @@ func resolveCommandConditions(conditions []HavingCondition, registry *FieldRegis
 		reg := registry
 		if plan != nil {
 			reg = plan.conditionRegistry(conditions[i], registry)
+			reg = withPostSourceColumns(conditions[i], reg, plan)
+			if plan.afterRowKeeping(conditions[i].CmdIndex) {
+				reg = withDeferredColumns(*conditions[i].Command, reg, plan)
+			}
 		}
 		sql, err := negatedCommandPredicate(*conditions[i].Command, reg, opts)
 		if err != nil {
@@ -1094,6 +1137,31 @@ func resolveCommandConditions(conditions []HavingCondition, registry *FieldRegis
 		conditions[i].PredicateSQL = sql
 	}
 	return nil
+}
+
+// withPostSourceColumns resolves the fields a stage after the scan computes, or that
+// a filter after a cap reads, to their bare columns: all a later stage can read.
+func withPostSourceColumns(c HavingCondition, registry *FieldRegistry, plan *QueryPlan) *FieldRegistry {
+	for _, f := range conditionCommandFields(*c.Command) {
+		if fieldFirstStage(f, plan) > 0 || plan.rewrittenAfterAggregation(f, c.CmdIndex) || plan.capStageAt(c.CmdIndex) >= 0 {
+			registry = registry.Clone()
+			registry.Register(f, FieldKindPerRow, f, -1)
+			registry.SetResolveExpr(f, f)
+		}
+	}
+	return registry
+}
+
+// withDeferredColumns resolves the fields a command reads to the hidden columns the
+// scan exports for a filter above it.
+func withDeferredColumns(cmd CommandNode, registry *FieldRegistry, plan *QueryPlan) *FieldRegistry {
+	registry = registry.Clone()
+	for _, f := range conditionCommandFields(cmd) {
+		ref := plan.deferredScope().ref(resolveFieldRef(f, registry), f)
+		registry.Register(f, FieldKindPerRow, ref, -1)
+		registry.SetResolveExpr(f, ref)
+	}
+	return registry
 }
 
 // negatedCommandPredicate builds a condition function's predicate with Negate
@@ -1191,92 +1259,170 @@ func hasTopLevelOR(clause string) bool {
 	return false
 }
 
-// closedOutputCommands produce a fully known column set: a groupby's keys and
-// aggregates, or a single stats row. Other aggregating commands (chain, charts,
-// window scores) pass identity or row fields through, so they are not listed.
-var closedOutputCommands = map[string]bool{
-	"groupby": true, "count": true, "sum": true, "avg": true, "max": true, "min": true,
+// statsCommands aggregate the rows before them: after chain(), the matched
+// entities, in a stage of their own.
+var statsCommands = map[string]bool{
+	"count": true, "sum": true, "avg": true, "max": true, "min": true,
 	"median": true, "percentile": true, "stddev": true, "skewness": true, "kurtosis": true,
 	"multi": true, "mad": true, "iqr": true, "corr": true, "rankcorr": true,
 	"selectfirst": true, "selectlast": true, "top": true,
 }
 
-// validatePostAggregationFields rejects a filter on a name that does not exist
-// after the aggregation before it. Such a name resolves as a log field and is
-// pushed into the scan, so a typo like `_cuont > 1` silently matched nothing.
-func validatePostAggregationFields(pipeline *PipelineNode, registry *FieldRegistry, declared map[string]bool) error {
+// validatePostAggregationFields rejects a filter that reads anything the aggregation
+// before it did not return. Such a name resolves as a log field and is pushed into
+// the scan, so it would change what was counted instead of filtering the output.
+func validatePostAggregationFields(pipeline *PipelineNode, registry *FieldRegistry, plan *QueryPlan) error {
+	var check func(c HavingCondition) error
+	check = func(c HavingCondition) error {
+		if c.IsCompound {
+			for _, child := range c.Children {
+				if err := check(child); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		at := lastAggregatingCommandIndex(pipeline.Commands, c.CmdIndex)
+		if at < 0 {
+			return nil
+		}
+		agg := canonicalCommandName(pipeline.Commands[at].Name)
+		if !outputIsClosed(agg) {
+			return nil
+		}
+		if commandBuildsOutputLater(agg) {
+			return fmt.Errorf("a filter cannot follow %s(), whose output is built around the finished query: filter before it", agg)
+		}
+		if c.Command != nil && commandReadsLogRows(c.Command.Name) {
+			return fmt.Errorf("%s() reads log rows, so move it before %s()", commandDisplayName(c.Command.Name), agg)
+		}
+		for _, name := range conditionReads(c) {
+			if availableAfterAggregation(name, c, at, pipeline, registry, plan) {
+				continue
+			}
+			if name == normLogColumn {
+				return fmt.Errorf("a text search reads log rows, so move it before %s()", agg)
+			}
+			return fmt.Errorf("%s does not exist after %s(): filter on a grouping key or an aggregate output (%s), or move the filter before the aggregation",
+				name, agg, strings.Join(visibleOutputs(plan.outputsAfter[at]), ", "))
+		}
+		return nil
+	}
 	for _, cond := range pipeline.HavingConditions {
-		agg := lastAggregatingCommandBefore(pipeline.Commands, cond.CmdIndex)
-		if agg == "" || !closedOutputCommands[agg] {
+		if err := check(cond); err != nil {
+			return err
+		}
+	}
+	// A command after the aggregation reads its output the same way. One that
+	// aggregates again on the same stage, as groupby(user) | sum(bytes) does, reads
+	// the rows being grouped instead.
+	assigns := 0
+	for i, cmd := range pipeline.Commands {
+		for assigns < len(pipeline.Assignments) && pipeline.Assignments[assigns].CmdIndex <= i {
+			assigns++
+		}
+		if IsAggregatingCommand(cmd.Name) {
 			continue
 		}
-		if name := firstMissingPostAggField(cond, registry, declared); name != "" {
-			return fmt.Errorf("%s does not exist after %s(): filter on a grouping key or an aggregate output (%s), or move the filter before the aggregation",
-				name, agg, strings.Join(aggregateOutputNames(registry), ", "))
+		at := lastAggregatingCommandIndex(pipeline.Commands, i)
+		if at < 0 || !outputIsClosed(pipeline.Commands[at].Name) {
+			continue
+		}
+		pos := HavingCondition{CmdIndex: i, AssignIndex: assigns}
+		for _, name := range commandFieldReads(cmd) {
+			if !availableAfterAggregation(name, pos, at, pipeline, registry, plan) {
+				return fmt.Errorf("%s(): %s does not exist after %s(): use a grouping key or an aggregate output (%s), or move %s() before the aggregation",
+					commandDisplayName(cmd.Name), name, canonicalCommandName(pipeline.Commands[at].Name),
+					strings.Join(visibleOutputs(plan.outputsAfter[at]), ", "), commandDisplayName(cmd.Name))
+			}
 		}
 	}
 	return nil
 }
 
-// lastAggregatingCommandBefore names the last aggregating command among the
-// first n, or "" when none precedes.
-func lastAggregatingCommandBefore(commands []CommandNode, n int) string {
+// commandFieldReads names the fields a command's field parameters read.
+func commandFieldReads(cmd CommandNode) []string {
+	spec := commandSpecs[canonicalCommandName(cmd.Name)]
+	if spec == nil || spec.FreeForm {
+		return nil
+	}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, p := range spec.Params {
+		if p.Kind != ParamField {
+			continue
+		}
+		for _, a := range b.Flat(p.Name) {
+			switch {
+			case a.IsFieldName():
+				names = append(names, a.FieldName())
+			case a.Kind == ArgExpr && a.Expr != nil:
+				names = append(names, exprFieldNames(a.Expr)...)
+			}
+		}
+	}
+	return names
+}
+
+// lastAggregatingCommandIndex finds the last aggregating command among the first n,
+// or -1 when none precedes.
+func lastAggregatingCommandIndex(commands []CommandNode, n int) int {
 	for i := min(n, len(commands)) - 1; i >= 0; i-- {
 		if IsAggregatingCommand(commands[i].Name) {
-			return strings.ToLower(commands[i].Name)
+			return i
 		}
 	}
-	return ""
+	return -1
 }
 
-// firstMissingPostAggField returns the first operand of a condition tree that is
-// a plain log field rather than a column the pipeline computes. A field()
-// comparison is left to validateOperandStages, which explains it better.
-func firstMissingPostAggField(cond HavingCondition, registry *FieldRegistry, declared map[string]bool) string {
-	if cond.IsCompound {
-		for _, child := range cond.Children {
-			if name := firstMissingPostAggField(child, registry, declared); name != "" {
-				return name
-			}
-		}
-		return ""
+// conditionReads names every field a leaf condition reads.
+func conditionReads(c HavingCondition) []string {
+	var names []string
+	if c.Command != nil {
+		names = conditionCommandFields(*c.Command)
 	}
-	if cond.Command != nil {
-		for _, f := range conditionCommandFields(*cond.Command) {
-			if missingPostAggField(f, registry, declared) {
-				return f
-			}
-		}
-		return ""
+	if c.Expr != nil {
+		names = append(names, exprFieldNames(c.Expr)...)
 	}
-	if cond.Expr != nil || cond.ValueField != "" || cond.Field == "" || !missingPostAggField(cond.Field, registry, declared) {
-		return ""
+	if c.Field != "" {
+		names = append(names, c.Field)
 	}
-	return cond.Field
+	if c.ValueField != "" {
+		names = append(names, c.ValueField)
+	}
+	return names
 }
 
-// missingPostAggField reports whether name is a plain log field, which an
-// aggregation does not carry.
-func missingPostAggField(name string, registry *FieldRegistry, declared map[string]bool) bool {
-	if isBareAggregate(name) || isGroupKey(registry, name) || declared[name] {
-		return false
+// availableAfterAggregation reports whether name exists where c is written: the
+// aggregation at index at returned it, or the pipeline computed it since. A stage
+// keeps the row-level columns selected before its GROUP BY, and those do not survive.
+func availableAfterAggregation(name string, c HavingCondition, at int, pipeline *PipelineNode, registry *FieldRegistry, plan *QueryPlan) bool {
+	outputs := plan.outputsAfter[at]
+	if alias, ok := plan.conditionRegistry(c, registry).GroupKeyAlias(name); ok && slices.Contains(outputs, alias) {
+		return true
 	}
-	e := registry.Get(name)
-	return e == nil || e.ClassifyKind() == FieldKindJSON
-}
-
-// aggregateOutputNames lists the grouping keys and aggregate columns in scope,
-// for an error that names what the author can filter on.
-func aggregateOutputNames(registry *FieldRegistry) []string {
-	var out []string
-	for name := range registry.groupKeys {
-		out = append(out, name)
+	if plan.declaredBetween(name, at, c.CmdIndex) {
+		return true
 	}
-	for _, name := range registry.order {
-		if e := registry.fields[name]; e != nil && e.ClassifyKind() == FieldKindAggregate {
-			out = append(out, name)
+	for _, a := range pipeline.Assignments[:min(c.AssignIndex, len(pipeline.Assignments))] {
+		if a.Field == name && a.CmdIndex > at {
+			return true
 		}
 	}
+	if isBareAggregate(name) {
+		return true
+	}
+	return slices.Contains(outputs, name) && !plan.declaredBetween(name, 0, firstAggregatingCommandIndex(pipeline.Commands))
+}
+
+// visibleOutputs is the column list an error shows, without chain()'s hidden ones.
+func visibleOutputs(outputs []string) []string {
+	out := slices.DeleteFunc(slices.Clone(outputs), func(c string) bool {
+		return c == chainAnchorColumn || c == chainDoneColumn
+	})
 	sort.Strings(out)
 	return out
 }

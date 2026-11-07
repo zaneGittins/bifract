@@ -95,7 +95,7 @@ func TestGraphKeepsShapedRows(t *testing.T) {
 		{`* | table(a, b, z) | graph(child=a, parent=b)`, `* | table(a, b, z)`, serverOpts()},
 		{`* | graph(child=a, parent=b) | table(z)`, `* | table(z)`, serverOpts()},
 		{`* | groupby(a, b) | graph(child=a, parent=b)`, `* | groupby(a, b)`, serverOpts()},
-		{`* | count() | graph(child=a, parent=b)`, `* | count()`, serverOpts()},
+		{`* | groupby(a, b) | count() | graph(child=_count, parent=_count)`, `* | groupby(a, b) | count()`, serverOpts()},
 		{`ptg(start="ABC") | graph(child=process_guid, parent=parent_guid, labels=image)`, `ptg(start="ABC")`, ptgOpts},
 		{`* | graph(child=a, parent=b)`, `*`, pgr},
 	} {

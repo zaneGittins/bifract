@@ -163,8 +163,8 @@ func TestTLSHComposesWithSortAndAggregation(t *testing.T) {
 	}
 }
 
-// Hoisting a similarity filter above an aggregation, the way cidr() and in() do,
-// would quietly change what it filters. Reject instead.
+// Hoisting a similarity filter above an aggregation would quietly change what it
+// filters. Reject instead.
 func TestTLSHAfterAggregationRejected(t *testing.T) {
 	matches := []TLSHMatch{{Digest: tlshTestDigestA, Distance: 3, Needle: "n"}}
 	_, err := translateTLSH(t, `* | groupby(computer_name) | tlsh(field=tlsh, dict="d")`, tlshOpts(matches))
