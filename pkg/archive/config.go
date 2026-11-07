@@ -25,6 +25,12 @@ type Config struct {
 	// storage.ClickHouseEnvFromOS.
 	CH storage.ClickHouseEnv
 
+	// Identities, when set, is the server's main ClickHouse client. The archive
+	// client shares its query identities and workloads, so recall runs on the
+	// read-only recall identity under the recall workload rather than as admin. Nil
+	// for the standalone archiver, which runs only operator-initiated work.
+	Identities *storage.ClickHouseClient
+
 	SpoolPath string
 
 	// RollBytes is the PER-FRACTAL roll threshold, in PAYLOAD bytes: a fractal is

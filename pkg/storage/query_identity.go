@@ -30,15 +30,16 @@ import (
 // path to the same guarantee, and it fails a query cleanly with code 241.
 //
 // Inserts, merges, mutations and materialized views are outside this boundary by
-// construction: they never carry a workload marker, so they run on the default
-// connection and can never be throttled by a query class's ceiling. The identities are
-// granted read-only, so a write mistakenly issued on one fails loudly instead of
+// construction: writes go through Exec and batches on the default connection, never
+// through connFor, so a query class's ceiling can never throttle them. The identities
+// are granted read-only, so a write mistakenly issued on one fails loudly instead of
 // silently drawing on a search budget.
 //
-// The alert class has an identity for privilege alone. Alert evaluation and rule tests,
-// field stats, exports and model scoring run user-authored SQL, so they get the
-// read-only reach of a search, but no ceiling and no workload: a search class must
-// never throttle them.
+// The alert and reader classes have identities for privilege alone, with no ceiling
+// and no workload. Alert evaluation and rule tests, field stats, exports and model
+// scoring run user-authored SQL on the alert class. Every read no caller marked runs
+// on the reader, so a forgotten marker stays read-only; the few reads that need more
+// ask for the default connection with AdminReadContext.
 const (
 	// SearchCHUser and RecallCHUser deliberately match their workload names: the
 	// workload schedules the class's CPU, the user accounts for its memory. ClickHouse
@@ -51,6 +52,13 @@ const (
 	// workload, so it is never scheduled and never tagged.
 	AlertCHUser     = "bifract_alert"
 	QueryAlertClass = AlertCHUser
+
+	// QueryReaderClass is every read no caller marked: internal reads such as status
+	// and model health, and any user-derived read whose caller forgot its marker. It
+	// gets its own pool so background reads never take an alert's connections. Reads
+	// the identities cannot serve opt into admin with AdminReadContext.
+	ReaderCHUser     = "bifract_reader"
+	QueryReaderClass = ReaderCHUser
 
 	// queryIdentityRepairInterval is how often a missing identity is retried.
 	queryIdentityRepairInterval = time.Minute
@@ -76,7 +84,7 @@ type queryIdentity struct {
 }
 
 // queryIdentityClasses are the classes that run on their own identity.
-var queryIdentityClasses = []string{QuerySearchWorkload, QueryRecallWorkload, QueryAlertClass}
+var queryIdentityClasses = []string{QuerySearchWorkload, QueryRecallWorkload, QueryAlertClass, QueryReaderClass}
 
 // queryIdentityUser maps a workload class to the ClickHouse user that runs it.
 func queryIdentityUser(workload string) string {
@@ -87,6 +95,8 @@ func queryIdentityUser(workload string) string {
 		return RecallCHUser
 	case QueryAlertClass:
 		return AlertCHUser
+	case QueryReaderClass:
+		return ReaderCHUser
 	}
 	return ""
 }
@@ -261,10 +271,9 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 		return nil, fmt.Errorf("%s: %w", user, err)
 	}
 
-	// Query text names other fractals' values and carries their scopes, and no
-	// query path reads these on a class identity. Best effort: failing leaves the
-	// identity as broad as the release before, not broken.
-	for _, t := range queryTextSystemTables {
+	// Best effort: failing leaves the identity as broad as the release before, not
+	// broken.
+	for _, t := range privateSystemTables {
 		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
 		err := c.conn.Exec(sctx, fmt.Sprintf("REVOKE%s SELECT ON system.%s FROM %s", onCluster, t, user))
 		cancel()
@@ -316,31 +325,50 @@ func openIdentityConn(ctx context.Context, opts ConnOptions) (driver.Conn, error
 	return conn, nil
 }
 
-// EnsurePinnedIdentity gives a client pinned to addr the alert identity on that node,
-// so the rule tests that run there read as it. The user already exists on every node,
-// so there is nothing to provision. Like every class it falls back to the default
-// connection when c has no identity or the node refuses it, and a later call picks the
-// identity up in place, so a pin made during an outage does not stay on admin. A node
-// that refuses is retried at the repair interval, not on every call.
+// EnsurePinnedIdentity gives a client pinned to addr the alert and reader identities
+// on that node, so the rule tests that run there read as them. The users already
+// exist on every node, so there is nothing to provision. Like every class each falls
+// back to the default connection when c has no identity or the node refuses it, and a
+// later call picks the missing ones up in place, so a pin made during an outage does
+// not stay on admin. A node that refuses is retried at the repair interval, not on
+// every call.
 func (c *ClickHouseClient) EnsurePinnedIdentity(ctx context.Context, pinned *ClickHouseClient, addr string) {
-	if !c.hasQueryIdentity(QueryAlertClass) {
-		return
-	}
 	pinned.identityMu.Lock()
 	defer pinned.identityMu.Unlock()
-	if pinned.hasQueryIdentity(QueryAlertClass) || time.Now().Before(pinned.pinRetryAfter) {
+	if time.Now().Before(pinned.pinRetryAfter) {
 		return
 	}
-	opts := c.nodeConnOptions(addr, adminNodePool)
-	opts.User, opts.Password = AlertCHUser, c.queryIdentityPassword(AlertCHUser)
-	conn, err := openIdentityConn(ctx, opts)
-	if err != nil {
-		log.Printf("[ClickHouse] Query identity %q unavailable on %s, its reads fall back to the default connection: %v", AlertCHUser, addr, err)
-		pinned.pinRetryAfter = time.Now().Add(queryIdentityRepairInterval)
-		return
+	next := map[string]*queryIdentity{}
+	if m := pinned.queryConns.Load(); m != nil {
+		for class, id := range *m {
+			next[class] = id
+		}
 	}
-	pinned.queryConns.Store(&map[string]*queryIdentity{QueryAlertClass: {conn: conn}})
+	added := false
+	for _, class := range pinnedIdentityClasses {
+		if next[class] != nil || !c.hasQueryIdentity(class) {
+			continue
+		}
+		user := queryIdentityUser(class)
+		opts := c.nodeConnOptions(addr, adminNodePool)
+		opts.User, opts.Password = user, c.queryIdentityPassword(user)
+		conn, err := openIdentityConn(ctx, opts)
+		if err != nil {
+			log.Printf("[ClickHouse] Query identity %q unavailable on %s, its reads fall back to the default connection: %v", user, addr, err)
+			pinned.pinRetryAfter = time.Now().Add(queryIdentityRepairInterval)
+			continue
+		}
+		next[class] = &queryIdentity{conn: conn}
+		added = true
+	}
+	if added {
+		pinned.queryConns.Store(&next)
+	}
 }
+
+// pinnedIdentityClasses are the classes a pinned client reads as: rule tests and the
+// unmarked reads around them.
+var pinnedIdentityClasses = []string{QueryAlertClass, QueryReaderClass}
 
 // hasQueryIdentity reports whether class has a provisioned identity on c.
 func (c *ClickHouseClient) hasQueryIdentity(class string) bool {
@@ -348,8 +376,12 @@ func (c *ClickHouseClient) hasQueryIdentity(class string) bool {
 	return m != nil && (*m)[class] != nil
 }
 
-// queryTextSystemTables expose other queries' text to whoever can read them.
-var queryTextSystemTables = []string{"query_log", "query_thread_log", "query_views_log", "processes", "text_log", "query_cache"}
+// privateSystemTables are revoked from every least-privilege identity. The query-text
+// tables name other fractals' values and carry their scopes. system.zookeeper exposes
+// Keeper itself, where a cluster's DDL queue holds each ON CLUSTER statement verbatim,
+// including the passwords in CREATE/ALTER USER, and the replicated access store holds
+// every user's password hash. No read on these identities needs any of them.
+var privateSystemTables = []string{"query_log", "query_thread_log", "query_views_log", "processes", "text_log", "query_cache", "zookeeper"}
 
 // identityPool sizes a class pool like the client's own, so BIFRACT_CH_QUERY_MAX_CONNS
 // applies to it. A client wrapped around an existing conn has no sizing of its own.
@@ -593,20 +625,41 @@ func (r refusedRow) Err() error           { return r.err }
 func (r refusedRow) Scan(...any) error    { return r.err }
 func (r refusedRow) ScanStruct(any) error { return r.err }
 
-// connFor returns the connection a query on ctx must run on: the class identity when
-// ctx is marked and that identity is provisioned, otherwise the default connection.
-// Untagged work -- inserts, merges, schema reconciliation -- always lands on the
-// default connection and is never subject to a class's memory ceiling.
-func (c *ClickHouseClient) connFor(ctx context.Context) driver.Conn {
-	workload := QueryClassOf(ctx)
-	if workload == "" {
-		return c.conn
+// ShareQueryIdentities makes c's reads run on src's identities, workloads and
+// ceilings, as if src had issued them. For a second client on the same servers, such
+// as the archive client, that would otherwise hold no identities and run every read,
+// user recall SQL included, as admin. c keeps its own connection for writes and admin
+// reads, and never closes src's pools.
+func (c *ClickHouseClient) ShareQueryIdentities(src *ClickHouseClient) {
+	c.identitySrc = src
+}
+
+// identityState is the client whose identities and workload state c's reads use.
+func (c *ClickHouseClient) identityState() *ClickHouseClient {
+	if c.identitySrc != nil {
+		return c.identitySrc
 	}
-	m := c.queryConns.Load()
+	return c
+}
+
+// connFor returns the connection a read on ctx must run on: the class identity when
+// ctx is marked, the reader identity when it is not, and the default connection for
+// an admin read or when the identity is not provisioned. A class wins over the admin
+// marker, so a marker that leaks into user SQL's context gains it nothing. Writes
+// never come through here.
+func (c *ClickHouseClient) connFor(ctx context.Context) driver.Conn {
+	class := QueryClassOf(ctx)
+	if class == "" {
+		if IsAdminRead(ctx) {
+			return c.conn
+		}
+		class = QueryReaderClass
+	}
+	m := c.identityState().queryConns.Load()
 	if m == nil {
 		return c.conn
 	}
-	if id := (*m)[workload]; id != nil {
+	if id := (*m)[class]; id != nil {
 		return id.conn
 	}
 	return c.conn
@@ -614,6 +667,10 @@ func (c *ClickHouseClient) connFor(ctx context.Context) driver.Conn {
 
 // closeQueryIdentities closes the class pools. Called from Close.
 func (c *ClickHouseClient) closeQueryIdentities() {
+	// Under identityMu, so an EnsurePinnedIdentity racing Close cannot store pools
+	// after they were closed.
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
 	if m := c.queryConns.Swap(nil); m != nil {
 		for _, id := range *m {
 			if id != nil {

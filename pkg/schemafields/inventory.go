@@ -46,6 +46,8 @@ type fractalMeta struct {
 // partsSource is the metadata table to read. ShardSystemTable is one replica per
 // shard, not every replica: each replica of a shard holds the same parts, so
 // counting them all would multiply every byte figure by the replication factor.
+// Reads of it are admin reads: on a cluster it is cluster(), which needs the
+// privileged connection.
 func partsSource(ch *storage.ClickHouseClient, table string) string {
 	return ch.Topology().ShardSystemTable("system." + table)
 }
@@ -91,7 +93,7 @@ WHERE field != ''
 GROUP BY fractal, field`,
 		fractalFromPartition, normalizedPaths, src, inventoryPartLimit)
 
-	rows, err := s.ch.QueryLowPriorityBounded(ctx, sql, sweepMaxMemoryBytes())
+	rows, err := s.ch.QueryLowPriorityBounded(storage.AdminReadContext(ctx), sql, sweepMaxMemoryBytes())
 	if err != nil {
 		return nil, nil, fmt.Errorf("field inventory: %w", err)
 	}
@@ -136,7 +138,7 @@ WHERE fractal != ''
 GROUP BY fractal`,
 		fractalFromPartition, src, inventoryPartLimit)
 
-	rows, err := s.ch.QueryLowPriorityBounded(ctx, sql, sweepMaxMemoryBytes())
+	rows, err := s.ch.QueryLowPriorityBounded(storage.AdminReadContext(ctx), sql, sweepMaxMemoryBytes())
 	if err != nil {
 		return nil, fmt.Errorf("fractal part summary: %w", err)
 	}

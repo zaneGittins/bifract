@@ -339,7 +339,8 @@ func (h *PerformanceHandler) HandleProcesses(w http.ResponseWriter, r *http.Requ
 	WHERE is_initial_query = 1
 	ORDER BY elapsed DESC`, source)
 
-	results, err := h.db.Query(r.Context(), sql)
+	// system.processes holds other queries' text.
+	results, err := h.db.Query(storage.AdminReadContext(r.Context()), sql)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"success": false,
@@ -472,7 +473,7 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 			sum(bytes_on_disk) as compressed_bytes,
 			sum(data_uncompressed_bytes) as uncompressed_bytes
 		FROM system.parts
-		WHERE database = 'logs' AND table = 'logs' AND active = 1`
+		WHERE database = currentDatabase() AND table = 'logs' AND active = 1`
 	if logRows, err := h.db.Query(r.Context(), logStorageSQL); err == nil && len(logRows) > 0 {
 		result["log_storage"] = logRows[0]
 	}
@@ -591,7 +592,7 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 		sum(data_uncompressed_bytes) AS raw_bytes,
 		sum(bytes_on_disk) AS disk_bytes
 	FROM system.parts
-	WHERE database = 'logs' AND table = 'logs' AND active = 1
+	WHERE database = currentDatabase() AND table = 'logs' AND active = 1
 	GROUP BY partition`
 
 	rows, err := h.db.Query(r.Context(), sql)

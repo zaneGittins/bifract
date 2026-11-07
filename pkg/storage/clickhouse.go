@@ -112,6 +112,10 @@ type ClickHouseClient struct {
 	// refused the identity. Guarded by identityMu.
 	pinRetryAfter time.Time
 
+	// identitySrc, when set, is the client whose identities and workload state this
+	// client's reads use (see ShareQueryIdentities). Set once, before first use.
+	identitySrc *ClickHouseClient
+
 	// queryPool sizes the class pools; see identityPool.
 	queryPool ClickHousePoolConfig
 }
@@ -1364,6 +1368,8 @@ func (c *ClickHouseClient) ClusterServerStats(ctx context.Context) (*ClusterServ
 		return nil, err
 	}
 	stats.NodesTotal, stats.NodesHealthy = total, healthy
+	// The reads below use clusterAllReplicas, which needs the privileged connection.
+	ctx = AdminReadContext(ctx)
 
 	// Load gauges: summed across all replicas.
 	loadRows, err := c.Query(ctx, fmt.Sprintf(`
@@ -2262,7 +2268,7 @@ func nullableNum(dest any) (p any, ok bool) {
 
 func (c *ClickHouseClient) CountLogs(ctx context.Context, startTime, endTime time.Time) (uint64, error) {
 	var count uint64
-	err := c.conn.QueryRow(ctx,
+	err := c.QueryRow(ctx,
 		fmt.Sprintf("SELECT count() as count FROM %s WHERE toUnixTimestamp64Milli(timestamp) >= ? AND toUnixTimestamp64Milli(timestamp) <= ?", c.ReadTable()),
 		startTime.UnixMilli(), endTime.UnixMilli(),
 	).Scan(&count)
@@ -2277,7 +2283,7 @@ func (c *ClickHouseClient) CountLogs(ctx context.Context, startTime, endTime tim
 // partition key, so only that fractal's partitions are read.
 func (c *ClickHouseClient) CountFractalLogs(ctx context.Context, fractalID string) (uint64, error) {
 	var count uint64
-	err := c.conn.QueryRow(ctx, "SELECT count() FROM "+c.ReadTable()+" WHERE fractal_id = ?", fractalID).Scan(&count)
+	err := c.QueryRow(ctx, "SELECT count() FROM "+c.ReadTable()+" WHERE fractal_id = ?", fractalID).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count logs for fractal %s: %w", fractalID, err)
 	}
@@ -2422,7 +2428,7 @@ func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time
 
 // scanLogRow executes a single-row log query and returns the result as a map.
 func (c *ClickHouseClient) scanLogRow(ctx context.Context, query string, args []interface{}) (map[string]interface{}, error) {
-	rows, err := c.conn.Query(ctx, query, args...)
+	rows, err := c.QueryRows(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query log: %w", err)
 	}
@@ -2539,7 +2545,7 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 	}
 	query += " LIMIT 1"
 
-	rows, err := c.conn.Query(ctx, query, args...)
+	rows, err := c.QueryRows(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query log fields: %w", err)
 	}
@@ -2589,7 +2595,7 @@ func (c *ClickHouseClient) fetchRawLog(ctx context.Context, logID string, ts tim
 	}
 	query += " LIMIT 1"
 
-	rows, err := c.conn.Query(ctx, query, args...)
+	rows, err := c.QueryRows(ctx, query, args...)
 	if err != nil {
 		log.Printf("[fetchRawLog] logs_raw lookup for %s failed: %v", logID, err)
 		return ""
@@ -2951,11 +2957,11 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 	var rows driver.Rows
 	var err error
 	if len(fractalIDs) > 0 {
-		rows, err = c.conn.Query(ctx,
+		rows, err = c.QueryRows(ctx,
 			fmt.Sprintf("SELECT log_id, fractal_id, norm_log AS fields FROM %s WHERE log_id IN (?) AND fractal_id IN (?)", c.ReadTable()),
 			logIDs, fractalIDs)
 	} else {
-		rows, err = c.conn.Query(ctx,
+		rows, err = c.QueryRows(ctx,
 			fmt.Sprintf("SELECT log_id, fractal_id, norm_log AS fields FROM %s WHERE log_id IN (?)", c.ReadTable()),
 			logIDs)
 	}

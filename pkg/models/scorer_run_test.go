@@ -316,3 +316,24 @@ func TestScoringReadWithNoFractalIsUnassigned(t *testing.T) {
 		t.Errorf("reads: %q", got)
 	}
 }
+
+// The layout checks read system tables across every replica on a cluster, which the
+// reader identity cannot do, so they ask for the privileged connection.
+func TestLayoutChecksAreAdminReads(t *testing.T) {
+	env := newClusterEnv(t)
+	var marks []bool
+	env.ch.CtxArgs = func(ctx context.Context) []any {
+		marks = append(marks, storage.IsAdminRead(ctx))
+		return nil
+	}
+	_, _ = env.mgr.stateLayoutOK(context.Background(), "m1", "t1", ModelDefinition{KeyFields: []string{"k"}}, ModelTypeFirstSeen)
+	_, _ = env.mgr.netStateLayoutOK(context.Background(), "m1")
+	if len(marks) != 2 {
+		t.Fatalf("%d reads", len(marks))
+	}
+	for i, admin := range marks {
+		if !admin {
+			t.Errorf("layout read %d not admin", i)
+		}
+	}
+}

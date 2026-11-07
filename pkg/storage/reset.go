@@ -153,7 +153,8 @@ func (c *ClickHouseClient) cleanKeeperPaths(ctx context.Context, extraTables []s
 	}
 	for _, table := range ResetKeeperTables(extraTables) {
 		path := KeeperTablePath(shard, c.Database, table)
-		rows, err := c.Query(ctx, KeeperReplicasQuery(path))
+		// system.zookeeper is revoked from every least-privilege identity.
+		rows, err := c.Query(AdminReadContext(ctx), KeeperReplicasQuery(path))
 		if err != nil {
 			continue // absent path: nothing registered
 		}

@@ -384,6 +384,11 @@ func TestEnsureIngestUser(t *testing.T) {
 		"GRANT ON CLUSTER 'c1' INSERT ON logs.* TO bifract_ingest",
 		"GRANT ON CLUSTER 'c1' SELECT ON system.* TO bifract_ingest",
 	}
+	// Keeper holds the cluster's DDL verbatim, passwords included, and query text
+	// names other fractals' values: the ingest user reads neither.
+	for _, t := range privateSystemTables {
+		want = append(want, "REVOKE ON CLUSTER 'c1' SELECT ON system."+t+" FROM bifract_ingest")
+	}
 	if got := f.Executed(); !reflect.DeepEqual(got, want) {
 		t.Errorf("executed:\n%s", strings.Join(got, "\n"))
 	}

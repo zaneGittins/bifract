@@ -189,6 +189,16 @@ func (c *ClickHouseClient) EnsureIngestUser(ctx context.Context, password string
 			return fmt.Errorf("ensure ingest user: %w", err)
 		}
 	}
+	// Best effort, as for the query identities: a failure leaves the user as broad as
+	// the release before.
+	for _, t := range privateSystemTables {
+		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := c.conn.Exec(sctx, fmt.Sprintf("REVOKE%s SELECT ON system.%s FROM %s", onCluster, t, IngestCHUser))
+		cancel()
+		if err != nil {
+			log.Printf("[ClickHouse] %s: could not revoke system.%s: %v", IngestCHUser, t, err)
+		}
+	}
 	c.recordCapability(CapIngestIdentity, nil)
 	log.Printf("[ClickHouse] Least-privilege ingest user %q ensured (INSERT on logs, SELECT on system)", IngestCHUser)
 	return nil

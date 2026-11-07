@@ -46,7 +46,7 @@ func (s *Sweeper) rollupFractals(ctx context.Context) ([]string, error) {
 FROM %s
 WHERE database = currentDatabase() AND table = 'logs_field_paths' AND active`,
 		fractalFromPartition, partsSource(s.ch, "parts"))
-	rows, err := s.ch.QueryLowPriorityBounded(ctx, sql, sweepMaxMemoryBytes())
+	rows, err := s.ch.QueryLowPriorityBounded(storage.AdminReadContext(ctx), sql, sweepMaxMemoryBytes())
 	if err != nil {
 		return nil, fmt.Errorf("field path fractals: %w", err)
 	}

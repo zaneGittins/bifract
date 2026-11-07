@@ -39,9 +39,10 @@ var (
 )
 
 // activityCtx marks a request's ClickHouse reads as this view's own and gives them
-// a server-side ceiling.
+// a server-side ceiling. They read other queries' text and fan out across the
+// cluster, which only the privileged connection may do.
 func activityCtx(parent context.Context) (context.Context, context.CancelFunc) {
-	ctx := storage.TagContext(parent, activityQueryTag)
+	ctx := storage.TagContext(storage.AdminReadContext(parent), activityQueryTag)
 	ctx = storage.QueryBudgetContext(ctx, activityTimeoutSec)
 	return context.WithTimeout(ctx, activityTimeoutSec*time.Second)
 }

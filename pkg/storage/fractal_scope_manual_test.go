@@ -117,9 +117,23 @@ func TestFractalScopeLive(t *testing.T) {
 	expect("cache fill", a, cached, "a1")
 	expect("cache under another scope", UserSearchContext(ctx, FractalScope{FractalIDs: []string{"a", "b"}}), cached, "a1", "b1")
 
-	// The privileged connection: unscoped work is untouched, scoped work is bound.
-	expect("unscoped default connection", ctx, "SELECT msg FROM "+db+".logs", "a1", "b1", "u1")
-	expect("scoped default connection", ScopeContext(ctx, FractalScope{FractalIDs: []string{"b"}}), "SELECT msg FROM "+db+".logs", "b1")
+	// Unmarked reads run read-only: unscoped work is untouched, scoped work is bound,
+	// and only an explicit admin read reaches the privileged connection.
+	expect("unscoped unmarked read", ctx, "SELECT msg FROM "+db+".logs", "a1", "b1", "u1")
+	expect("scoped unmarked read", ScopeContext(ctx, FractalScope{FractalIDs: []string{"b"}}), "SELECT msg FROM "+db+".logs", "b1")
+	expect("unmarked read user", ctx, "SELECT currentUser() AS msg", ReaderCHUser)
+	expect("admin read user", AdminReadContext(ctx), "SELECT currentUser() AS msg", "default")
+	expect("admin read of query text", AdminReadContext(ctx), "SELECT 'ok' AS msg FROM system.query_log LIMIT 1", "ok")
+	for name, sql := range map[string]string{
+		"query_log": "SELECT query AS msg FROM system.query_log LIMIT 1",
+		"write":     "INSERT INTO logs (fractal_id, msg) SELECT 'a', 'x'",
+		"remote()":  "SELECT msg FROM remote('" + addr + "', " + db + ".logs)",
+	} {
+		var ex *proto.Exception
+		if _, err := msgs(ctx, sql); !errors.As(err, &ex) || ex.Code != 497 {
+			t.Errorf("unmarked %s: err = %v, want code 497", name, err)
+		}
+	}
 
 	// Nothing in the SQL can widen it or reach other queries' text.
 	for name, sql := range map[string]string{
@@ -238,8 +252,8 @@ func TestFractalScopeLive(t *testing.T) {
 	if _, err := pinned.Query(unit, "INSERT INTO bfscope_scratch SELECT 'unit', 'x'"); !errors.As(err, &denied) || denied.Code != accessDenied {
 		t.Errorf("pinned rule wrote: %v", err)
 	}
-	if rows, err := pinned.Query(ctx, "SELECT currentUser() AS msg"); err != nil || rows[0]["msg"] == AlertCHUser {
-		t.Errorf("unmarked pinned work moved off the default connection: %v %v", rows, err)
+	if rows, err := pinned.Query(ctx, "SELECT currentUser() AS msg"); err != nil || rows[0]["msg"] != ReaderCHUser {
+		t.Errorf("unmarked pinned read: %v %v", rows, err)
 	}
 
 	// A pin taken while the parent lacked the identity picks it up in place once the
@@ -265,6 +279,9 @@ func TestFractalScopeLive(t *testing.T) {
 	c.EnsurePinnedIdentity(ctx, late, addr)
 	if got := lateUser(); got != AlertCHUser {
 		t.Errorf("recovered pin ran as %q", got)
+	}
+	if rows, err := late.Query(ctx, "SELECT currentUser() AS msg"); err != nil || rows[0]["msg"] != ReaderCHUser {
+		t.Errorf("recovered pin's unmarked read: %v %v", rows, err)
 	}
 
 	// An identity lost at boot comes back through the repair, without a restart.
