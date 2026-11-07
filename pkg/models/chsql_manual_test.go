@@ -864,3 +864,104 @@ func TestCHModelLookupReadsUnmergedState(t *testing.T) {
 		}
 	}
 }
+
+// The readiness counts over real day sets, in both layouts and both model types.
+// Days count back from today over a 30-day span, the first half being n >= 15:
+// "b", "c" and "e" are seen once; "d", "f" and "g" twice; "m" has its second day
+// on the second half's first day; "z" appears only today. A windowed table also
+// holds "old", outside the window; "back", a key seen on one window day that never
+// left; and "ret", one that really came back. A first_seen window counts only ret
+// as new; a rarity window counts both, as its alert can fire on either.
+func TestCHReadinessCounts(t *testing.T) {
+	const keys = `SELECT 'a' AS v, toInt64(number) AS n FROM numbers(30)
+    UNION ALL SELECT 'b', 29 UNION ALL SELECT 'c', 20
+    UNION ALL SELECT 'd', 25 UNION ALL SELECT 'd', 24
+    UNION ALL SELECT 'e', 5 UNION ALL SELECT 'f', 3 UNION ALL SELECT 'f', 2
+    UNION ALL SELECT 'g', 22 UNION ALL SELECT 'g', 4
+    UNION ALL SELECT 'm', 25 UNION ALL SELECT 'm', 14
+    UNION ALL SELECT 'z', 0`
+	// Strays never count: dates in the future and the epoch.
+	const stray = ` UNION ALL SELECT 'future', -20 UNION ALL SELECT 'a', -20 UNION ALL SELECT 'epoch', toInt64(today() - toDate(0))`
+	const windowOnly = ` UNION ALL SELECT 'old', 40
+    UNION ALL SELECT 'back', 35 UNION ALL SELECT 'back', 12
+    UNION ALL SELECT 'ret', 45 UNION ALL SELECT 'ret', 8`
+	// 31, so n = 29 stays inside the window if the test crosses UTC midnight.
+	windowed := ModelDefinition{PartitionKey: "h", ValueKey: "v", HistoryDays: 31}
+	allTime := ModelDefinition{PartitionKey: "h", ValueKey: "v"}
+	ungrouped := ModelDefinition{ValueKey: "v"}
+	seen := ModelDefinition{KeyFields: []string{"v"}}
+	seenWindowed := ModelDefinition{KeyFields: []string{"v"}, HistoryDays: 31}
+	const day = "toDate(now(), 'UTC') - n"
+	rarityAll := `INSERT INTO t (fractal_id, partition_val, value_val, event_count, days)
+SELECT 'f1', 'h', v, 1, groupUniqArrayState(365)(` + day + `) FROM (` + keys + stray + `) GROUP BY v`
+	seenAll := `INSERT INTO t (fractal_id, entity_key, first_seen, last_seen, event_count, days)
+SELECT 'f1', v, now64(3), now64(3), 1, groupUniqArrayState(365)(` + day + `) FROM (` + keys + stray + `) GROUP BY v`
+	cases := []struct {
+		name             string
+		mt               ModelType
+		def              ModelDefinition
+		insert           string
+		once, fore, actl uint64
+	}{
+		{"rarity", ModelTypeRarity, allTime, rarityAll, 4, 4, 3},
+		{"rarity ungrouped", ModelTypeRarity, ungrouped, rarityAll, 4, 4, 3},
+		{"rarity windowed", ModelTypeRarity, windowed, `INSERT INTO t (fractal_id, partition_val, value_val, event_count, _day)
+SELECT 'f1', 'h', v, 1, ` + day + ` FROM (` + keys + windowOnly + stray + `)`, 6, 4, 5},
+		{"first_seen", ModelTypeFirstSeen, seen, seenAll, 4, 4, 3},
+		{"first_seen windowed", ModelTypeFirstSeen, seenWindowed, `INSERT INTO t (fractal_id, entity_key, first_seen, last_seen, event_count, _day)
+SELECT 'f1', v, now64(3), now64(3), 1, ` + day + ` FROM (` + keys + windowOnly + stray + `)`, 5, 4, 4},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := newCHDB(t)
+			ddl, err := GenerateDDL(c.def, c.mt, "t")
+			if err != nil {
+				t.Fatal(err)
+			}
+			d.exec(ddl, c.insert)
+			rows := d.rows(readinessSummarySQL(c.mt, c.def, "`t`", "f1"))
+			first, last := stateTime(rows[0]["oldest"]), stateTime(rows[0]["newest"])
+			if got := historySpan(first, last, c.mt); got != 30 {
+				t.Errorf("span %d, want 30", got)
+			}
+			if n := getUint64(rows[0], "seen_once"); n != c.once {
+				t.Errorf("seen once %d, want %d", n, c.once)
+			}
+			s, ok := selfCheckSplit(c.def, first, 30)
+			if !ok {
+				t.Fatal("no split")
+			}
+			r := d.rows(selfCheckSQL(c.mt, c.def, "`t`", "f1", s))[0]
+			if f, a := getUint64(r, "forecast"), getUint64(r, "actual"); f != c.fore || a != c.actl {
+				t.Errorf("forecast %d actual %d, want %d and %d", f, a, c.fore, c.actl)
+			}
+			// The end is exclusive: "z", on the last day, drops out with it.
+			s.end = s.end.AddDate(0, 0, -1)
+			r = d.rows(selfCheckSQL(c.mt, c.def, "`t`", "f1", s))[0]
+			if a := getUint64(r, "actual"); a != c.actl-1 {
+				t.Errorf("actual %d with an earlier end, want %d", a, c.actl-1)
+			}
+		})
+	}
+}
+
+// Each group counts once however many values it has, against the alert's gates.
+func TestCHReadinessGroups(t *testing.T) {
+	d := newCHDB(t)
+	def := ModelDefinition{PartitionKey: "h", ValueKey: "v", MinSample: 5, Alert: &AlertConfig{CoverageThreshold: 0.9, PercentThreshold: 50}}
+	ddl, err := GenerateDDL(def, ModelTypeRarity, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.exec(ddl, `INSERT INTO t (fractal_id, partition_val, value_val, event_count, days)
+SELECT 'f1', h, v, 1, groupUniqArrayState(365)(toDate(now(), 'UTC') - n) FROM (
+    SELECT 'stable' AS h, 'a' AS v, number AS n FROM numbers(20)
+    UNION ALL SELECT 'stable', 'b', number FROM numbers(20)
+    UNION ALL SELECT 'noisy', concat('v', toString(number)), number FROM numbers(10)
+    UNION ALL SELECT 'young', 'a', number FROM numbers(2)
+) GROUP BY h, v`)
+	g := parseReadinessGroups(d.rows(readinessSummarySQL(ModelTypeRarity, def, "`t`", "f1"))[0], 5)
+	if g == nil || g.Total != 3 || g.Ready != 2 || g.AboveCoverage == nil || *g.AboveCoverage != 2 {
+		t.Fatalf("groups: %+v", g)
+	}
+}

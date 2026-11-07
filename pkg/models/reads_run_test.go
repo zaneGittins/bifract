@@ -213,6 +213,9 @@ func TestGetStatsOtherTypes(t *testing.T) {
 	if err != nil || st["total_entities"] != uint64(12) {
 		t.Errorf("tlsh: %v %v", st, err)
 	}
+	if _, ok := st["readiness"]; ok {
+		t.Error("tlsh raises no alerts, so it has no readiness")
+	}
 	if _, ok := st["findings"]; ok {
 		t.Error("an index model reports findings it cannot have")
 	}

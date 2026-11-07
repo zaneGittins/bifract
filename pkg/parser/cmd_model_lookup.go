@@ -411,36 +411,12 @@ func RarityScoredSQL(source, scope string, minHistory, historyDays int, withDays
 	if minHistory < 1 {
 		minHistory = 1
 	}
-	daysCol, sinceMid, sinceInner := "", "", ""
+	daysCol, sinceMid := "", ""
 	if withDays {
 		daysCol = ",\n    seen_days AS days,\n    since"
 		sinceMid = ", since"
 	}
-	var inner string
-	if historyDays > 0 {
-		if withDays {
-			sinceInner = ",\n            lookback_days[" + historyReturnIndex("lookback_days", "", historyDays) + "] AS since"
-		}
-		inner = fmt.Sprintf(`        SELECT partition_val, value_val,
-            arraySort(groupUniqArray(%[1]s)) AS lookback_days,
-            arrayFilter(d -> d > %[2]s, lookback_days) AS seen_days,
-            length(seen_days) AS days_seen%[3]s
-        FROM %[4]s
-        WHERE %[5]s AND %[6]s
-        GROUP BY partition_val, value_val
-        HAVING days_seen > 0`, HistoryDayColumn, historyWindowStart(historyDays), sinceInner,
-			source, scope, historyLookbackPredicate(historyDays))
-	} else {
-		if withDays {
-			sinceInner = ",\n            seen_days[1] AS since"
-		}
-		inner = fmt.Sprintf(`        SELECT partition_val, value_val,
-            arraySort(groupUniqArrayMerge(365)(days)) AS seen_days,
-            length(seen_days) AS days_seen%s
-        FROM %s
-        WHERE %s
-        GROUP BY partition_val, value_val`, sinceInner, source, scope)
-	}
+	inner := RarityPairDaysSQL(source, scope, historyDays, withDays)
 	return fmt.Sprintf(`SELECT partition_val, value_val,
     days_seen AS model_count,
     days_observed AS model_total,
@@ -457,6 +433,36 @@ FROM (
     WINDOW w AS (PARTITION BY partition_val)
 )
 WHERE days_observed >= %d`, daysCol, sinceMid, inner, minHistory)
+}
+
+// RarityPairDaysSQL reads each (partition, value) pair's sorted seen_days and
+// days_seen, with no partition-wide window step. withSince adds since (see
+// RarityScoredSQL).
+func RarityPairDaysSQL(source, scope string, historyDays int, withSince bool) string {
+	sinceInner := ""
+	if historyDays > 0 {
+		if withSince {
+			sinceInner = ",\n            lookback_days[" + historyReturnIndex("lookback_days", "", historyDays) + "] AS since"
+		}
+		return fmt.Sprintf(`        SELECT partition_val, value_val,
+            arraySort(groupUniqArray(%[1]s)) AS lookback_days,
+            arrayFilter(d -> d > %[2]s, lookback_days) AS seen_days,
+            length(seen_days) AS days_seen%[3]s
+        FROM %[4]s
+        WHERE %[5]s AND %[6]s
+        GROUP BY partition_val, value_val
+        HAVING days_seen > 0`, HistoryDayColumn, historyWindowStart(historyDays), sinceInner,
+			source, scope, historyLookbackPredicate(historyDays))
+	}
+	if withSince {
+		sinceInner = ",\n            seen_days[1] AS since"
+	}
+	return fmt.Sprintf(`        SELECT partition_val, value_val,
+            arraySort(groupUniqArrayMerge(365)(days)) AS seen_days,
+            length(seen_days) AS days_seen%s
+        FROM %s
+        WHERE %s
+        GROUP BY partition_val, value_val`, sinceInner, source, scope)
 }
 
 // firstSeenScoring is what a first_seen model's scoring subquery depends on

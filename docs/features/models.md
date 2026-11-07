@@ -49,13 +49,14 @@ Templates:
 2. Optionally set **Group by** to the field that gets its own baseline, e.g. `computer_name`. Leave it empty to score each value across all matching logs, e.g. how rare an RMM tool is anywhere rather than for each user.
 3. Set **Min history (days)**: days of data needed before values can alert, counted per group if there is one (default 14).
 4. Optionally pick a **History window** (see [History window](#history-window)).
-5. Under **Detection**, set **Min coverage** (default 0.9) and **Max % of days** (default 10).
+5. Under **Detection**, set **Min coverage** (default 0.9), **Max % of days** (default 10) and **Estimate half (days)** (default 14, see [Will this work here?](#will-this-work-here)).
 
 ### First / Last Seen
 
 1. Set **Value** to what to track, e.g. `image`, and optionally add **Group by** fields, e.g. `computer_name`. With no group, a value is new only the first time it appears anywhere; with one, it is new once per group.
 2. Optionally pick a **History window**.
 3. Leave **Alert on new values only** checked to alert on each new value.
+4. Optionally change **Estimate half (days)** (default 14, see [Will this work here?](#will-this-work-here)).
 
 ### Volume Baseline
 
@@ -123,6 +124,7 @@ Click a model name to open it.
 
 - **Findings** lists what the alert would raise, most unusual first. **All rows** lists everything the model scored, with sorting, search and paging.
 - The summary line counts findings and, for Rarity and First / Last Seen, what was new this week.
+- Rarity and First / Last Seen add a line of [estimates](#will-this-work-here) under the summary. Rarity with a group adds a sortable **Group days** column (`model_total`).
 - The **Why** column and row details give the facts behind each row (days seen, group coverage, latest against typical volume, regularity). Click a fact that names activity to search for it. **All columns** in the row details shows every stored column.
 
 | Type | A finding is | Ordered by |
@@ -150,6 +152,32 @@ The **State** column shows the worst state that applies; hover for the reason.
 | **Healthy** | Recording and scoring normally |
 
 **Findings 7d** counts what the model surfaced in the last 7 days, with a daily sparkline for Rarity and First / Last Seen. **Last alert** is when the linked alert last fired. Both come from the model's own tables and are cached for two minutes.
+
+## Will this work here?
+
+Before you activate a Rarity or First / Last Seen alert, the line under the summary answers three questions from the model's own data:
+
+> Estimates: about 1.3 new alerts a day. Last 15 days: forecast 20, actual 17. 700 of 1,000 groups have enough history. Coverage above 0.9 in 80% of groups.
+
+| Check | How | Read it as |
+|---|---|---|
+| Does rare mean anything here? | Share of groups with `coverage` above **Min coverage** | Low means new values are routine in most groups, so few of them can alert |
+| How many new alerts a day? | `N1 / T` | The most the team could see, summed across all groups. Groups held back by Min coverage or Min history raise fewer |
+| Enough history for the rare threshold? | Share of groups at their learning period (more than 100 / share days, or **Min history** if longer) | The rest cannot alert yet. Sort **All rows** by **Group days** to see which |
+
+`N1` is the keys (group and value pairs) seen on exactly one day. A First / Last Seen model with a window leaves out keys that never left, as those are not new to it. A model that cannot alert, with no thresholds or with **Alert on new values only** off, shows new values a day instead. `T` is the days the model has recorded, from its first day to its newest, capped at its [history window](#history-window). All-history models have no cap. Days dated in the future or at the epoch are ignored, but one log with an old timestamp stretches `T` and lowers the rate. `T` is not `model_total`, which skips a group's quiet days and would overstate the rate. It is not the configured window either: 9 days of data in a 30-day window would read about 3x too low.
+
+The group shares need a group, so First / Last Seen and ungrouped Rarity show the rate and self-check only. Volume Baseline, TLSH Index and network models have no estimate. These numbers only warn: a model over budget can still be useful for hunting.
+
+**The rate is an estimate.** As a count of the past, `N1 / T` is exact. As a forecast it assumes days are interchangeable (the basis is Good-Toulmin, 1956; applying it to days is Bifract's derivation, not a published result). It averages weekdays and weekends, and runs low while new values are ramping up. It covers first sightings only: a rule that also fires on rare repeats adds `(2 x N2 + 3 x N3 ...) / T` up to the threshold, where `N2` is keys seen on exactly two days, and that is a count of the window, not a forecast.
+
+**The self-check tests that assumption on this model.** It splits the recorded days in half and forecasts the second half from the first: `N1` over the first half against the keys actually first seen in the second. Expect the forecast to run a bit high, because new values slow down as history grows. A large gap means this model's days do not look alike, for example a rollout or drift, so trust the rate less. An odd number of days leaves out the newest one, which is the partial one.
+
+**A young model shows no estimate.** Almost everything looks new at first, so `N1 / T` starts high and falls as history builds, and two very short halves make the self-check meaningless. Until `T` reaches twice **Estimate half (days)**, the line shows **Learning k/n** instead. This is separate from the **State** column, which tracks scoring. The default of 14 days per half is a starting point, not a derived value. **Estimate half (days)** is a minimum: with more history each half is simply longer. A window too short for two halves gets the rate when it is a day short of full, but no self-check.
+
+**A backfill counts straight away**, because it fills in the day lists. The estimate waits for a running backfill to finish. Backfilled history never counts as new for alerts, so the rate then partly describes how often new things appeared in that history, not alerts that fired, and the line says so. A cancelled backfill leaves a gap that still counts toward `T`, so the rate reads a little low.
+
+API: `readiness` in `GET /models/{id}/stats`. Set the half with `alert.estimate_half_days` (2 to 182).
 
 ## Use a model in queries
 

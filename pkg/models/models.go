@@ -115,6 +115,9 @@ type AlertConfig struct {
 	AlertOnNew        bool     `json:"alert_on_new" yaml:"alert_on_new,omitempty"`
 	// ZThreshold is the modified z-score cutoff for volume_baseline alerts.
 	ZThreshold float64 `json:"z_threshold" yaml:"z_threshold,omitempty"`
+	// EstimateHalfDays is the days each half of the readiness self-check needs,
+	// or 0 for defaultEstimateHalfDays.
+	EstimateHalfDays int `json:"estimate_half_days,omitempty" yaml:"estimate_half_days,omitempty"`
 }
 
 // legacyAlertConfig reads coverage_threshold under its old name,

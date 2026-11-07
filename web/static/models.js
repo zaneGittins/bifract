@@ -508,10 +508,14 @@ const AnalyticsModels = {
         'Near 1: stable, new values are uncommon, so one stands out. ' +
         'Low: new values are routine, so one more means little.',
 
+    // The server's default and bounds for estimate_half_days.
+    ESTIMATE_HALF_DAYS: 14,
+    ESTIMATE_HALF_RANGE: [2, 182],
+
     VIEW_SPEC: {
         rarity: {
             sortDefault: 'coverage',
-            sortable: ['partition_val', 'value_val', 'model_count', 'percent', 'coverage'],
+            sortable: ['partition_val', 'value_val', 'model_count', 'model_total', 'percent', 'coverage'],
             score: { col: 'coverage', threshold: d => d.alert?.coverage_threshold ?? 0.8 },
             cols: [
                 { col: 'coverage', label: 'Coverage', fmt: 'meter', align: 'num', tip: () => AnalyticsModels.COVERAGE_TIP },
@@ -519,6 +523,7 @@ const AnalyticsModels = {
                 { col: 'value_val', label: d => d.value_key || 'Value' },
                 { why: true },
                 { col: 'percent', label: 'Share of days', fmt: 'pct100', align: 'num' },
+                { col: 'model_total', label: 'Group days', fmt: 'int', align: 'num', when: d => !!d.partition_key },
             ],
         },
         first_seen: {
@@ -914,10 +919,76 @@ const AnalyticsModels = {
 <div class="mv-sum-main">
     <div class="mv-sum-facts">${facts}</div>
     ${s.rule ? `<div class="mv-sum-rule">${_esc(s.rule)}</div>` : ''}
+    ${this._estimateHTML(v.stats.readiness, v.model)}
 </div>
 ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.seriesLabel) : ''}`;
         // An empty findings page rendered before the rule arrived can now say why.
         if (v.view === 'findings' && !v.rows.length) this._renderDataTable();
+    },
+
+    _estimateHTML(readiness, model) {
+        const e = this._estimateSummary(readiness, model);
+        if (!e) return '';
+        const badge = e.badge ? `<span class="model-badge badge-learning"><span class="model-dot"></span>${_esc(e.badge)}</span> ` : '';
+        return `<div class="mv-sum-estimate" title="${_esc(e.title)}">${badge}${_esc(e.text)}</div>`;
+    },
+
+    // Whether anything can alert: a rarity model needs a threshold, a first seen
+    // model its alert on new values.
+    _modelCanAlert(m) {
+        const a = m.definition?.alert;
+        if (m.model_type === 'first_seen') return a?.alert_on_new !== false;
+        return Number(a?.coverage_threshold) > 0 || Number(a?.percent_threshold) > 0;
+    },
+
+    // The "will this work here" line: the rate and its self-check once the model
+    // has the history for them, and what each group has either way.
+    _estimateSummary(r, m) {
+        if (!r) return null;
+        const n = x => Number(x || 0).toLocaleString();
+        const ready = r.state === 'ready';
+        const rated = ready && r.new_per_day != null;
+        const parts = [];
+        if (rated) {
+            const rate = this._estimateRate(r.new_per_day);
+            const noun = this._modelCanAlert(m) ? 'alert' : 'value';
+            parts.push(`${rate} new ${noun}${rate === 'about 1' ? '' : 's'} a day${r.backfilled ? ', including backfilled history' : ''}.`);
+            const c = r.self_check;
+            parts.push(c ? `Last ${n(c.half_days)} days: forecast ${n(c.forecast)}, actual ${n(c.actual)}.` : 'The history is too short for a self-check.');
+        }
+        const g = r.groups?.total > 0 ? r.groups : null;
+        if (g) {
+            parts.push(`${n(g.ready)} of ${n(g.total)} ${g.total === 1 ? 'group has' : 'groups have'} enough history.`);
+            const gate = m.definition?.alert?.coverage_threshold;
+            if (g.above_coverage != null && gate != null) {
+                parts.push(`Coverage above ${n(gate)} in ${Math.floor(g.above_coverage / g.total * 100)}% of groups.`);
+            }
+        }
+        const estimates = parts.length ? 'Estimates: ' + parts.join(' ') : '';
+        const title = [
+            rated ? 'The rate is new keys seen on exactly one day, divided by the days the model has recorded. It assumes days are alike, and counts every group, so an alert with gates raises fewer.' : '',
+            rated && r.self_check ? 'The self-check forecasts the second half of the history from the first. A large gap means this model\'s days differ, so trust the rate less.' : '',
+            rated && r.backfilled ? 'Backfilled history never alerts, so this partly says how often new things appeared, not alerts that fired.' : '',
+            g ? `A group has enough history at ${n(g.ready_days)} days.` : '',
+        ].filter(Boolean).join('\n');
+        if (ready) return { badge: '', text: estimates, title };
+        const waiting = r.state === 'backfilling'
+            ? 'No rate while the backfill runs.'
+            : `No rate until the model has ${n(r.needed_days)} days of history.`;
+        return {
+            badge: r.state === 'learning' ? `Learning ${r.history_days}/${r.needed_days}d` : '',
+            text: [waiting, estimates].filter(Boolean).join(' '),
+            title,
+        };
+    },
+
+    _estimateHalfLabel(def) {
+        return `${def.alert?.estimate_half_days || this.ESTIMATE_HALF_DAYS} days`;
+    },
+
+    _estimateRate(rate) {
+        if (rate > 0 && rate < 0.1) return 'under 0.1';
+        return 'about ' + rate.toLocaleString(undefined, { maximumFractionDigits: rate < 10 ? 1 : 0 });
     },
 
     // The strip's facts per type. The lead is what the alert would raise; the
@@ -1033,6 +1104,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             rows.push(['Coverage threshold', conf > 0 ? conf.toFixed(2) : 'Not set', AnalyticsModels.COVERAGE_TIP]);
             rows.push(['Max share of days', share > 0 ? share + '%' : 'Not set']);
             rows.push(['History', this._historyLabel(def)]);
+            rows.push(['Estimate half', this._estimateHalfLabel(def)]);
         } else if (mt === 'volume_baseline') {
             rows.push(['Bucket', def.time_bucket || 'day']);
             const hourly = def.time_bucket === 'hour';
@@ -1049,6 +1121,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
         } else if (mt === 'first_seen') {
             rows.push(['Alert on new', def.alert?.alert_on_new === false ? 'No' : 'Yes']);
             rows.push(['History', this._historyLabel(def)]);
+            rows.push(['Estimate half', this._estimateHalfLabel(def)]);
         }
 
         const shape = this._shapeParts(mt, def);
@@ -2878,6 +2951,16 @@ ${this._historyWindowHTML(e, 'A value absent for the whole window alerts as new 
         });
     },
 
+    _estimateHalfFieldHTML(c) {
+        const [min, max] = this.ESTIMATE_HALF_RANGE;
+        return `
+    <div class="field-group" style="margin-top:10px">
+        <label>Estimate half (days)</label>
+        <input type="number" id="alertEstimateHalf" class="model-num-input" value="${_esc(String(c.estimate_half_days || this.ESTIMATE_HALF_DAYS))}" min="${min}" max="${max}" step="1">
+        <p class="config-hint">Fewest days in each half of the alert estimate's self-check. The estimate appears after twice this many days of history, or when a shorter history window is nearly full.</p>
+    </div>`;
+    },
+
     // ---- Alert config (right panel) ----
     _editorAlertConfigHTML() {
         const c = this.editor.alertConfig;
@@ -2912,7 +2995,8 @@ ${this._historyWindowHTML(e, 'A value absent for the whole window alerts as new 
             <input type="number" id="alertPercent" class="model-num-input" value="${c.percent_threshold}" min="0.1" max="100" step="0.5">
         </div>
     </div>
-    <p class="config-hint">Flags values seen on under this share of days, counted per group if the model has one, where new values are rare. A value seen once needs more than 100 ÷ share days of history, so the learning period is the longer of that and Min history.</p>`;
+    <p class="config-hint">Flags values seen on under this share of days, counted per group if the model has one, where new values are rare. A value seen once needs more than 100 ÷ share days of history, so the learning period is the longer of that and Min history.</p>
+    ${this._estimateHalfFieldHTML(c)}`;
         } else if (mt === 'volume_baseline') {
             typeFields = `
     <div class="field-group" style="margin-top:10px">
@@ -2924,7 +3008,8 @@ ${this._historyWindowHTML(e, 'A value absent for the whole window alerts as new 
             typeFields = `
     <label class="toggle-label" style="margin-top:10px">
         <input type="checkbox" class="themed-checkbox" id="alertOnNew" ${c.alert_on_new ? 'checked' : ''}> Alert on new values only
-    </label>`;
+    </label>
+    ${this._estimateHalfFieldHTML(c)}`;
         }
         return `
 <div class="alert-config-section">
@@ -2991,6 +3076,11 @@ ${this._historyWindowHTML(e, 'A value absent for the whole window alerts as new 
         num('alertBeaconThreshold', 'beacon_threshold');
         num('alertLongConnThreshold', 'longconn_threshold');
         document.getElementById('alertOnNew')?.addEventListener('change', ev => { c.alert_on_new = ev.target.checked; this._onThresholdChange('alert_on_new'); });
+        // Not a threshold: it changes nothing the Scores tab counts.
+        document.getElementById('alertEstimateHalf')?.addEventListener('input', ev => {
+            const v = Number(ev.target.value);
+            if (ev.target.value !== '' && Number.isFinite(v)) c.estimate_half_days = v;
+        });
     },
 
     // ---- Translation feedback strip (left panel) ----
@@ -3306,7 +3396,16 @@ ${this._historyWindowHTML(e, 'A value absent for the whole window alerts as new 
         if (this._isNetworkType(e.modelType) && (!e.network.src_field || !e.network.dst_field)) {
             return 'Set a source and destination field';
         }
+        const half = e.alertConfig?.estimate_half_days;
+        const [min, max] = this.ESTIMATE_HALF_RANGE;
+        if (this._usesEstimate(e.modelType) && half != null && half !== 0 && !(Number.isInteger(half) && half >= min && half <= max)) {
+            return `Set Estimate half (days) to a whole number from ${min} to ${max}`;
+        }
         return null;
+    },
+
+    _usesEstimate(modelType) {
+        return modelType === 'rarity' || modelType === 'first_seen';
     },
 
     _historyLabel(def) {
@@ -3344,6 +3443,7 @@ ${this._historyWindowHTML(e, 'A value absent for the whole window alerts as new 
             if (e.modelType === 'first_seen' && e.historyDays > 0) def.history_days = e.historyDays;
         }
         def.alert = { ...e.alertConfig };
+        if (!this._usesEstimate(e.modelType)) delete def.alert.estimate_half_days;
         return def;
     },
 

@@ -37994,6 +37994,9 @@
           "coverage_threshold": {
             "type": "number"
           },
+          "estimate_half_days": {
+            "type": "integer"
+          },
           "percent_threshold": {
             "type": "number"
           },
