@@ -297,3 +297,15 @@ func TestWindowUnsafeCommandsAreCanonical(t *testing.T) {
 		}
 	}
 }
+
+func TestSourceRefusesPgrFilters(t *testing.T) {
+	for _, q := range []string{`pgrHasAncestor("a.exe")`, `user=x OR pgrHasNetwork()`, `NOT pgrHasAncestor("a.exe")`} {
+		pipeline, err := parser.ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateSourcePipeline(pipeline); err == nil || !strings.Contains(err.Error(), "cannot be a model source") {
+			t.Errorf("%s: err = %v", q, err)
+		}
+	}
+}

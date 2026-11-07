@@ -11,6 +11,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/storage"
 )
 
 // The alert pipeline reads the throttle field and any {{field}} in the name from each
@@ -266,5 +267,31 @@ func TestEngineStopWaitsForTheLoop(t *testing.T) {
 	}
 	if e.IsRunning() {
 		t.Error("no cycle should be running after Stop")
+	}
+}
+
+// Logs are read through a Distributed table in cluster mode, so a provenance filter on a local
+// table would see one shard and silently miss the rest.
+func TestBuildQueryOptsReadsProvenanceAcrossShards(t *testing.T) {
+	e := &Engine{ch: storage.NewClickHouseClientFromConn(nil, "db", storage.Topology{DistributedTables: true})}
+	now := time.Now()
+	opts, err := e.buildQueryOpts(context.Background(), &Alert{FractalID: "f"}, now.Add(-time.Minute), now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.ProcLineageTable != "proc_lineage_distributed" || opts.ProcEdgesTable != "process_edges_distributed" {
+		t.Errorf("lineage=%q edges=%q", opts.ProcLineageTable, opts.ProcEdgesTable)
+	}
+}
+
+func TestValidateRunsInEngineRefusesBadPgrFilters(t *testing.T) {
+	for _, q := range []string{`groupBy(user) | pgrHasNetwork()`, `let &s := pgrHasNetwork() | groupby(user); in(user, &s)`} {
+		pipeline, err := parser.ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateRunsInEngine(pipeline); !errors.Is(err, ErrInvalidAlert) {
+			t.Errorf("%s: err = %v", q, err)
+		}
 	}
 }

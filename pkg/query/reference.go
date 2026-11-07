@@ -1080,6 +1080,36 @@ var bqlFunctionDocs = []FunctionDoc{
 		},
 	},
 	{
+		Name:        "pgrHasAncestor",
+		Category:    "Traversal",
+		Description: "Row filter: keeps logs whose process has a matching image among its parents, walking up to depth= levels by GUID, whenever those parents started. Works on any event carrying process_guid (network, file, DNS), with no join or chain. A bare name matches the file name, a value with a slash or backslash matches the whole path, and a /regex/ matches the image ignoring case. Cost follows the rows in the time range and their distinct processes, not retention, so narrow the rows first. A walk costs 15 of a query's 40 lookups at the default depth and 36 at depth 8. Combine with NOT, AND and OR like cidr(), before any aggregation or chain(). Not allowed in a let binding, or with process_guid assigned in the same query. Needs Collect baselines. Not available in archive search or models, and rule tests cannot evaluate it.",
+		Syntax:      `| pgrHasAncestor("name.exe" | "C:\\dir\\name.exe" | /regex/, depth=N)`,
+		Parameters: []Param{
+			{Name: "value", Type: "string", Required: true, Description: "File name, full path or /regex/ for the ancestor image"},
+			{Name: "depth", Type: "number", Required: false, Description: "Levels to walk up (default: 5, max: 8)"},
+		},
+		Examples: []string{
+			`bifract_category=network_connect image=~rundll32 | pgrHasAncestor("winword.exe")`,
+			`bifract_category=file_write | pgrHasAncestor("powershell.exe", depth=3)`,
+			`bifract_category=process_creation image=~whoami | NOT pgrHasAncestor("services.exe")`,
+		},
+	},
+	{
+		Name:        "pgrHasNetwork",
+		Category:    "Traversal",
+		Description: "Row filter: keeps logs whose process_guid made a matching network connection, whenever it happened. The value matches the stored destination: a public IP as is, internal IPv4 as its /24 (10.1.2.0/24), internal IPv6 as the word internal. A /regex/ matches the same text; no argument means any connection. external=true leaves out internal ranges, 0.0.0.0/8, CGNAT, multicast, reserved and broadcast addresses, and for IPv6 anything outside global unicast. Costs 5 of a query's 40 lookups; otherwise same limits as pgrHasAncestor().",
+		Syntax:      `| pgrHasNetwork("203.0.113.7" | "10.1.2.0/24" | /regex/, external=true|false)`,
+		Parameters: []Param{
+			{Name: "value", Type: "string", Required: false, Description: "Destination IP, internal /24 or /regex/"},
+			{Name: "external", Type: "boolean", Required: false, Description: "Leave out internal, CGNAT, multicast, reserved and broadcast destinations (default: false)"},
+		},
+		Examples: []string{
+			`bifract_category=file_write | pgrHasNetwork()`,
+			`bifract_category=process_creation image=~notepad | pgrHasNetwork(external=true)`,
+			`bifract_category=process_creation | pgrHasNetwork("203.0.113.7")`,
+		},
+	},
+	{
 		Name:        "pgr",
 		Category:    "Traversal",
 		Description: "Anomaly-scored process provenance graph for triaging an alert. Give it a start process_guid and it builds the spawn tree, then attaches that tree's file, network, DNS, and injection activity, scoring each by how rare it is (anomaly_score 0-1: 1 = never-seen, 0 = ubiquitous). Rare/suspicious behavior surfaces; common noise is pruned. It also links in OTHER process trees that share a rare artifact -- a file this tree dropped and another ran, or the same rare C2 IP/domain touched elsewhere (reconnect=false to disable, peers=N to widen or tighten how many trees it pulls in) -- so lateral spread shows up without hunting for it. Needs an EDR source with bifract_category. pgr() must come FIRST in the query (scoped only by start=, the time range, and the fractal). Pipe to pgraph() to visualize, or table()/count()/groupby() to work with the scored edges, e.g. `pgr(...) | anomaly_score >= 0.9 | count()`. Set the time range to cover the whole investigation window -- older lineage outside it is omitted. Each row also carries parent_label, the parent process's image, so an ancestor or reconnected peer with no process_creation row of its own is still identifiable by name rather than only by guid. Rows explain their score: edge_score is the edge's own score before diffusion (anomaly_score minus it is what the chain added); score_basis is transition (scored against the source's history), new_source (a binary never run elsewhere, scored by how rarely anyone else touched the target), no_source, or reconnect; edge_host_days, source_host_days, source_exec_host_days and target_host_days count OTHER host-days (this tree's own activity left out) for the relationship, the source's relationship type, the source binary running, and the target; target_hosts of total_hosts is the target's fleet footprint; first_seen is the relationship's first day.",

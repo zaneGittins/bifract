@@ -1,6 +1,6 @@
 # Enrichment
 
-Enrichment commands add context to log rows at query time: lookup columns (`match()`), model baselines (`modelLookup()`), analyst comments (`comment()`) and fuzzy-hash similarity (`tlsh()`). For GeoIP, see [`lookupIP()`](field-operations.md#geoip-enrichment).
+Enrichment commands add context to log rows at query time: lookup columns (`match()`), model baselines (`modelLookup()`), analyst comments (`comment()`), fuzzy-hash similarity (`tlsh()`) and row filters on process context (`pgrHasAncestor()`, `pgrHasNetwork()`). For GeoIP, see [`lookupIP()`](field-operations.md#geoip-enrichment).
 
 ## match()
 
@@ -155,3 +155,50 @@ In a prism, a member with no index is skipped and the results show a `partial co
 | Distinct digests x needles | 2,000,000,000 |
 
 Cost grows with distinct digests times needles, so prefer curated, family-representative digest lists over full corpus dumps. `tlsh()` also works in alert rules.
+
+## pgrHasAncestor()
+
+Keeps rows whose process has a matching image among its parents, using the [provenance tables](../features/provenance-graph.md) instead of a `join()` or `chain()`. It works on any event with a `process_guid`, and needs **Collect baselines** on: only processes logged while it is on are recorded, and any others never match, so `NOT` keeps them.
+
+```
+bifract_category=network_connect image=~rundll32 | pgrHasAncestor("winword.exe")
+bifract_category=file_write | pgrHasAncestor("powershell.exe", depth=3)
+bifract_category=process_creation image=~whoami | pgrHasAncestor("C:\\Windows\\System32\\cmd.exe")
+bifract_category=process_creation image=~whoami | NOT pgrHasAncestor("services.exe")
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| value | Yes | File name, full path or `/regex/` of the ancestor's image |
+| `depth` | No | Levels to walk up, default 5, max 8. `depth=1` is the direct parent. |
+
+Each process is found by its `process_guid`, so the time range only decides which rows are tested: an ancestor counts whenever it started, within lineage retention (730 days by default, set by `BIFRACT_PROC_LINEAGE_TTL_DAYS`). The row's process and each process on the way up need a `process_creation` event with `parent_image`, and `parent_process_guid` to walk past the first level.
+
+A value with a slash or backslash is a whole path, not part of one, and backslashes are doubled inside quotes. Names and paths ignore ASCII case, and a regex ignores all case.
+
+It combines with `AND`, `OR` and `NOT` like `cidr()`, and works in `chain()` steps. It must come before any aggregation or `chain()`, and anything later is an error, as is using it in a `let` binding or assigning `process_guid` in the same query. A query can spend 40 lookups, counting each filter once: a walk costs 15 at the default depth and 36 at depth 8, and a shallow walk costs 5.
+
+!!! note "Keeping it fast"
+    The cost follows the rows in the time range and how many distinct processes they hold, not retention, so narrow the rows first: `bifract_category=network_connect image=~rundll32 | pgrHasAncestor("winword.exe")` is far cheaper than `pgrHasAncestor("winword.exe")` alone. Plain filters in the same query do this wherever they are written, unless `head()`, `tail()` or `dedup()` stands between them, or the filter is inside an `OR`, a `chain()` step or a case branch. Keep it behind a filter in Event alerts.
+
+!!! warning "In alerts"
+    An alert sees what had arrived when it ran. An ancestor whose process creation arrives after the alert has read the event is not matched, and under `NOT` the alert fires when it should not.
+
+It is not available in archive search or models, and rule tests cannot evaluate it.
+
+## pgrHasNetwork()
+
+Keeps rows whose process made a matching network connection, whenever it happened, up to 730 days after its last ingest. It works like `pgrHasAncestor()`, with the same placement rules, alert behaviour and limits, and costs 5 of a query's 40 lookups.
+
+```
+bifract_category=process_creation image=~notepad | pgrHasNetwork(external=true)
+bifract_category=file_write | pgrHasNetwork("203.0.113.7")
+bifract_category=process_creation image=~svchost | NOT pgrHasNetwork()
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| value | No | Public IP, internal `/24` such as `10.1.2.0/24`, `internal` for internal IPv6, or `/regex/`. With no value, any connection matches. |
+| `external` | No | `true` leaves out internal ranges, CGNAT (`100.64.0.0/10`), `0.0.0.0/8`, multicast, reserved and broadcast addresses, for IPv6 anything outside global unicast (`2000::/3`), including IPv4-mapped addresses, and anything that is not a plain IP. |
+
+A value compares exactly as the address was logged, and a regex is as written. Documentation and benchmark ranges such as `198.18.0.0/15` still count as external. The connection event must carry `image`, `process_guid` and `dst_ip`, or it is not recorded.

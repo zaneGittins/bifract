@@ -191,3 +191,15 @@ func TestLoadTestableRuleRejectsWhatCannotRunOffline(t *testing.T) {
 		})
 	}
 }
+
+func TestPgrFiltersCannotBeTestedOffline(t *testing.T) {
+	for _, q := range []string{`pgrHasAncestor("a.exe")`, `NOT pgrHasAncestor("a.exe")`, `user=x OR pgrHasNetwork()`} {
+		pipeline, err := parser.ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := checkSupported(pipeline); err == nil || !strings.Contains(err.Error(), "cannot be tested offline") {
+			t.Errorf("%s: err = %v", q, err)
+		}
+	}
+}

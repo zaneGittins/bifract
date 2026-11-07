@@ -323,6 +323,9 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	if err := validateProcessTreeTail(pipeline); err != nil {
 		return nil, err
 	}
+	if err := ValidatePgrFilters(pipeline); err != nil {
+		return nil, err
+	}
 
 	if err := validateExprArgs(pipeline, registry); err != nil {
 		return nil, err
@@ -531,6 +534,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 		return nil, err
 	}
 	materializeConditions(registry, plan)
+	narrowPgrCandidates(ctx)
 	return &plannedQuery{ctx: ctx, assignmentFields: assignmentFields, deferredAssignments: deferredAssignments}, nil
 }
 
