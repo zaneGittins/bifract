@@ -39,7 +39,7 @@ func (h *entropyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("entropy(): %w", err)
 	}
 	sqlExpr := entropySQL(ref)
-	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr + " AS " + alias})
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr, Alias: alias})
 	ctx.Registry.SetResolveExpr(alias, sqlExpr)
 	return nil
 }

@@ -2,7 +2,6 @@ package models
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -78,29 +77,43 @@ func ParseSourceQuery(query string) ParsedSource {
 	// Conditions before the first command are the source's filter. Lowering them
 	// to chips is best effort, since SourceBQL is what runs: one the structured
 	// form cannot hold is skipped, its fields still offered as candidates.
-	firstStage, later := parser.SplitFirstStage(ast.HavingConditions)
-	var lower func(c parser.HavingCondition)
-	lower = func(c parser.HavingCondition) {
+	assigned := map[string]bool{}
+	var lower func(c parser.Condition)
+	lower = func(c parser.Condition) {
 		if andGroup(c) {
 			for _, child := range c.Children {
 				lower(child)
 			}
 			return
 		}
-		fc, ok := havingToFilter(c)
-		if !ok || assignedBefore(ast.Assignments, c) {
+		if fc := cidrFilter(c); fc != nil {
+			res.Filter = append(res.Filter, *fc)
+			return
+		}
+		fc, ok := conditionToFilter(c)
+		if !ok || assigned[c.Field] {
 			res.FilterComplete = false
 			return
 		}
 		res.Filter = append(res.Filter, fc)
 	}
-	for i, c := range firstStage {
-		collectHavingFields(c, &referenced)
-		if strings.EqualFold(c.Logic, "OR") || (i > 0 && strings.EqualFold(firstStage[i-1].Logic, "OR")) {
-			res.FilterComplete = false
-			continue
+	var later []parser.Condition
+	seenCommand := false
+	for _, st := range ast.Steps {
+		switch {
+		case st.Command != nil:
+			seenCommand = true
+		case st.Assign != nil:
+			// A name assigned ahead of a filter holds the computed value, not the log field.
+			if !seenCommand {
+				assigned[st.Assign.Field] = true
+			}
+		case seenCommand && cidrFilter(*st.Filter) == nil:
+			later = append(later, *st.Filter)
+		default:
+			collectConditionFields(*st.Filter, &referenced)
+			lower(*st.Filter)
 		}
-		lower(c)
 	}
 
 	// extIndex maps an extraction output field to its index in res.Extractions so
@@ -112,19 +125,8 @@ func ParseSourceQuery(query string) ParsedSource {
 
 	// Pipeline commands, in order. Only these four have a structured shape; any
 	// other command runs in the source without appearing in Filter.
-	for _, cmd := range ast.Commands {
+	for _, cmd := range ast.Commands() {
 		switch strings.ToLower(cmd.Name) {
-		case "cidr":
-			field, value, ok := cidrArgs(cmd)
-			if !ok {
-				res.FilterComplete = false
-				continue
-			}
-			op := "cidr"
-			if cmd.Negate {
-				op = "!cidr"
-			}
-			res.Filter = append(res.Filter, FilterCondition{Field: field, Op: op, Value: value})
 		case "regex":
 			ext, perr := regexCommandToExtraction(cmd)
 			if perr != "" {
@@ -170,7 +172,7 @@ func ParseSourceQuery(query string) ParsedSource {
 			res.FilterComplete = false
 			continue
 		}
-		min, ok := minLengthFromHaving(hv)
+		min, ok := minLengthFromCondition(hv)
 		if !ok {
 			res.FilterComplete = false
 			continue
@@ -184,10 +186,10 @@ func ParseSourceQuery(query string) ParsedSource {
 	return res
 }
 
-// collectHavingFields appends every field a condition reads.
-func collectHavingFields(c parser.HavingCondition, out *[]string) {
+// collectConditionFields appends every field a condition reads.
+func collectConditionFields(c parser.Condition, out *[]string) {
 	for _, child := range c.Children {
-		collectHavingFields(child, out)
+		collectConditionFields(child, out)
 	}
 	if c.Field != "" {
 		*out = append(*out, c.Field)
@@ -197,33 +199,17 @@ func collectHavingFields(c parser.HavingCondition, out *[]string) {
 	}
 }
 
-// assignedBefore reports whether a condition reads a name assigned ahead of it,
-// which holds the computed value rather than the log field.
-func assignedBefore(assignments []parser.AssignmentNode, c parser.HavingCondition) bool {
-	return slices.ContainsFunc(assignments[:min(c.AssignIndex, len(assignments))], func(a parser.AssignmentNode) bool {
-		return a.Field == c.Field
-	})
+// andGroup reports whether a condition is a plain AND of conditions, which
+// distributes into separate chips.
+func andGroup(c parser.Condition) bool {
+	return c.Op == parser.CondAnd && !c.Negate
 }
 
-// andGroup reports whether a condition is a bracketed plain AND of conditions,
-// which distributes into separate chips.
-func andGroup(c parser.HavingCondition) bool {
-	if !c.IsCompound || c.Negate {
-		return false
-	}
-	for _, child := range c.Children[:max(len(c.Children)-1, 0)] {
-		if child.Logic != "" && !strings.EqualFold(child.Logic, "AND") {
-			return false
-		}
-	}
-	return true
-}
-
-// havingToFilter maps a filter condition to a model FilterCondition. Negation is
+// conditionToFilter maps a filter condition to a model FilterCondition. Negation is
 // already folded into the operator. The second result is false for a condition the
 // structured form cannot hold; the query still runs it.
-func havingToFilter(c parser.HavingCondition) (FilterCondition, bool) {
-	if c.IsCompound || c.Expr != nil || c.Command != nil || c.ValueField != "" || c.Field == "" || len(c.Values) > 1 {
+func conditionToFilter(c parser.Condition) (FilterCondition, bool) {
+	if c.IsCompound() || c.Expr != nil || c.Command != nil || c.ValueField != "" || c.Field == "" || len(c.Values) > 1 {
 		return FilterCondition{}, false
 	}
 	value := c.Value
@@ -242,10 +228,10 @@ func havingToFilter(c parser.HavingCondition) (FilterCondition, bool) {
 	return FilterCondition{}, false
 }
 
-// minLengthFromHaving converts a `_len <op> n` comparison to a MinLength value.
+// minLengthFromCondition converts a `_len <op> n` comparison to a MinLength value.
 // `>= n` maps to n; `> n` maps to n+1. Any other shape, a negated one included,
 // is a filter the query applies and the structured form does not carry.
-func minLengthFromHaving(hv parser.HavingCondition) (int, bool) {
+func minLengthFromCondition(hv parser.Condition) (int, bool) {
 	if hv.Negate {
 		return 0, false
 	}
@@ -294,6 +280,23 @@ func cidrArgs(cmd parser.CommandNode) (field, value string, ok bool) {
 	}
 	field, value = b.Str("field", ""), b.Str("range", "")
 	return field, value, field != "" && value != ""
+}
+
+// cidrFilter is the chip a cidr() filter leaf maps to, or nil for any other
+// condition. A cidr() keeps its chip wherever it is written.
+func cidrFilter(c parser.Condition) *FilterCondition {
+	if c.IsCompound() || c.Command == nil || parser.CanonicalCommandName(c.Command.Name) != "cidr" {
+		return nil
+	}
+	field, value, ok := cidrArgs(*c.Command)
+	if !ok {
+		return nil
+	}
+	op := "cidr"
+	if c.Command.Negate {
+		op = "!cidr"
+	}
+	return &FilterCondition{Field: field, Op: op, Value: value}
 }
 
 // regexCommandToExtraction maps a regex() command to an ExtractionStep. The

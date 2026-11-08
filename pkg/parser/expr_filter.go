@@ -253,7 +253,7 @@ func exprPriority(e *ExprNode, registry *FieldRegistry, plan *QueryPlan, willHav
 // `lower(image) =~ "cmd","ps"`. The operators =~, =^ and =$ belong to the filter
 // grammar rather than the expression grammar, so the expression is compiled to a
 // reference and handed to the same builders a field condition uses.
-func exprMatchSQL(cond HavingCondition, registry *FieldRegistry) (string, error) {
+func exprMatchSQL(cond Condition, registry *FieldRegistry) (string, error) {
 	ref, _, err := compileExpr(cond.Expr, registry)
 	if err != nil {
 		return "", err

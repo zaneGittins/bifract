@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -50,6 +51,12 @@ var caseDisallowedCommands = map[string]bool{
 	"mitre": true, "boxplot": true, "scatter": true,
 }
 
+// caseAggSel is a harvested aggregate from a branch segment.
+type caseAggSel struct {
+	field string
+	agg   aggregate
+}
+
 // caseSel is a harvested (alias, expression) pair from a branch segment.
 type caseSel struct {
 	field string
@@ -59,29 +66,24 @@ type caseSel struct {
 // segEffect is the harvested effect of one branch segment after running it through
 // the real handler pipeline.
 type segEffect struct {
-	where  []string  // predicate conjuncts (filters, in/cidr/comment)
-	perRow []caseSel // per-row transform / assignment outputs
-	aggs   []caseSel // aggregate outputs (raw agg SQL, pre -If injection)
+	where  []string     // predicate conjuncts (filters, in/cidr/comment)
+	perRow []caseSel    // per-row transform / assignment outputs
+	aggs   []caseAggSel // aggregate outputs, scoped to the branch later
 }
 
-// harvestSegment runs a single branch segment ("image=~ps", "in(prog,[sshd])",
-// "regex(...)", "count()", "valid:=true") through the canonical engine against a
-// throwaway sub-context, then partitions its effect into predicate / per-row /
-// aggregate contributions. Structural effects produce an error.
-func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry) (segEffect, error) {
+// harvestSegment runs a single branch segment (a condition such as image=~ps or
+// in(prog,[sshd]), or a command such as regex(...) or count()) through the
+// canonical engine against a throwaway sub-context, then partitions its effect
+// into predicate / per-row / aggregate contributions. Structural effects produce
+// an error.
+func harvestSegment(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistry) (segEffect, error) {
 	var eff segEffect
-	segText = strings.TrimSpace(segText)
-	if segText == "" {
+	if pl == nil || len(pl.Steps) == 0 {
 		return eff, nil
 	}
 
-	pl, err := ParseQuery(segText)
-	if err != nil {
-		return eff, fmt.Errorf("case branch: %w", err)
-	}
-
 	// Reject structural commands by name up front for a clear message.
-	for _, cmd := range pl.Commands {
+	for _, cmd := range pl.Commands() {
 		if caseDisallowedCommands[canonicalCommandName(cmd.Name)] {
 			return eff, fmt.Errorf("%s() cannot be used inside a case branch; place it after the case", commandDisplayName(cmd.Name))
 		}
@@ -94,7 +96,7 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 	// Conditions before the segment's first command resolve against the parent
 	// pipeline too, ahead of what the segment's commands add; later ones see those
 	// commands' outputs.
-	first, later := SplitFirstStage(pl.HavingConditions)
+	first, later := SplitFirstStage(pl)
 	condReg := reg
 	if parentReg != nil {
 		condReg = parentReg
@@ -105,7 +107,7 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 		plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, w)
 	}
 
-	for i, cmd := range pl.Commands {
+	for i, cmd := range pl.Commands() {
 		ctx.CmdIndex = i
 		h := getCommandHandler(cmd.Name)
 		if h == nil {
@@ -115,10 +117,10 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 			return eff, err
 		}
 	}
-	for _, a := range pl.Assignments {
+	for _, a := range pl.Assignments() {
 		reg.Register(a.Field, FieldKindAssignment, a.Field, -1)
 	}
-	for i, cmd := range pl.Commands {
+	for i, cmd := range pl.Commands() {
 		ctx.CmdIndex = i
 		if err := getCommandHandler(cmd.Name).Execute(cmd, ctx); err != nil {
 			return eff, err
@@ -135,92 +137,27 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 	// Backstop: reject any structural effect a handler may have produced (groupby,
 	// sort, limit, join, chain, window layers, extra stages).
 	if len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" || src.LimitBy != "" ||
-		plan.IsJoin || plan.IsChain || len(plan.WindowLayers) > 0 ||
+		plan.join != nil || plan.Chain != nil || len(plan.WindowLayers) > 0 ||
 		plan.hasModelLookup() || len(plan.Stages) > 1 {
 		return eff, fmt.Errorf("structural command (groupby/sort/limit/join/chain/window) cannot be used inside a case branch")
 	}
 
 	eff.where = append(eff.where, src.Where...)
 	for _, sel := range src.Selects {
-		expr, alias := splitSelectAlias(sel.String())
-		if alias == "" {
+		expr, alias := sel.Expr, sel.Name()
+		if sel.Alias == "" {
 			continue
 		}
 		if reg.IsAggregate(alias) {
-			eff.aggs = append(eff.aggs, caseSel{field: alias, expr: expr})
+			if sel.agg == nil {
+				return eff, fmt.Errorf("%s cannot be computed per case branch; compute it after the case", alias)
+			}
+			eff.aggs = append(eff.aggs, caseAggSel{field: alias, agg: sel.agg})
 		} else {
 			eff.perRow = append(eff.perRow, caseSel{field: alias, expr: expr})
 		}
 	}
 	return eff, nil
-}
-
-// splitSelectAlias splits "expr AS alias" into (expr, alias). When there is no AS
-// clause it returns (s, "").
-func splitSelectAlias(s string) (string, string) {
-	if idx := strings.LastIndex(s, " AS "); idx != -1 {
-		return strings.TrimSpace(s[:idx]), strings.TrimSpace(s[idx+4:])
-	}
-	return s, ""
-}
-
-// matchParen returns the index of the ')' matching the '(' at runes[open], or -1.
-func matchParen(runes []rune, open int) int {
-	depth := 0
-	for i := open; i < len(runes); i++ {
-		switch runes[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-// aggExprToIf rewrites a harvested aggregate expression into its conditional -If
-// combinator scoped by cond. Handles COUNT(*), count(field) (non-null semantics
-// preserved), parametric aggregates (quantiles(p)(x)), and the general f(args)
-// case.
-func aggExprToIf(expr, cond string) string {
-	e := strings.TrimSpace(expr)
-	if strings.TrimSpace(cond) == "" {
-		cond = "1"
-	}
-	runes := []rune(e)
-	open := strings.IndexByte(e, '(')
-	if open <= 0 {
-		return e // not a function call; leave untouched
-	}
-	name := strings.TrimSpace(e[:open])
-	closeIdx := matchParen(runes, open)
-	if closeIdx < 0 {
-		return e
-	}
-	innerArg := strings.TrimSpace(string(runes[open+1 : closeIdx]))
-
-	// count(): rows in branch; count(field): non-null field in branch.
-	if strings.EqualFold(name, "count") {
-		if innerArg == "*" || innerArg == "" {
-			return fmt.Sprintf("countIf(%s)", cond)
-		}
-		return fmt.Sprintf("countIf((%s) IS NOT NULL AND (%s))", innerArg, cond)
-	}
-
-	// Parametric aggregate: f(params)(args) -> fIf(params)(args, cond).
-	if closeIdx+1 < len(runes) && runes[closeIdx+1] == '(' {
-		close2 := matchParen(runes, closeIdx+1)
-		if close2 >= 0 {
-			params := string(runes[open : closeIdx+1]) // "(p1, p2)"
-			args := strings.TrimSpace(string(runes[closeIdx+2 : close2]))
-			return fmt.Sprintf("%sIf%s(%s, %s)", name, params, args, cond)
-		}
-	}
-
-	return fmt.Sprintf("%sIf(%s, %s)", name, innerArg, cond)
 }
 
 // caseValueSQL renders an assignment/result value as a quoted SQL string literal.
@@ -235,18 +172,10 @@ func caseValueSQL(raw string) string {
 // rejected rather than quoted.
 var caseAssignName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-func caseFieldName(raw string) (string, error) {
-	field := strings.TrimSpace(raw)
-	if !caseAssignName.MatchString(field) {
-		return "", fmt.Errorf("case: invalid field name %q: use letters, digits and underscores", field)
-	}
-	return field, nil
-}
-
-// looksLikeCommand reports whether a segment is a function-call command
-// (count(), in(...), regex(...), eval(...)) rather than an assignment or value.
-func looksLikeCommand(seg string) bool {
-	s := strings.TrimSpace(seg)
+// looksLikeCommand reports whether text is a function call (count(), in(...),
+// regex(...)) rather than a value.
+func looksLikeCommand(text string) bool {
+	s := strings.TrimSpace(text)
 	open := strings.IndexByte(s, '(')
 	if open <= 0 || !strings.HasSuffix(s, ")") {
 		return false
@@ -262,123 +191,89 @@ func looksLikeCommand(seg string) bool {
 // branchData holds one branch's compiled predicate and value/aggregate contributions.
 type branchData struct {
 	isDefault bool
-	preds     []string  // predicate conjuncts (AND-ed)
-	vals      []caseSel // per-row field contributions (literals + transform exprs)
-	aggs      []caseSel // aggregate contributions (raw agg SQL)
-	bares     []string  // legacy bare-result values
+	preds     []string     // predicate conjuncts (AND-ed)
+	vals      []caseSel    // per-row field contributions (literals + transform exprs)
+	aggs      []caseAggSel // aggregate contributions
+	bares     []string     // legacy bare-result values
 }
 
 // compileCase compiles a full case { ... } block under the single-pass conditional
 // model. registry resolves field references; opts feeds the sub-handlers.
-func compileCase(block string, registry *FieldRegistry, opts QueryOptions) (compiledCase, error) {
-	var out compiledCase
+func compileCase(block []CaseBranch, registry *FieldRegistry, opts QueryOptions) (compiledCase, error) {
+	branches, err := harvestBranches(block, registry, opts)
+	if err != nil {
+		return compiledCase{}, err
+	}
+	return conditionalize(branches, defaultPredicate(branches)), nil
+}
 
-	inner := strings.TrimSpace(block)
-	inner = strings.TrimPrefix(inner, "{")
-	inner = strings.TrimSuffix(inner, "}")
-
-	// ---- Pass 1: parse branches, harvest each segment -----------------------
-	var branches []branchData
-	for _, br := range splitTopLevelByToken(inner, TokenSemicolon) {
-		if strings.TrimSpace(br) == "" {
-			continue
-		}
-		segs := splitTopLevelByToken(br, TokenPipe)
-		condText := strings.TrimSpace(segs[0])
-
-		bd := branchData{}
-		if condText == "*" {
-			bd.isDefault = true
-		} else {
-			eff, err := harvestSegment(condText, opts, registry)
-			if err != nil {
-				return out, err
-			}
+// harvestBranches compiles each branch's condition and results.
+func harvestBranches(block []CaseBranch, registry *FieldRegistry, opts QueryOptions) ([]branchData, error) {
+	branches := make([]branchData, 0, len(block))
+	for _, br := range block {
+		bd := branchData{isDefault: br.When == nil}
+		harvest := func(seg *PipelineNode) error {
+			eff, err := harvestSegment(seg, opts, registry)
 			bd.preds = append(bd.preds, eff.where...)
 			bd.vals = append(bd.vals, eff.perRow...)
 			bd.aggs = append(bd.aggs, eff.aggs...)
+			return err
 		}
-
-		for _, seg := range segs[1:] {
-			seg = strings.TrimSpace(seg)
-			if seg == "" {
-				continue
-			}
+		if err := harvest(br.When); err != nil {
+			return nil, err
+		}
+		for _, r := range br.Results {
 			switch {
-			case strings.Contains(seg, ":="):
-				parts := strings.SplitN(seg, ":=", 2)
-				rhs := strings.TrimSpace(parts[1])
-				if looksLikeCommand(rhs) {
-					// `field := regex(...)` is a common mistake: transforms and
-					// aggregations are pipe commands, not assignment values. Guide the
-					// user to the bare-command form rather than quoting it as a literal.
-					return out, fmt.Errorf("case: assign a command result with a bare pipe, not ':='; write `| %s` instead of `%s := %s`", rhs, strings.TrimSpace(parts[0]), rhs)
+			case r.Command != nil:
+				if err := harvest(r.Command); err != nil {
+					return nil, err
 				}
-				field, err := caseFieldName(parts[0])
-				if err != nil {
-					return out, err
-				}
-				bd.vals = append(bd.vals, caseSel{field: field, expr: caseValueSQL(rhs)})
-			case looksLikeCommand(seg):
-				eff, err := harvestSegment(seg, opts, registry)
-				if err != nil {
-					return out, err
-				}
-				bd.preds = append(bd.preds, eff.where...)
-				bd.vals = append(bd.vals, eff.perRow...)
-				bd.aggs = append(bd.aggs, eff.aggs...)
-			case strings.Contains(seg, "="):
-				parts := strings.SplitN(seg, "=", 2)
-				field, err := caseFieldName(parts[0])
-				if err != nil {
-					return out, err
-				}
-				bd.vals = append(bd.vals, caseSel{field: field, expr: caseValueSQL(parts[1])})
+			case r.Field != "":
+				bd.vals = append(bd.vals, caseSel{field: r.Field, expr: caseValueSQL(r.Value)})
 			default:
-				bd.bares = append(bd.bares, caseValueSQL(seg))
+				bd.bares = append(bd.bares, caseValueSQL(r.Value))
 			}
 		}
 		branches = append(branches, bd)
 	}
+	return branches, nil
+}
 
-	// Default predicate: NOT (p1 OR p2 OR ... OR pk).
-	var nonDefaultPreds []string
+// defaultPredicate is the default branch's condition: NOT (p1 OR p2 OR ... OR pk).
+func defaultPredicate(branches []branchData) string {
+	var preds []string
 	for _, bd := range branches {
-		if bd.isDefault {
-			continue
-		}
-		if p := andConjuncts(bd.preds); p != "" {
-			nonDefaultPreds = append(nonDefaultPreds, p)
+		if p := andConjuncts(bd.preds); !bd.isDefault && p != "" {
+			preds = append(preds, "("+p+")")
 		}
 	}
-	defaultPred := ""
-	if len(nonDefaultPreds) > 0 {
-		quoted := make([]string, len(nonDefaultPreds))
-		for i, p := range nonDefaultPreds {
-			quoted[i] = "(" + p + ")"
-		}
-		defaultPred = "NOT (" + strings.Join(quoted, " OR ") + ")"
+	if len(preds) == 0 {
+		return ""
 	}
+	return "NOT (" + strings.Join(preds, " OR ") + ")"
+}
 
-	// ---- Pass 2: conditionalize each branch by its predicate ----------------
-	fieldArms := make(map[string][]string)
-	fieldOrder := []string{}
-	fieldDefaults := make(map[string]string)
+// conditionalize scopes each branch's contributions to its condition: a field it
+// sets becomes a CASE arm, an aggregate its -If form.
+func conditionalize(branches []branchData, defaultPred string) compiledCase {
+	var out compiledCase
+	arms := map[string][]string{}
+	defaults := map[string]string{}
+	var fields []string // in the order first set
 	aggIdx := 0
-
 	for _, bd := range branches {
 		pred := andConjuncts(bd.preds)
 		if bd.isDefault {
 			pred = defaultPred
 		}
 		for _, v := range bd.vals {
+			if _, seen := arms[v.field]; !seen && !slices.Contains(fields, v.field) {
+				fields = append(fields, v.field)
+			}
 			if bd.isDefault {
-				fieldDefaults[v.field] = v.expr
+				defaults[v.field] = v.expr
 			} else {
-				if _, seen := fieldArms[v.field]; !seen {
-					fieldOrder = append(fieldOrder, v.field)
-				}
-				fieldArms[v.field] = append(fieldArms[v.field], fmt.Sprintf("WHEN %s THEN %s", pred, v.expr))
+				arms[v.field] = append(arms[v.field], fmt.Sprintf("WHEN %s THEN %s", pred, v.expr))
 			}
 		}
 		for _, a := range bd.aggs {
@@ -389,8 +284,11 @@ func compileCase(block string, registry *FieldRegistry, opts QueryOptions) (comp
 			if base == "" {
 				base = "agg"
 			}
-			alias := fmt.Sprintf("%s_%d", base, aggIdx)
-			out.aggregates = append(out.aggregates, caseAgg{alias: alias, expr: aggExprToIf(a.expr, pred)})
+			cond := pred
+			if strings.TrimSpace(cond) == "" {
+				cond = "1"
+			}
+			out.aggregates = append(out.aggregates, caseAgg{alias: fmt.Sprintf("%s_%d", base, aggIdx), expr: a.agg.scoped(cond)})
 		}
 		for _, bare := range bd.bares {
 			if bd.isDefault {
@@ -400,28 +298,21 @@ func compileCase(block string, registry *FieldRegistry, opts QueryOptions) (comp
 			}
 		}
 	}
-
-	// ---- Build per-field CASE assignments -----------------------------------
-	for _, field := range fieldOrder {
-		var b strings.Builder
-		b.WriteString("CASE ")
-		b.WriteString(strings.Join(fieldArms[field], " "))
-		if def, ok := fieldDefaults[field]; ok {
-			b.WriteString(" ELSE ")
-			b.WriteString(def)
-		} else {
-			b.WriteString(" ELSE NULL")
+	// Fields with arms first, as written; a field only the default sets is that value.
+	var defaultOnly []caseColumn
+	for _, field := range fields {
+		def, hasDefault := defaults[field]
+		if len(arms[field]) == 0 {
+			defaultOnly = append(defaultOnly, caseColumn{Field: field, SQL: def})
+			continue
 		}
-		b.WriteString(" END")
-		out.assignments = append(out.assignments, caseColumn{Field: field, SQL: b.String()})
-	}
-	for field, def := range fieldDefaults {
-		if _, hasArms := fieldArms[field]; !hasArms {
-			out.assignments = append(out.assignments, caseColumn{Field: field, SQL: def})
+		if !hasDefault {
+			def = "NULL"
 		}
+		out.assignments = append(out.assignments, caseColumn{Field: field, SQL: "CASE " + strings.Join(arms[field], " ") + " ELSE " + def + " END"})
 	}
-
-	return out, nil
+	out.assignments = append(out.assignments, defaultOnly...)
+	return out
 }
 
 // andConjuncts joins predicate conjuncts with AND, parenthesizing each.
@@ -443,39 +334,4 @@ func andConjuncts(conjuncts []string) string {
 		wrapped[i] = "(" + p + ")"
 	}
 	return strings.Join(wrapped, " AND ")
-}
-
-// splitTopLevelByToken splits raw at top-level occurrences of sepType (a single-rune
-// separator: TokenPipe or TokenSemicolon). It lexes raw so that separators nested
-// inside (), [], {} or contained within regex/quoted tokens do not split. Falls back
-// to returning raw unsplit if lexing fails.
-func splitTopLevelByToken(raw string, sepType TokenType) []string {
-	lex := NewLexer(raw)
-	toks, err := lex.Tokenize()
-	if err != nil {
-		return []string{raw}
-	}
-	runes := []rune(raw)
-	var segs []string
-	depth := 0
-	start := 0
-	for _, tk := range toks {
-		switch tk.Type {
-		case TokenLParen, TokenLBracket, TokenLBrace:
-			depth++
-		case TokenRParen, TokenRBracket, TokenRBrace:
-			if depth > 0 {
-				depth--
-			}
-		case sepType:
-			if depth == 0 && tk.Pos >= start && tk.Pos <= len(runes) {
-				segs = append(segs, string(runes[start:tk.Pos]))
-				start = tk.Pos + 1 // separators are a single rune
-			}
-		}
-	}
-	if start <= len(runes) {
-		segs = append(segs, string(runes[start:]))
-	}
-	return segs
 }

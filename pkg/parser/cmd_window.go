@@ -94,7 +94,7 @@ func setWindowValue(arg Argument, ctx *CommandContext, name string) error {
 		return err
 	}
 	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects,
-		SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s) AS %s", fieldRef, windowValueColumn)})
+		SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s)", fieldRef), Alias: windowValueColumn})
 	ctx.Plan.ModifiedZScoreExpr = windowValueColumn
 	return nil
 }
@@ -185,12 +185,11 @@ func (h *histogramHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		// A raw log field has to be projected before the window layers can see it.
 		fieldRef := resolveFieldRef(field, ctx.Registry)
 		source.Layer.Selects = append(source.Layer.Selects,
-			SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s) AS _hist_val", fieldRef)})
+			SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s)", fieldRef), Alias: "_hist_val"})
 		ctx.Registry.SetResolveExpr("_hist_val", fmt.Sprintf("toFloat64OrNull(%s)", fieldRef))
 		ctx.Plan.HistogramValueExpr = "_hist_val"
 	}
 
-	ctx.Plan.HistogramField = field
 	ctx.Plan.HistogramBuckets = buckets
 	ctx.Plan.ChartReadsAllRows = true
 	ctx.Plan.ChartType = "histogram"

@@ -339,7 +339,7 @@ func TestExprAliasClashDoesNotPanicOnCarriedColumn(t *testing.T) {
 func TestNegatedConditionFunctionNegatesOnce(t *testing.T) {
 	cases := []struct{ query, want, reject string }{
 		{`* | !in(status,"200,404") AND user="bob"`,
-			"NOT (fields.`status`::String IN ('200', '404'))", "NOT IN"},
+			"fields.`status`::String NOT IN ('200', '404')", "NOT (fields.`status`"},
 		{`* | !cidr(dst_ip,"10.0.0.0/8") AND dst_port="445"`,
 			"NOT (", "NOT (NOT ("},
 		{`* | !cidr(dst_ip,"10.0.0.0/8")`, "NOT (isIPAddressInRange(", "NOT (NOT ("},

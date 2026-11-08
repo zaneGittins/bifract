@@ -179,18 +179,20 @@ func TestHotModeHasNoDedupWrapper(t *testing.T) {
 	}
 }
 
-// extractFieldName must be the exact inverse of mapFieldRef (which escapes the
-// key via escapeString) so group-by alias recovery matches the original field.
-func TestIcebergFieldRefRoundTrip(t *testing.T) {
-	for _, name := range []string{
-		"src_ip", "http.method", "a.b.c",
-		`dir\path`,        // backslash: escapeString doubles it
-		`o'brien`,         // single quote
-		`weird\'mix`,      // backslash + quote adjacency
-		`comma,paren)key`, // punctuation that must not confuse the parser
-	} {
-		if got := extractFieldName(mapFieldRef(name)); got != name {
-			t.Errorf("round-trip failed: mapFieldRef(%q) -> extractFieldName = %q", name, got)
+// A grouping key is output under the field's own name in archive search, however
+// mapFieldRef escapes it into the MAP lookup.
+func TestIcebergGroupKeyKeepsItsName(t *testing.T) {
+	for _, name := range []string{"src_ip", "http.method", "a.b.c"} {
+		pl, err := ParseQuery("* | groupby(" + name + ")")
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := TranslateToSQLWithOrder(pl, QueryOptions{SourceMode: SourceIceberg, MaxRows: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.FieldOrder[0] != name || !strings.Contains(res.SQL, mapFieldRef(name)) {
+			t.Errorf("%s: fields %v from:\n%s", name, res.FieldOrder, res.SQL)
 		}
 	}
 }

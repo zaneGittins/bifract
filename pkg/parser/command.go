@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -15,9 +16,6 @@ type CommandContext struct {
 	// Declared holds every command's declarations, for checks that look ahead.
 	// Registry holds only what precedes the running command.
 	Declared *FieldRegistry
-	// AsCondition is set when the command is compiled as a row condition (a boolean
-	// operand, a negated command or a chain step) rather than run as a pipeline stage.
-	AsCondition bool
 }
 
 // declared is Declared, or Registry where nothing was declared ahead of it.
@@ -36,9 +34,46 @@ type CommandHandler interface {
 	Execute(cmd CommandNode, ctx *CommandContext) error
 }
 
-// negatingHandler is a handler that applies cmd.Negate itself. Any other command
-// written after NOT is compiled as a condition and negated there, so NOT is never
-// silently dropped.
+// predicateHandler is a command that can stand as a row condition: predicate
+// compiles it, where it is written, to a boolean SQL expression. A handler that
+// applies NOT itself (negatingHandler) reads cmd.Negate; any other is negated
+// around its predicate, so NOT is never silently dropped.
+type predicateHandler interface {
+	predicate(cmd CommandNode, ctx *CommandContext) (string, error)
+}
+
+// filterHandler is a command that does nothing but filter rows. It is a filter
+// condition wherever it is written, a step of its own or an operand of AND, OR and
+// NOT, so it has the one compile path.
+type filterHandler interface {
+	predicateHandler
+	filtersRows()
+}
+
+// rowFilter is embedded by filter handlers: a filter declares no fields and never
+// runs as a pipeline step.
+type rowFilter struct{}
+
+func (rowFilter) filtersRows()                               {}
+func (rowFilter) Declare(CommandNode, *CommandContext) error { return nil }
+func (rowFilter) Execute(cmd CommandNode, _ *CommandContext) error {
+	return fmt.Errorf("%s() is a filter and runs as a condition", cmd.Name)
+}
+
+// isPredicateCommand reports whether the command can stand as a row condition.
+func isPredicateCommand(name string) bool {
+	_, ok := getCommandHandler(name).(predicateHandler)
+	return ok
+}
+
+// isFilterCommand reports whether the command only filters rows.
+func isFilterCommand(name string) bool {
+	_, ok := getCommandHandler(name).(filterHandler)
+	return ok
+}
+
+// negatingHandler is a predicate handler that applies cmd.Negate itself, to a
+// canonical negative form such as NOT IN.
 type negatingHandler interface {
 	appliesNegate()
 }
@@ -142,27 +177,14 @@ func commandBuildsOutputLater(name string) bool {
 	return ok
 }
 
-// outputFilterHandler marks a filter that is a plain predicate on one field, so
-// after an aggregation it filters the output. Others (tlsh, pgrHas) read log rows
-// and reject that position themselves.
-type outputFilterHandler interface {
-	filtersOutput()
-}
-
-// logRowFilterHandler marks an output filter that tests log rows themselves, so
-// after an aggregation nothing it could test remains.
+// logRowFilterHandler marks a filter that tests log rows themselves, so after an
+// aggregation nothing it could test remains.
 type logRowFilterHandler interface {
-	outputFilterHandler
 	readsLogRows()
 }
 
 func commandReadsLogRows(name string) bool {
 	_, ok := getCommandHandler(name).(logRowFilterHandler)
-	return ok
-}
-
-func commandFiltersOutput(name string) bool {
-	_, ok := getCommandHandler(name).(outputFilterHandler)
 	return ok
 }
 

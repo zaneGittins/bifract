@@ -88,14 +88,14 @@ func TestFullQueryWithRegex(t *testing.T) {
 		t.Fatalf("ParseQuery error: %v", err)
 	}
 
-	var havingCond HavingCondition
-	for _, c := range pipeline.HavingConditions {
+	var havingCond Condition
+	ForEachCondition(pipeline, func(c Condition) {
 		if c.Field == "target_filename" {
 			havingCond = c
 		}
-	}
+	})
 	if havingCond.Field == "" {
-		t.Fatalf("no target_filename condition in %+v", pipeline.HavingConditions)
+		t.Fatalf("no target_filename condition in %+v", pipeline.Filters())
 	}
 	t.Logf("HAVING condition:")
 	t.Logf("  Field: %q", havingCond.Field)

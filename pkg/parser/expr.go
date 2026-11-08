@@ -62,54 +62,36 @@ func binaryPrecedence(t TokenType) int {
 // safe here because a wildcard value and a hyphenated field name are filter
 // syntax, never expression syntax.
 type exprParser struct {
-	tokens []Token
+	lex    *Lexer
+	tokens []Token // lexed so far, on demand
 	pos    int
+	// lexErr is the lexing error at the end of tokens, if any. Only the tokens
+	// the expression reaches are lexed, so text after it never fails it, and
+	// parsing a query's expressions costs the expressions' length, not the
+	// rest of the query's each time.
+	lexErr error
 }
 
-// ParseExpressionAt lexes and parses one expression starting at the given offset
-// in src. It returns the expression and the offset just past it, so the caller
-// can resynchronise its own token stream.
 // booleanChainPrecedence is the binding power at and below which AND/OR live.
 // Parsing above it yields a single comparison-level expression, which is what a
 // negated filter needs: BQL binds NOT to the first leaf, not to the whole chain.
 const booleanChainPrecedence = 2
 
+// ParseExpressionAt parses one expression starting at the given offset in src.
+// It returns the expression and the offset just past it, so the caller can
+// resynchronise its own token stream.
+func ParseExpressionAt(src []rune, start int) (*ExprNode, int, error) {
+	return ParseExpressionAtPrec(src, start, 0)
+}
+
 // ParseExpressionAtPrec is ParseExpressionAt bounded to operators binding more
 // tightly than minPrec.
 func ParseExpressionAtPrec(src []rune, start, minPrec int) (*ExprNode, int, error) {
-	lexer := NewLexer(string(src[start:]))
-	lexer.exprMode = true
-	tokens, err := lexer.Tokenize()
-	if err != nil {
-		return nil, 0, err
-	}
-	for i := range tokens {
-		tokens[i].Pos += start
-		tokens[i].End += start
-	}
-	p := &exprParser{tokens: tokens}
+	p := &exprParser{lex: newExprLexer(src, start)}
 	expr, err := p.parse(minPrec)
-	if err != nil {
-		return nil, 0, err
+	if p.lexErr != nil && (err != nil || p.pos >= len(p.tokens)) {
+		return nil, 0, p.lexErr
 	}
-	return expr, clampEnd(p.consumedEnd(), start, len(src)), nil
-}
-
-func ParseExpressionAt(src []rune, start int) (*ExprNode, int, error) {
-	lexer := NewLexer(string(src[start:]))
-	lexer.exprMode = true
-	tokens, err := lexer.Tokenize()
-	if err != nil {
-		return nil, 0, err
-	}
-	// Rebase onto the original query so error positions and the resync offset are
-	// in the caller's coordinates.
-	for i := range tokens {
-		tokens[i].Pos += start
-		tokens[i].End += start
-	}
-	p := &exprParser{tokens: tokens}
-	expr, err := p.parse(0)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -131,19 +113,28 @@ func (p *exprParser) consumedEnd() int {
 	return p.tokens[p.pos-1].End
 }
 
-func (p *exprParser) current() Token {
-	if p.pos >= len(p.tokens) {
-		return Token{Type: TokenEOF}
+// token returns the i-th token, lexing up to it.
+func (p *exprParser) token(i int) Token {
+	for len(p.tokens) <= i {
+		if n := len(p.tokens); n > 0 && p.tokens[n-1].Type == TokenEOF {
+			return p.tokens[n-1]
+		}
+		tok := p.lex.NextToken()
+		if tok.Type == TokenError {
+			p.lexErr = lexError(tok)
+			tok = Token{Type: TokenEOF, Pos: tok.Pos, End: tok.Pos}
+		} else if tok.Type == TokenEOF && len(p.tokens) > 0 {
+			// End of input reads as just after the last token.
+			tok.Pos, tok.End = p.tokens[len(p.tokens)-1].End, p.tokens[len(p.tokens)-1].End
+		}
+		p.tokens = append(p.tokens, tok)
 	}
-	return p.tokens[p.pos]
+	return p.tokens[i]
 }
 
-func (p *exprParser) peek() Token {
-	if p.pos+1 >= len(p.tokens) {
-		return Token{Type: TokenEOF}
-	}
-	return p.tokens[p.pos+1]
-}
+func (p *exprParser) current() Token { return p.token(p.pos) }
+
+func (p *exprParser) peek() Token { return p.token(p.pos + 1) }
 
 func (p *exprParser) advance() Token {
 	tok := p.current()

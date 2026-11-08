@@ -19,12 +19,14 @@ const (
 type joinHandler struct{}
 
 func (h *joinHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	ctx.Plan.IsJoin = true
+	if ctx.Plan.join == nil {
+		ctx.Plan.join = &joinPlan{}
+	}
 	return nil
 }
 
 func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if ctx.Plan.JoinSubSQL != "" {
+	if ctx.Plan.join != nil && ctx.Plan.join.SubSQL != "" {
 		// The plan holds one join; a second would silently replace the first.
 		return fmt.Errorf("only one join() per query is supported")
 	}
@@ -32,8 +34,8 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
-	blockBody := strings.TrimSpace(cmd.Block)
-	if blockBody == "" {
+	subPipeline := cmd.Body
+	if subPipeline == nil || len(subPipeline.Steps) == 0 {
 		return fmt.Errorf("join() subquery cannot be empty")
 	}
 
@@ -69,14 +71,8 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("join() invalid join key: %w", err)
 	}
 
-	// Parse and translate the subquery
-	subPipeline, err := ParseQuery(blockBody)
-	if err != nil {
-		return fmt.Errorf("join() subquery parse error: %w", err)
-	}
-
 	// Check for nested joins
-	for _, subCmd := range subPipeline.Commands {
+	for _, subCmd := range subPipeline.Commands() {
 		if strings.ToLower(subCmd.Name) == "join" {
 			return fmt.Errorf("join() does not support nested joins")
 		}
@@ -106,14 +102,15 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// The outer query uses the field as it appears in its SELECT (alias or JSON ref).
 	// The subquery must also produce a column with this name.
 
-	ctx.Plan.IsJoin = true
-	ctx.Plan.JoinType = joinType
-	ctx.Plan.JoinKey = safeKey
-	ctx.Plan.JoinSubSQL = subResult.SQL
-	ctx.Plan.JoinInclude = includeFields
-	ctx.Plan.JoinOutputs = subResult.FieldOrder
-	ctx.Plan.JoinMaxRows = maxRows
-	ctx.Plan.JoinCmd = ctx.CmdIndex
+	ctx.Plan.join = &joinPlan{
+		Type:    joinType,
+		Key:     safeKey,
+		SubSQL:  subResult.SQL,
+		Include: includeFields,
+		Outputs: subResult.FieldOrder,
+		MaxRows: maxRows,
+		Cmd:     ctx.CmdIndex,
+	}
 
 	// Register the joined-in columns so a filter or sort on one is deferred to a
 	// post-join layer instead of the source scan, where it does not exist yet.
@@ -150,7 +147,7 @@ func joinPrefixed(col string) string { return "_join_" + col }
 
 // joinDisplayNames returns the prefixed names of the columns the join contributes.
 func joinDisplayNames(plan *QueryPlan) []string {
-	cols := joinCarriedColumns(plan.JoinOutputs, plan.JoinInclude, plan.JoinKey)
+	cols := joinCarriedColumns(plan.join.Outputs, plan.join.Include, plan.join.Key)
 	out := make([]string, len(cols))
 	for i, c := range cols {
 		out[i] = joinPrefixed(c)
@@ -160,7 +157,7 @@ func joinDisplayNames(plan *QueryPlan) []string {
 
 // joinSubqueryHint points at the usual cause when a subquery drops its group key.
 func joinSubqueryHint(sub *PipelineNode, joinKey string) string {
-	for _, c := range sub.Commands {
+	for _, c := range sub.Commands() {
 		if strings.EqualFold(c.Name, "count") && len(c.Args) == 0 {
 			return fmt.Sprintf(" -- a bare count() after groupby(%s) counts the groups and drops %s; groupby() already returns a count, so drop the count()", joinKey, joinKey)
 		}

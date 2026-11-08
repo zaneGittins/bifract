@@ -32,35 +32,33 @@ type pgrFilter interface {
 
 // pgrHasAncestorHandler compiles pgrHasAncestor(), which reads proc_ancestry and walks
 // proc_lineage for the processes it does not answer yet.
-type pgrHasAncestorHandler struct{}
+type pgrHasAncestorHandler struct{ rowFilter }
 
+func (h *pgrHasAncestorHandler) readsLogRows()  {}
 func (h *pgrHasAncestorHandler) appliesNegate() {}
 
-func (h *pgrHasAncestorHandler) Declare(cmd CommandNode, ctx *CommandContext) error { return nil }
-
-func (h *pgrHasAncestorHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+func (h *pgrHasAncestorHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
 	if err := checkPgrSource("pgrHasAncestor", ctx); err != nil {
-		return err
+		return "", err
 	}
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return err
+		return "", err
 	}
 	arg, ok := b.First("value")
 	if !ok {
-		return fmt.Errorf("pgrHasAncestor() needs a name, path or /regex/ to look for")
+		return "", fmt.Errorf("pgrHasAncestor() needs a name, path or /regex/ to look for")
 	}
 	walkMatch, err := pgrImageMatch("pgrHasAncestor", arg, "parent_image")
 	if err != nil {
-		return err
+		return "", err
 	}
 	ancMatch, _ := pgrImageMatch("pgrHasAncestor", arg, "anc_image") // the same value, already checked
 	depth, err := pgrDepth("pgrHasAncestor", b)
 	if err != nil {
-		return err
+		return "", err
 	}
-	addPgrFilter(cmd, ctx, jsonFieldRef(pgrFilterField), pgrAncestorSet(ctx, walkMatch, ancMatch, depth)...)
-	return nil
+	return pgrFilterSQL(cmd, ctx, jsonFieldRef(pgrFilterField), pgrAncestorSet(ctx, walkMatch, ancMatch, depth)...), nil
 }
 
 func (h *pgrHasAncestorHandler) lookups(cmd CommandNode) int { return pgrWalkLookups(cmd) }
@@ -179,37 +177,35 @@ func pgrImageMatch(name string, arg Argument, col string) (string, error) {
 }
 
 // pgrHasDescendantHandler compiles pgrHasDescendant(), which reads proc_ancestry by ancestor.
-type pgrHasDescendantHandler struct{}
+type pgrHasDescendantHandler struct{ rowFilter }
 
+func (h *pgrHasDescendantHandler) readsLogRows()    {}
 func (h *pgrHasDescendantHandler) appliesNegate()   {}
 func (h *pgrHasDescendantHandler) readsProvenance() {}
 
-func (h *pgrHasDescendantHandler) Declare(cmd CommandNode, ctx *CommandContext) error { return nil }
-
 func (h *pgrHasDescendantHandler) lookups(cmd CommandNode) int { return pgrWalkLookups(cmd) }
 
-func (h *pgrHasDescendantHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+func (h *pgrHasDescendantHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
 	if err := checkPgrSource("pgrHasDescendant", ctx); err != nil {
-		return err
+		return "", err
 	}
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return err
+		return "", err
 	}
 	arg, ok := b.First("value")
 	if !ok {
-		return fmt.Errorf("pgrHasDescendant() needs a name, path or /regex/ to look for")
+		return "", fmt.Errorf("pgrHasDescendant() needs a name, path or /regex/ to look for")
 	}
 	match, err := pgrImageMatch("pgrHasDescendant", arg, "image")
 	if err != nil {
-		return err
+		return "", err
 	}
 	depth, err := pgrDepth("pgrHasDescendant", b)
 	if err != nil {
-		return err
+		return "", err
 	}
-	addPgrFilter(cmd, ctx, procKeyExpr(jsonFieldRef(pgrFilterField)), pgrDescendantSet(ctx, match, depth)...)
-	return nil
+	return pgrFilterSQL(cmd, ctx, procKeyExpr(jsonFieldRef(pgrFilterField)), pgrDescendantSet(ctx, match, depth)...), nil
 }
 
 // pgrDescendantSet selects the keys of candidates with a matching descendant within depth levels.
@@ -236,27 +232,26 @@ func pgrDescendantSet(ctx *CommandContext, match string, depth int) []string {
 }
 
 // pgrHasNetworkHandler compiles pgrHasNetwork(), which reads process_edges.
-type pgrHasNetworkHandler struct{}
+type pgrHasNetworkHandler struct{ rowFilter }
 
+func (h *pgrHasNetworkHandler) readsLogRows()  {}
 func (h *pgrHasNetworkHandler) appliesNegate() {}
-
-func (h *pgrHasNetworkHandler) Declare(cmd CommandNode, ctx *CommandContext) error { return nil }
 
 func (h *pgrHasNetworkHandler) lookups(CommandNode) int { return pgrFilterLookups }
 
-func (h *pgrHasNetworkHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+func (h *pgrHasNetworkHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
 	if err := checkPgrSource("pgrHasNetwork", ctx); err != nil {
-		return err
+		return "", err
 	}
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return err
+		return "", err
 	}
 	conds := pgrScope(ctx, "event_type = 'net_connect'")
 	if arg, ok := b.First("value"); ok {
 		cond, err := pgrNetworkMatch(arg)
 		if err != nil {
-			return err
+			return "", err
 		}
 		conds = append(conds, cond)
 	}
@@ -266,12 +261,11 @@ func (h *pgrHasNetworkHandler) Execute(cmd CommandNode, ctx *CommandContext) err
 			conds = append(conds, pgrExternalTarget)
 		case "false":
 		default:
-			return fmt.Errorf("pgrHasNetwork() external= must be true or false")
+			return "", fmt.Errorf("pgrHasNetwork() external= must be true or false")
 		}
 	}
 	conds = append(conds, fmt.Sprintf("proc_key %s (%s)", ctx.Opts.subqueryIn(false), pgrCandidates(ctx)))
-	addPgrFilter(cmd, ctx, jsonFieldRef(pgrFilterField), fmt.Sprintf("SELECT process_guid FROM %s WHERE %s", procEdgesTable(ctx.Opts), andJoin(conds)))
-	return nil
+	return pgrFilterSQL(cmd, ctx, jsonFieldRef(pgrFilterField), fmt.Sprintf("SELECT process_guid FROM %s WHERE %s", procEdgesTable(ctx.Opts), andJoin(conds))), nil
 }
 
 // pgrNetworkMatch tests a stored destination against the value, compared as ingest stored it.
@@ -348,9 +342,9 @@ func checkPgrSource(name string, ctx *CommandContext) error {
 
 var errPgrAssignedGUID = fmt.Errorf("pgrHas filters and pgrContext() read the logged process_guid, so it cannot be assigned in the same query")
 
-// addPgrFilter tests whether the row's process, as row, is in any of sets, recording the entry
-// for narrowing. Negated, it is in none of them.
-func addPgrFilter(cmd CommandNode, ctx *CommandContext, row string, sets ...string) {
+// pgrFilterSQL tests whether the row's process, as row, is in any of sets, recording
+// the predicate for narrowing. Negated, it is in none of them.
+func pgrFilterSQL(cmd CommandNode, ctx *CommandContext, row string, sets ...string) string {
 	op, join := ctx.Opts.subqueryIn(cmd.Negate), " OR "
 	if cmd.Negate {
 		join = " AND "
@@ -363,8 +357,8 @@ func addPgrFilter(cmd CommandNode, ctx *CommandContext, row string, sets ...stri
 	if len(tests) > 1 {
 		entry = "(" + strings.Join(tests, join) + ")"
 	}
-	ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, entry)
 	ctx.Plan.pgrWhere = append(ctx.Plan.pgrWhere, entry)
+	return entry
 }
 
 // pgrScope prefixes conditions with the fractal scope, which leads every provenance key.
@@ -388,7 +382,7 @@ func pgrCandidates(ctx *CommandContext) string {
 // narrowPgrCandidates adds the plan's other scan filters to its own filters' candidates. Only
 // entries this plan wrote are touched: the same text inlined from elsewhere is another query's.
 func narrowPgrCandidates(ctx *CommandContext) {
-	if len(ctx.Plan.pgrWhere) == 0 && ctx.Plan.lookupName != pgrContextName {
+	if len(ctx.Plan.pgrWhere) == 0 && ctx.Plan.lookup.name != pgrContextName {
 		return
 	}
 	src := &ctx.Plan.SourceStage().Layer
@@ -408,7 +402,7 @@ func narrowPgrCandidates(ctx *CommandContext) {
 			src.Where[i] = strings.ReplaceAll(w, candidates, narrowed)
 		}
 	}
-	if ks := ctx.Plan.modelKeys; ks != nil && ctx.Plan.lookupName == pgrContextName {
+	if ks := ctx.Plan.lookup.keys; ks != nil && ctx.Plan.lookup.name == pgrContextName {
 		ks.scoringSQL = strings.ReplaceAll(ks.scoringSQL, candidates, narrowed)
 	}
 }
@@ -457,26 +451,21 @@ func ValidatePgrFilters(pipeline *PipelineNode) error {
 	if total > maxPgrLookups {
 		return fmt.Errorf("this query needs %d pgrHas lookups, and the limit is %d: use fewer filters or a smaller depth=", total, maxPgrLookups)
 	}
-	for _, a := range pipeline.Assignments {
+	for _, a := range pipeline.Assignments() {
 		if a.Field == pgrFilterField {
 			return errPgrAssignedGUID
 		}
 	}
-	blocked := firstAggregatingCommandIndex(pipeline.Commands)
+	blocked := firstAggregatingCommandIndex(pipeline.Commands())
 	late := false
 	note := func(cmd CommandNode, _ pgrFilter) { late = true }
-	for i, cmd := range pipeline.Commands {
-		if i > blocked {
-			forEachPgrFilter(&PipelineNode{Commands: []CommandNode{cmd}}, note)
+	pipeline.forEachStep(func(st Step, at position) {
+		if at.Cmd > blocked {
+			forEachPgrFilter(&PipelineNode{Steps: []Step{st}}, note)
 		}
-	}
-	for _, c := range pipeline.HavingConditions {
-		if c.CmdIndex > blocked {
-			forEachPgrFilter(&PipelineNode{HavingConditions: []HavingCondition{c}}, note)
-		}
-	}
+	})
 	if late {
-		return fmt.Errorf("pgrHas filters test log rows, so put them before %s()", CommandDisplayName(pipeline.Commands[blocked].Name))
+		return fmt.Errorf("pgrHas filters test log rows, so put them before %s()", CommandDisplayName(pipeline.Commands()[blocked].Name))
 	}
 	return nil
 }

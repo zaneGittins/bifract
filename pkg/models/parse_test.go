@@ -371,3 +371,21 @@ func TestParseSourceQueryAssignedNameIsNoChip(t *testing.T) {
 		}
 	}
 }
+
+// A cidr() keeps its chip wherever it is written, and an assignment after a
+// command is not a filter.
+func TestParseSourceCidrAnywhere(t *testing.T) {
+	for _, q := range []string{
+		`level="dns" | cidr(src_ip, "10.0.0.0/8")`,
+		`level="dns" | regex("(?<d>[^.]+)$", field=query) | x := 1 | cidr(src_ip, "10.0.0.0/8")`,
+	} {
+		res := ParseSourceQuery(q)
+		found := false
+		for _, f := range res.Filter {
+			found = found || f.Op == "cidr" && f.Field == "src_ip" && f.Value == "10.0.0.0/8"
+		}
+		if !found {
+			t.Errorf("%s: no cidr chip in %+v", q, res.Filter)
+		}
+	}
+}

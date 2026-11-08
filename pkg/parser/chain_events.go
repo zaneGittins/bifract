@@ -43,7 +43,7 @@ func QueryWindowContract(pipeline *PipelineNode) (int, string) {
 	if pipeline == nil {
 		return 0, ""
 	}
-	for _, cmd := range pipeline.Commands {
+	for _, cmd := range pipeline.Commands() {
 		if wc, ok := getCommandHandler(cmd.Name).(WindowContractor); ok {
 			return wc.WindowContract(cmd)
 		}
@@ -161,8 +161,7 @@ func BuildChainEventsSQL(meta *ChainMeta, entities []string, anchors [][]int64, 
 // ForEachCommand visits every command in a pipeline, including condition
 // functions used as boolean operands and the commands inside a chain() step, a
 // case branch, a join() subquery and a let binding. Anything looking for a command
-// by name must use this rather than scanning Commands, which holds only the
-// standalone ones.
+// by name must use this rather than Commands, which holds only the standalone ones.
 func ForEachCommand(pipeline *PipelineNode, fn func(CommandNode)) {
 	walkCommands(pipeline, nil, func(cmd CommandNode, _ *BindingNode) { fn(cmd) })
 }
@@ -173,17 +172,62 @@ func walkCommands(pipeline *PipelineNode, binding *BindingNode, fn func(CommandN
 	if pipeline == nil {
 		return
 	}
-	visit := func(cmd CommandNode) { fn(cmd, binding) }
-	for _, cmd := range pipeline.Commands {
-		visit(cmd)
+	visit := func(cmd CommandNode) {
+		fn(cmd, binding)
 		for _, sub := range nestedPipelines(cmd) {
 			walkCommands(sub, binding, fn)
 		}
 	}
-	forEachHavingCommand(pipeline.HavingConditions, visit)
+	for _, st := range pipeline.Steps {
+		switch {
+		case st.Command != nil:
+			visit(*st.Command)
+		case st.Filter != nil:
+			forEachConditionCommand(*st.Filter, visit)
+		}
+	}
 	for _, b := range pipeline.Bindings {
 		walkCommands(b.Pipe, b, fn)
 	}
+}
+
+// ForEachCondition visits every node of every filter in a pipeline, each AND/OR
+// before its operands, including the filters inside nested pipelines and let
+// bindings.
+func ForEachCondition(pipeline *PipelineNode, fn func(Condition)) {
+	if pipeline == nil {
+		return
+	}
+	for _, f := range pipeline.Filters() {
+		f.Walk(fn)
+	}
+	ForEachCommand(pipeline, func(cmd CommandNode) {
+		for _, sub := range nestedPipelines(cmd) {
+			for _, f := range sub.Filters() {
+				f.Walk(fn)
+			}
+		}
+	})
+	for _, b := range pipeline.Bindings {
+		ForEachCondition(b.Pipe, fn)
+	}
+}
+
+// Walk visits c and every condition beneath it, each AND/OR before its operands.
+func (c Condition) Walk(fn func(Condition)) {
+	fn(c)
+	for _, child := range c.Children {
+		child.Walk(fn)
+	}
+}
+
+// forEachConditionCommand visits the condition commands in a filter.
+func forEachConditionCommand(c Condition, fn func(CommandNode)) {
+	c.Walk(func(n Condition) {
+		if n.Command != nil {
+			fn(*n.Command)
+		}
+	})
 }
 
 // validateCommands runs check on every command, naming the binding a failure is in.
@@ -200,54 +244,22 @@ func validateCommands(pipeline *PipelineNode, check func(CommandNode) error) err
 	return err
 }
 
-// nestedPipelines parses the pipelines a command carries in its block. One that
-// does not parse is skipped: translating the query reports it.
+// nestedPipelines returns the pipelines a command carries in its block.
 func nestedPipelines(cmd CommandNode) []*PipelineNode {
-	var texts []string
-	switch canonicalCommandName(cmd.Name) {
-	case "chain":
-		var out []*PipelineNode
-		var step []Token
-		for _, tok := range append(append([]Token(nil), cmd.BlockTokens...), Token{Type: TokenSemicolon}) {
-			if tok.Type != TokenSemicolon {
-				step = append(step, tok)
-				continue
-			}
-			if len(step) > 0 {
-				p := NewParser(append(step, Token{Type: TokenEOF}))
-				p.input = cmd.BlockSource
-				if pl, err := p.Parse(); err == nil {
-					out = append(out, pl)
-				}
-			}
-			step = nil
-		}
-		return out
-	case "case":
-		inner := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(cmd.Block), "{"), "}")
-		for _, br := range splitTopLevelByToken(inner, TokenSemicolon) {
-			texts = append(texts, splitTopLevelByToken(br, TokenPipe)...)
-		}
-	case "join":
-		texts = []string{cmd.Block}
-	}
 	var out []*PipelineNode
-	for _, t := range texts {
-		if t = strings.TrimSpace(t); t != "" && t != "*" {
-			if pl, err := ParseQuery(t); err == nil {
-				out = append(out, pl)
+	if cmd.Body != nil {
+		out = append(out, cmd.Body)
+	}
+	out = append(out, cmd.Sequence...)
+	for _, br := range cmd.Branches {
+		if br.When != nil {
+			out = append(out, br.When)
+		}
+		for _, r := range br.Results {
+			if r.Command != nil {
+				out = append(out, r.Command)
 			}
 		}
 	}
 	return out
-}
-
-func forEachHavingCommand(conds []HavingCondition, fn func(CommandNode)) {
-	for _, c := range conds {
-		if c.IsCompound {
-			forEachHavingCommand(c.Children, fn)
-		} else if c.Command != nil {
-			fn(*c.Command)
-		}
-	}
 }

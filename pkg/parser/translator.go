@@ -124,11 +124,11 @@ type QueryOptions struct {
 	SourceSubquery       string
 	SourceColumns        []string // flat column names exposed by SourceSubquery (resolve bare, not fields.x)
 	SourceNumericColumns []string // subset of SourceColumns that are already numeric (no string-coercion on compare)
-	// SourceOrderBy overrides the implicit "timestamp DESC" default ORDER BY applied to a bare
+	// SourceOrderBy overrides the implicit desc("timestamp") default ORDER BY applied to a bare
 	// (no explicit sort()) query over SourceSubquery. Set by a source resolver (e.g. pgr(), via
 	// ProvenanceOrderBy) whose subquery rows are already meaningfully pre-ordered -- timestamp
 	// ordering would discard that and, combined with a LIMIT, truncate the wrong rows.
-	SourceOrderBy []string
+	SourceOrderBy []OrderTerm
 	// DisplayTimezone is the IANA zone that calendar-aligned time buckets
 	// (bucket(), timechart) snap to. Empty means UTC, which is what an alert,
 	// an API-key request and any headless path get: those have no viewer, so
@@ -239,14 +239,18 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 
 // plannedQuery is a pipeline planned up to final assembly.
 type plannedQuery struct {
-	ctx                 *CommandContext
-	assignmentFields    []string
+	ctx *CommandContext
+	// undeclared is the registry before any command declared its outputs, and
+	// declaredBy[i] what command i declares, added to the registry when it runs.
+	undeclared *FieldRegistry
+	declaredBy [][]FieldEntry
+	// firstAgg is the index of the first aggregating command, or the number of
+	// commands when none aggregates.
+	firstAgg int
+	// assignmentFields are the row-level assignment columns the scan projects, and
+	// deferredAssignments those computed in the outer formatter.
+	assignmentFields    []SelectExpr
 	deferredAssignments []deferredAssignment
-}
-
-// finalize assembles the planned query into its SQL.
-func (q *plannedQuery) finalize() (*TranslationResult, error) {
-	return finalizePlan(q.ctx, q.assignmentFields, q.deferredAssignments)
 }
 
 // scanWhere is the predicate the pipeline puts on its source scan beyond the time
@@ -265,300 +269,302 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 			return nil, err
 		}
 	}
-	registry := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
-	registry.normLogIndexHints = opts.NormLogIndexHints && opts.SourceMode != SourceIceberg && opts.SourceSubquery == ""
-	// A subquery source (a resolved source command) exposes flat columns; register them so
-	// bare references resolve to the column name (not fields.`x` JSON access). Numeric columns
-	// register as Assignment (already numeric -> no textToNumber coercion, which errors on a
-	// non-String); string columns as Base (coerce on numeric compare, harmless for strings).
-	if opts.SourceSubquery != "" {
-		numeric := make(map[string]bool, len(opts.SourceNumericColumns))
-		for _, c := range opts.SourceNumericColumns {
-			numeric[c] = true
-		}
-		for _, c := range opts.SourceColumns {
-			if numeric[c] {
-				// Assignment kind = already numeric (no coercion); SetResolveExpr pins the bare
-				// column so Resolve returns it directly instead of falling through to fields.`x`.
-				registry.Register(c, FieldKindAssignment, c, -1)
-				registry.SetResolveExpr(c, c)
-			} else {
-				registry.Register(c, FieldKindBase, c, -1)
-			}
-		}
-	}
 	plan := NewQueryPlan()
 	opts.bindingHost = plan
 	if opts.bindingWork == nil {
 		n := bindingWorkBudget
 		opts.bindingWork = &n
 	}
-	ctx := &CommandContext{
-		Registry: registry,
-		Plan:     plan,
-		Opts:     opts,
-		Pipeline: pipeline,
-	}
-
-	// ---------------------------------------------------------------
-	// 1. Base WHERE conditions (time range, fractal isolation)
-	// ---------------------------------------------------------------
+	q := &plannedQuery{ctx: &CommandContext{Registry: sourceRegistry(opts), Plan: plan, Opts: opts, Pipeline: pipeline}}
+	// The time range and fractal scope come first in the scan's WHERE.
 	addBaseConditions(plan, opts)
 	plan.baseWhereLen = len(plan.SourceStage().Layer.Where)
+	for _, phase := range []func() error{q.declare, q.validate, q.prepare, q.execute, q.planFilters} {
+		if err := phase(); err != nil {
+			return nil, err
+		}
+	}
+	return q, nil
+}
 
-	// ---------------------------------------------------------------
-	// 3. DECLARE PHASE: every command registers what fields it produces
-	// ---------------------------------------------------------------
-	// Declare registers every command's outputs up front for validation; each
-	// command's entries are kept so Execute can reinstate them at its position.
-	undeclared := registry.Clone()
-	declaredBy := make([][]FieldEntry, len(pipeline.Commands))
-	for i, cmd := range pipeline.Commands {
+// sourceRegistry is the registry a query starts from. A subquery source (a
+// resolved source command) exposes flat columns, registered so bare references
+// resolve to the column name rather than JSON access. Numeric columns register as
+// Assignment, already numeric so never coerced (textToNumber rejects a
+// non-String); string columns as Base.
+func sourceRegistry(opts QueryOptions) *FieldRegistry {
+	registry := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
+	registry.normLogIndexHints = opts.NormLogIndexHints && opts.SourceMode != SourceIceberg && opts.SourceSubquery == ""
+	for _, c := range opts.SourceColumns {
+		if slices.Contains(opts.SourceNumericColumns, c) {
+			registry.Register(c, FieldKindAssignment, c, -1)
+			registry.SetResolveExpr(c, c)
+		} else {
+			registry.Register(c, FieldKindBase, c, -1)
+		}
+	}
+	return registry
+}
+
+// declare has every command register the fields it produces, up front, into a
+// look-ahead view (CommandContext.Declared) that checks reading the whole
+// pipeline use. The registry itself stays as the scan leaves it: each command's
+// entries are kept and enter it where the command runs.
+func (q *plannedQuery) declare() error {
+	ctx, pipeline := q.ctx, q.ctx.Pipeline
+	commands := pipeline.Commands()
+	live := ctx.Registry
+	q.undeclared = live.Clone()
+	q.declaredBy = make([][]FieldEntry, len(commands))
+	q.firstAgg = firstAggregatingCommandIndex(commands)
+	ctx.Registry = live.Clone()
+	defer func() { ctx.Declared, ctx.Registry = ctx.Registry, live }()
+	for i, cmd := range commands {
 		ctx.CmdIndex = i
 		handler := getCommandHandler(cmd.Name)
 		if handler == nil {
-			return nil, fmt.Errorf("unsupported command: %s", cmd.Name)
+			return fmt.Errorf("unsupported command: %s", cmd.Name)
 		}
-		before := registry.Clone()
+		before := ctx.Registry.Clone()
 		if err := handler.Declare(cmd, ctx); err != nil {
-			return nil, err
+			return err
 		}
-		for _, name := range registry.changedSince(before) {
-			declaredBy[i] = append(declaredBy[i], *registry.Get(name))
-		}
-	}
-
-	if err := validateCommandSchemas(pipeline); err != nil {
-		return nil, err
-	}
-	if err := validateProcessTreeTail(pipeline); err != nil {
-		return nil, err
-	}
-	if err := ValidatePgrFilters(pipeline); err != nil {
-		return nil, err
-	}
-
-	if err := validateExprArgs(pipeline, registry); err != nil {
-		return nil, err
-	}
-
-	// tlsh() used as a boolean operand never reaches its handler, so its projected
-	// columns are declared here instead. See DeclareTLSHOperandColumns.
-	if err := DeclareTLSHOperandColumns(pipeline, ctx); err != nil {
-		return nil, err
-	}
-
-	// model_lookup() placement: with no aggregation before it, the model join sits in
-	// the row scan's FROM, so every command after it (an aggregation included) reads
-	// the model's columns per row. After an aggregation it enriches the aggregated
-	// rows instead, joined below the stage that reads them. Decided before Execute so
-	// the handlers route model-column references accordingly.
-	if mlIdx := lookupCommandIndex(pipeline.Commands); mlIdx >= 0 {
-		plan.ModelLookupAtScan = firstAggregatingCommandIndex(pipeline.Commands) > mlIdx
-	}
-
-	// Registered only to capture declared: commands and assignments enter the
-	// registry at their position in the Execute loop, so nothing before them
-	// sees them.
-	for _, assignment := range pipeline.Assignments {
-		registry.Register(assignment.Field, FieldKindAssignment, assignment.Field, -1)
-	}
-	ctx.Declared = registry.Clone()
-	var pending []string
-	for _, name := range registry.order {
-		if !undeclared.Has(name) || *undeclared.Get(name) != *registry.Get(name) {
-			pending = append(pending, name)
+		for _, name := range ctx.Registry.changedSince(before) {
+			q.declaredBy[i] = append(q.declaredBy[i], *ctx.Registry.Get(name))
 		}
 	}
-	registry.unassign(pending, undeclared)
-
-	// ---------------------------------------------------------------
-	// 5. Field assignments, compiled at their position in the Execute loop
-	// ---------------------------------------------------------------
-	var assignmentFields []string
-	var deferredAssignments []deferredAssignment
-	firstAgg := firstAggregatingCommandIndex(pipeline.Commands)
-	hasAggregation := firstAgg < len(pipeline.Commands)
-	applyAssignment := func(assignment AssignmentNode) error {
-		safeField, err := sanitizeIdentifier(assignment.Field)
-		if err != nil {
-			return fmt.Errorf("invalid assignment field: %w", err)
-		}
-
-		// Past the aggregation every assignment is its own stage, so what ran
-		// before it keeps the value it replaces.
-		if hasAggregation && assignment.CmdIndex > firstAgg {
-			return applyAssignmentStage(ctx, assignment)
-		}
-		// A reassignment replaces the earlier column; filters before it already
-		// folded the earlier expression in.
-		assignmentFields = slices.DeleteFunc(assignmentFields, func(af string) bool { return selectName(af) == assignment.Field })
-		deferredAssignments = slices.DeleteFunc(deferredAssignments, func(da deferredAssignment) bool { return da.Field == assignment.Field })
-		layer := &ctx.Plan.CurrentStage().Layer
-		layer.Selects = slices.DeleteFunc(layer.Selects, func(sel SelectExpr) bool { return selectName(sel.String()) == assignment.Field })
-
-		// A computed assignment binds to a pipeline stage, because where it is
-		// evaluated decides what it can see. A bare field or literal has nothing
-		// to compute and is materialized straight away.
-		if !isComputedExpr(assignment.Expr) {
-			expression, _, err := compileExpr(assignment.Expr, registry)
-			if err != nil {
-				return assignmentError(assignment.Field, err)
-			}
-			af := fmt.Sprintf("%s AS %s", expression, safeField)
-			assignmentFields = append(assignmentFields, af)
-			registry.Register(safeField, FieldKindAssignment, safeField, -1)
-			registry.SetResolveExpr(safeField, af)
-			return nil
-		}
-		switch {
-		case hasAggregation:
-			// Pre-aggregation: inline so aggregations/filters reference the
-			// computed value, and so later pre-aggregation assignments
-			// referencing this one fold in the full expression (it is never
-			// materialized as a column).
-			sqlExpr, exprType, err := compileExpr(assignment.Expr, registry)
-			if err != nil {
-				return assignmentError(assignment.Field, err)
-			}
-			registry.RegisterInlineExpr(safeField, sqlExpr, -1)
-			if exprType == TypeNumber {
-				registry.SetNumeric(safeField)
-			}
-		default:
-			// No aggregation: computed in the outer formatter, but registered so
-			// a downstream filter folds in the expression. Without this the
-			// filter referenced a column the inner scan does not have and
-			// silently matched nothing.
-			sqlExpr, exprType, err := compileExpr(assignment.Expr, registry)
-			if err != nil {
-				return assignmentError(assignment.Field, err)
-			}
-			registry.Register(safeField, FieldKindPerRow, sqlExpr, -1)
-			registry.SetResolveExpr(safeField, sqlExpr)
-			if exprType == TypeNumber {
-				registry.SetNumeric(safeField)
-			}
-			if registry.DependsOnJoin(safeField) {
-				// The model's columns exist in the SELECT that joins them, which the
-				// formatter only sees as far as that SELECT projects them.
-				assignmentFields = append(assignmentFields, fmt.Sprintf("%s AS %s", sqlExpr, safeField))
-				return nil
-			}
-			deferredAssignments = append(deferredAssignments, deferredAssignment{Field: assignment.Field, Alias: safeField, SQL: sqlExpr})
-		}
-		return nil
+	// Assignments enter the look-ahead view too; the registry gets them where
+	// they are written.
+	for _, a := range pipeline.Assignments() {
+		ctx.Registry.Register(a.Field, FieldKindAssignment, a.Field, -1)
 	}
+	return nil
+}
 
-	// ---------------------------------------------------------------
-	// 6. EXECUTE PHASE: commands and assignments run in pipeline order, each
-	//     reading the registry as the pipeline left it there. The registry at
-	//     every position is kept for the conditions written there.
-	// ---------------------------------------------------------------
-	plan.positionAt = map[[2]int]*FieldRegistry{}
+// validate refuses what the pipeline's commands cannot do, before any runs.
+func (q *plannedQuery) validate() error {
+	pipeline := q.ctx.Pipeline
+	for _, check := range []func(*PipelineNode) error{validateCommandSchemas, validateProcessTreeTail, ValidatePgrFilters} {
+		if err := check(pipeline); err != nil {
+			return err
+		}
+	}
+	return validateExprArgs(pipeline, q.ctx.Declared)
+}
+
+// prepare readies the plan for execute.
+func (q *plannedQuery) prepare() error {
+	ctx, pipeline := q.ctx, q.ctx.Pipeline
+	// With no aggregation before it, the model join sits in the row scan's FROM, so
+	// every command after it (an aggregation included) reads the model's columns
+	// per row. After an aggregation it enriches the aggregated rows instead, joined
+	// below the stage that reads them. Decided before Execute so the handlers route
+	// model-column references accordingly.
+	if mlIdx := lookupCommandIndex(pipeline.Commands()); mlIdx >= 0 {
+		ctx.Plan.lookup.AtScan = q.firstAgg > mlIdx
+	}
+	// tlsh() is a condition, and the columns it projects come from the scan, so
+	// they are there from the start.
+	return projectTLSHColumns(pipeline, ctx)
+}
+
+// execute runs the commands and assignments in pipeline order, each reading the
+// registry as the pipeline left it there. The registry at every position is kept
+// for the filters written there.
+func (q *plannedQuery) execute() error {
+	ctx, plan, registry := q.ctx, q.ctx.Plan, q.ctx.Registry
+	plan.positionAt = map[position]*FieldRegistry{}
 	plan.outputsAfter = map[int][]string{}
-	plan.stageAt = map[[2]int]int{}
-	plan.declaredBy = declaredBy
-	plan.firstAggregation = firstAgg
-	plan.commands = pipeline.Commands
-	capture := func(cmds, assigns int) {
-		if cmds == 0 {
-			plan.firstStageAt = append(plan.firstStageAt, registry.firstStageView())
-			return
-		}
+	plan.stageAt = map[position]int{}
+	plan.declaredBy = q.declaredBy
+	plan.firstAggregation = q.firstAgg
+	plan.commands = ctx.Pipeline.Commands()
+	capture := func(at position) {
 		view := registry.Clone()
-		view.rowLevel = cmds <= firstAgg
-		plan.positionAt[[2]int{cmds, assigns}] = view
-		plan.stageAt[[2]int{cmds, assigns}] = len(plan.Stages) - 1
+		view.rowLevel = at.Cmd <= q.firstAgg
+		plan.positionAt[at] = view
+		plan.stageAt[at] = len(plan.Stages) - 1
 	}
-	next := 0
-	for i := 0; i <= len(pipeline.Commands); i++ {
-		ctx.CmdIndex = i
-		for next < len(pipeline.Assignments) && pipeline.Assignments[next].CmdIndex == i {
-			capture(i, next)
-			if err := applyAssignment(pipeline.Assignments[next]); err != nil {
-				return nil, err
+	var pos position
+	capture(pos)
+	for _, st := range ctx.Pipeline.Steps {
+		ctx.CmdIndex = pos.Cmd
+		switch {
+		case st.Assign != nil:
+			if err := q.applyAssignment(*st.Assign, pos); err != nil {
+				return err
 			}
-			next++
-		}
-		capture(i, next)
-		if i == len(pipeline.Commands) {
-			break
-		}
-		cmd := pipeline.Commands[i]
-		registry.reinstate(declaredBy[i], undeclared)
-		// A per-row transform that runs on a GROUP BY stage would add a
-		// non-grouped column to an aggregate SELECT (invalid, silently dropped).
-		// Move it onto a post-aggregation projection stage first.
-		if IsTransformCommand(cmd.Name) && len(ctx.Plan.CurrentStage().Layer.GroupBy) > 0 {
-			if _, err := pushCarryForwardStage(ctx); err != nil {
-				return nil, fmt.Errorf("%s (post-aggregation stage): %w", cmd.Name, err)
+			pos.Assign++
+		case st.Command != nil:
+			if err := executeCommand(ctx, *st.Command, q.declaredBy[pos.Cmd], q.undeclared); err != nil {
+				return err
 			}
+			pos.Cmd++
+		default:
+			continue
 		}
-		// A stats command after chain() aggregates the matched entities, not
-		// the events inside each one.
-		if ctx.Plan.CurrentStage().IsChain && statsCommands[canonicalCommandName(cmd.Name)] {
-			if err := pushAggregationStage(ctx); err != nil {
-				return nil, fmt.Errorf("%s (post-chain stage): %w", cmd.Name, err)
-			}
-		}
-		handler := getCommandHandler(cmd.Name)
-		whereLen := len(plan.SourceStage().Layer.Where)
-		if err := handler.Execute(cmd, ctx); err != nil {
-			return nil, err
-		}
-		// A filter the command put on the scan applies to the rows a cap kept, and
-		// one that reads the scan-level model join applies to the joined rows.
-		if src := &plan.SourceStage().Layer; len(src.Where) > whereLen {
-			added := slices.Clone(src.Where[whereLen:])
-			src.Where = src.Where[:whereLen]
-			after := src.capAfter(i)
-			for _, w := range added {
-				switch {
-				case plan.ModelLookupAtScan && registry.SQLDependsOnJoin(w):
-					plan.PostJoinWhere = append(plan.PostJoinWhere, postJoinFilter{At: i + 1, SQL: w})
-				case after != nil:
-					*after = append(*after, w)
-				default:
-					src.Where = append(src.Where, w)
-				}
-			}
-		}
-		// A cap on aggregated rows bounds what follows, which reads only the rows it
-		// kept: the next stage wraps it.
-		if capsAggregatedRows(cmd, ctx) && pipelineContinuesAfter(pipeline, i) {
-			if _, err := pushCarryForwardStage(ctx); err != nil {
-				return nil, fmt.Errorf("%s (after the cap): %w", cmd.Name, err)
-			}
-			ctx.Plan.CurrentStage().AfterCap = true
-		}
-		ctx.Plan.stageAfterCmd = append(ctx.Plan.stageAfterCmd, len(ctx.Plan.Stages)-1)
-		plan.outputsAfter[i] = plan.outputNames(registry)
+		capture(pos)
 	}
+	ctx.CmdIndex = pos.Cmd
+	return nil
+}
 
-	// ---------------------------------------------------------------
-	// 6b. CONDITION CLASSIFICATION + MATERIALIZATION.
-	//     Classification runs AFTER Execute so the registry fully reflects every
-	//     produced field: aggregate aliases from multi()/function=, and aggregates
-	//     redefined across multi-stage groupby boundaries. Routing a post-pipe
-	//     filter (WHERE vs HAVING) by Declare-time kinds alone misroutes those
-	//     (e.g. _avg from multi() would land in WHERE). Materialization then emits
-	//     SQL from the now-complete registry and binds HAVING to its proper stage.
-	// ---------------------------------------------------------------
-	// Compiled into a copy: the parsed pipeline is planned more than once.
-	conditions := cloneConditions(pipeline.HavingConditions)
-	if err := resolveCommandConditions(conditions, registry, plan, opts); err != nil {
-		return nil, err
+// planFilters places every filter in the clause its stage owns. It runs after
+// execute so the registry reflects every produced field: aggregate aliases from
+// multi()/function=, and aggregates redefined across groupby stages, which
+// Declare-time kinds alone misroute. The filters are compiled into a copy, since
+// the parsed pipeline is planned more than once.
+func (q *plannedQuery) planFilters() error {
+	ctx, registry, plan := q.ctx, q.ctx.Registry, q.ctx.Plan
+	conditions := plannedFilters(ctx.Pipeline)
+	if err := resolveCommandConditions(conditions, registry, plan, ctx.Opts); err != nil {
+		return err
 	}
-	if err := validatePostAggregationFields(pipeline, registry, plan); err != nil {
-		return nil, err
+	if err := validatePostAggregationFields(ctx.Pipeline, registry, plan); err != nil {
+		return err
 	}
 	if err := classifyConditions(conditions, registry, plan); err != nil {
-		return nil, err
+		return err
 	}
 	materializeConditions(registry, plan)
 	narrowPgrCandidates(ctx)
-	return &plannedQuery{ctx: ctx, assignmentFields: assignmentFields, deferredAssignments: deferredAssignments}, nil
+	return nil
+}
+
+// applyAssignment compiles an assignment where it is written.
+func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) error {
+	ctx, registry := q.ctx, q.ctx.Registry
+	safeField, err := sanitizeIdentifier(assignment.Field)
+	if err != nil {
+		return fmt.Errorf("invalid assignment field: %w", err)
+	}
+	hasAggregation := q.firstAgg < len(ctx.Plan.commands)
+	// Past the aggregation every assignment is its own stage, so what ran before it
+	// keeps the value it replaces.
+	if hasAggregation && at.Cmd > q.firstAgg {
+		return applyAssignmentStage(ctx, assignment)
+	}
+	// A reassignment replaces the earlier column; filters before it already folded
+	// the earlier expression in.
+	q.assignmentFields = slices.DeleteFunc(q.assignmentFields, func(af SelectExpr) bool { return af.Name() == assignment.Field })
+	q.deferredAssignments = slices.DeleteFunc(q.deferredAssignments, func(da deferredAssignment) bool { return da.Field == assignment.Field })
+	layer := &ctx.Plan.CurrentStage().Layer
+	layer.Selects = slices.DeleteFunc(layer.Selects, func(sel SelectExpr) bool { return sel.Name() == assignment.Field })
+
+	sqlExpr, exprType, err := compileExpr(assignment.Expr, registry)
+	if err != nil {
+		return assignmentError(assignment.Field, err)
+	}
+	switch {
+	case !isComputedExpr(assignment.Expr):
+		// A bare field or literal has nothing to compute and is materialized
+		// straight away.
+		q.assignmentFields = append(q.assignmentFields, selectAs(sqlExpr, safeField))
+		registry.Register(safeField, FieldKindAssignment, safeField, -1)
+		registry.SetResolveExpr(safeField, sqlExpr)
+		return nil
+	case hasAggregation:
+		// Before the aggregation it is inlined, so aggregations, filters and later
+		// assignments referencing it fold in the full expression; it is never
+		// materialized as a column.
+		registry.RegisterInlineExpr(safeField, sqlExpr, -1)
+	default:
+		// Without an aggregation it is computed in the outer formatter, and
+		// registered so a filter downstream folds the expression in rather than
+		// reading a column the scan does not have.
+		registry.Register(safeField, FieldKindPerRow, sqlExpr, -1)
+		registry.SetResolveExpr(safeField, sqlExpr)
+	}
+	if exprType == TypeNumber {
+		registry.SetNumeric(safeField)
+	}
+	if hasAggregation {
+		return nil
+	}
+	if registry.DependsOnJoin(safeField) {
+		// The model's columns exist in the SELECT that joins them, which the
+		// formatter only sees as far as that SELECT projects them.
+		q.assignmentFields = append(q.assignmentFields, selectAs(sqlExpr, safeField))
+		return nil
+	}
+	q.deferredAssignments = append(q.deferredAssignments, deferredAssignment{Field: assignment.Field, Alias: safeField, SQL: sqlExpr})
+	return nil
+}
+
+// executeCommand runs one command at its position, reinstating what it declared,
+// and records what the query returns after it.
+func executeCommand(ctx *CommandContext, cmd CommandNode, declared []FieldEntry, undeclared *FieldRegistry) error {
+	plan, registry, i := ctx.Plan, ctx.Registry, ctx.CmdIndex
+	registry.reinstate(declared, undeclared)
+	// A per-row transform that runs on a GROUP BY stage would add a
+	// non-grouped column to an aggregate SELECT (invalid, silently dropped).
+	// Move it onto a post-aggregation projection stage first.
+	if IsTransformCommand(cmd.Name) && len(plan.CurrentStage().Layer.GroupBy) > 0 {
+		if _, err := pushCarryForwardStage(ctx); err != nil {
+			return fmt.Errorf("%s (post-aggregation stage): %w", cmd.Name, err)
+		}
+	}
+	// A stats command after chain() aggregates the matched entities, not
+	// the events inside each one.
+	if plan.CurrentStage().IsChain && statsCommands[canonicalCommandName(cmd.Name)] {
+		if err := pushAggregationStage(ctx); err != nil {
+			return fmt.Errorf("%s (post-chain stage): %w", cmd.Name, err)
+		}
+	}
+	whereLen := len(plan.SourceStage().Layer.Where)
+	if err := getCommandHandler(cmd.Name).Execute(cmd, ctx); err != nil {
+		return err
+	}
+	// A filter the command put on the scan applies to the rows a cap kept, and
+	// one that reads the scan-level model join applies to the joined rows.
+	if src := &plan.SourceStage().Layer; len(src.Where) > whereLen {
+		added := slices.Clone(src.Where[whereLen:])
+		src.Where = src.Where[:whereLen]
+		after := src.capAfter(i)
+		for _, w := range added {
+			switch {
+			case plan.lookup.AtScan && registry.SQLDependsOnJoin(w):
+				plan.lookup.PostJoinWhere = append(plan.lookup.PostJoinWhere, postJoinFilter{At: i + 1, SQL: w})
+			case after != nil:
+				*after = append(*after, w)
+			default:
+				src.Where = append(src.Where, w)
+			}
+		}
+	}
+	// A cap on aggregated rows bounds what follows, which reads only the rows it
+	// kept: the next stage wraps it.
+	if capsAggregatedRows(cmd, ctx) && pipelineContinuesAfter(ctx.Pipeline, i) {
+		if _, err := pushCarryForwardStage(ctx); err != nil {
+			return fmt.Errorf("%s (after the cap): %w", cmd.Name, err)
+		}
+		plan.CurrentStage().AfterCap = true
+	}
+	plan.stageAfterCmd = append(plan.stageAfterCmd, len(plan.Stages)-1)
+	plan.outputsAfter[i] = plan.outputNames(registry)
+	return nil
+}
+
+// plannedFilters copies the pipeline's filters for planning, each placed where
+// it is written.
+func plannedFilters(pipeline *PipelineNode) []Condition {
+	var out []Condition
+	pipeline.forEachStep(func(st Step, at position) {
+		if st.Filter != nil {
+			c := cloneConditions([]Condition{*st.Filter})[0]
+			placeAt(&c, at)
+			out = append(out, c)
+		}
+	})
+	return out
+}
+
+// placeAt records where a condition and every condition beneath it is written.
+func placeAt(c *Condition, at position) {
+	c.at = at
+	for i := range c.Children {
+		placeAt(&c.Children[i], at)
+	}
 }
 
 // HistogramIsScopeOnly reports whether a histogram over this pipeline would be
@@ -911,216 +917,200 @@ var scopeColumns = []string{"fractal_id", "timestamp", "ingest_timestamp", "log_
 // so `'x' AS fractal_id` would turn the fractal guard into a test of that alias.
 func checkScopeNotShadowed(selects []SelectExpr) error {
 	for _, sel := range selects {
-		s := strings.TrimSpace(sel.String())
-		name := selectName(s)
-		if slices.Contains(scopeColumns, name) && strings.Trim(s, "`") != name {
+		if name := sel.Name(); sel.Alias != "" && slices.Contains(scopeColumns, name) {
 			return fmt.Errorf("%s is a built-in column and cannot name an output; choose another name", name)
 		}
 	}
 	return nil
 }
 
-// finalizePlan assembles the final SQL from structured plan data using the
-// Declare-Execute-Render architecture. It populates the QueryPlan's stages,
-// window layers, formatters, and deferred conditions, then calls plan.Render().
-//
-// This replaces the old monolithic string-surgery approach with registry-based
-// field identification and structured rendering.
-func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssignments []deferredAssignment) (*TranslationResult, error) {
-	plan := ctx.Plan
-	source := plan.SourceStage()
-	opts := ctx.Opts
-
-	readThrough := plan.IsAggregated || plan.IsChain
-	if n := len(source.Layer.Caps); n > 0 {
-		readThrough = readThrough || plan.readsThroughCap(source.Layer.Caps[n-1])
+// finalize assembles the planned query into its SQL: the last stage's projection,
+// ordering and limit, the layers that wrap the stages, and the result's metadata.
+func (q *plannedQuery) finalize() (*TranslationResult, error) {
+	plan := q.ctx.Plan
+	if err := q.foldCaps(); err != nil {
+		return nil, err
 	}
-	source.Layer.foldLastCap(readThrough)
-	if source.Layer.LimitBy != "" || source.Layer.ScanLimitBy != "" {
-		plan.rowLimitByCommand = true
-	}
-	if len(source.Layer.Caps) > 0 {
-		if plan.IsProcessTree || plan.IsAnalyze {
-			return nil, fmt.Errorf("head(), tail(), limit() and dedup() can only be followed by a transform here; move the filter before them")
-		}
-		plan.rowLimitByCommand = true
-		// Shown in the cap's order unless something after it sorts.
-		if last := source.Layer.Caps[len(source.Layer.Caps)-1]; len(source.Layer.OrderBy) == 0 && !plan.IsAggregated {
-			source.Layer.OrderBy = last.OrderBy
-		}
-	}
-
-	// --- Special query modes (generate entirely different SQL) ---
-	if plan.IsProcessTree {
-		if plan.IsAggregated {
-			return nil, fmt.Errorf("ptg() cannot be combined with aggregation functions")
-		}
-		if plan.IsChain {
-			return nil, fmt.Errorf("ptg() cannot be combined with chain()")
-		}
-		// proc_lineage is a live ClickHouse table, not part of the Iceberg archive; reject
-		// ptg() over archived/recall data rather than silently querying the hot table.
-		if opts.SourceMode == SourceIceberg {
-			return nil, fmt.Errorf("ptg() operates on live process lineage and is not available over archived data")
-		}
-		return buildProcessTreeSQL(
-			plan.ProcessTreeStart,
-			source.Layer.Having,
-			plan.ChartType, plan.ChartConfig, opts,
-		)
-	}
-	if plan.IsAnalyze {
-		return buildAnalyzeFieldsSQL(
-			plan.AnalyzeFieldsList, plan.AnalyzeFieldsScanLimit,
-			source.Layer.Where, source.Layer.Having,
-			source.Layer.OrderBy, source.Layer.Limit,
-			plan.ChartType, plan.ChartConfig, opts,
-		)
-	}
-
-	// --- Assemble SELECT for the active (last) stage ---
-	// For multi-stage pipelines, earlier stages were already assembled when
-	// the groupby handler pushed a new stage. We only need to assemble the
-	// final stage here.
-	activeStage := plan.CurrentStage()
-	if len(activeStage.Layer.GroupBy) > 0 {
-		if err := assembleGroupBySelects(ctx, activeStage, assignmentFields); err != nil {
+	if plan.special != nil {
+		result, err := plan.special.translate(plan, q.ctx.Opts)
+		if err != nil {
 			return nil, err
 		}
-	} else if activeStage.IsSource {
-		assembleNonGroupBySelects(ctx, activeStage, assignmentFields)
+		result.SQL = plan.withClause() + result.SQL
+		return result, nil
 	}
-
-	// Deferred math assignments run in the formatter outer SELECT, which wraps the
-	// inner query as a subquery. JSON sub-column expressions (fields.`name`) generated
-	// from those assignments require `fields` to be present in the inner SELECT.
-	// Add it here if it is absent and there are deferred assignments to process.
-	if len(deferredAssignments) > 0 && !plan.IsAggregated {
-		hasFields := false
-		for _, sel := range activeStage.Layer.Selects {
-			if extractFieldAlias(sel.String()) == "fields" {
-				hasFields = true
-				break
-			}
-		}
-		if !hasFields {
-			activeStage.Layer.Selects = append(activeStage.Layer.Selects, SelectExpr{Expr: "fields"})
-		}
+	// Earlier stages were assembled when the stage after them was pushed.
+	active := plan.CurrentStage()
+	if err := q.assembleSelects(active); err != nil {
+		return nil, err
 	}
+	defaultTimeOrder := q.orderAndLimit(active)
+	deferOutOfScopeOrderBy(q.ctx, plan, active)
+	// Export the source columns those deferred expressions reference.
+	if err := plan.exportDeferredColumns(); err != nil {
+		return nil, err
+	}
+	if len(plan.outerAggregations) > 0 {
+		buildChainedAggStages(plan)
+	}
+	fieldOrder := q.wrapLayers(q.formatOutput(active, defaultTimeOrder))
+	sql, err := plan.Render(q.ctx.Opts)
+	if err != nil {
+		return nil, err
+	}
+	return &TranslationResult{
+		SQL:                 sql,
+		SourceWhere:         append([]string(nil), plan.SourceStage().Layer.Where...),
+		SourceWhereComplete: plan.sourceWhereComplete(),
+		SourceProjections:   plan.sourceProjections(),
+		FieldOrder:          fieldOrder,
+		IsAggregated:        plan.IsAggregated || len(active.Layer.GroupBy) > 0,
+		ChartType:           plan.ChartType,
+		ChartConfig:         plan.ChartConfig,
+		DefaultTimeOrder:    defaultTimeOrder,
+		TimeScopedSubquery:  plan.join != nil || plan.hasModelLookup() || plan.usesBindingSet,
+		RowCapped:           plan.join != nil || plan.usesBindingSet,
+		RangeDependentRows:  plan.rowLimitByCommand || len(plan.WindowLayers) > 0,
+		Chain:               plan.Chain,
+	}, nil
+}
 
-	// --- Set default ORDER BY and LIMIT ---
-	defaultTimeOrder := false
-	if len(activeStage.Layer.OrderBy) == 0 && len(activeStage.Layer.GroupBy) == 0 && !plan.IsAggregated && !plan.ChartReadsAllRows {
+// foldCaps renders a last row cap nothing reads through as the scan's own order
+// and limit, and records that a command bounded the rows.
+func (q *plannedQuery) foldCaps() error {
+	plan := q.ctx.Plan
+	layer := &plan.SourceStage().Layer
+	readThrough := plan.IsAggregated || plan.Chain != nil
+	if n := len(layer.Caps); n > 0 {
+		readThrough = readThrough || plan.readsThroughCap(layer.Caps[n-1])
+	}
+	layer.foldLastCap(readThrough)
+	if layer.LimitBy != "" || layer.ScanLimitBy != "" {
+		plan.rowLimitByCommand = true
+	}
+	if len(layer.Caps) == 0 {
+		return nil
+	}
+	if plan.special != nil {
+		return fmt.Errorf("head(), tail(), limit() and dedup() can only be followed by a transform here; move the filter before them")
+	}
+	plan.rowLimitByCommand = true
+	// Shown in the cap's order unless something after it sorts.
+	if last := layer.Caps[len(layer.Caps)-1]; len(layer.OrderBy) == 0 && !plan.IsAggregated {
+		layer.OrderBy = last.OrderBy
+	}
+	return nil
+}
+
+// assembleSelects builds the active stage's SELECT list.
+func (q *plannedQuery) assembleSelects(active *QueryStage) error {
+	if len(active.Layer.GroupBy) > 0 {
+		if err := assembleGroupBySelects(q.ctx, active, q.assignmentFields); err != nil {
+			return err
+		}
+	} else if active.IsSource {
+		assembleNonGroupBySelects(q.ctx, active, q.assignmentFields)
+	}
+	// Deferred assignments run in the formatter's outer SELECT, and the JSON
+	// sub-columns they read need `fields` in the inner one.
+	if len(q.deferredAssignments) > 0 && !q.ctx.Plan.IsAggregated &&
+		!hasSelectAlias(active.Layer.Selects, "fields") {
+		active.Layer.Selects = append(active.Layer.Selects, SelectExpr{Expr: "fields"})
+	}
+	return nil
+}
+
+// orderAndLimit sets the active stage's default order and the caller's row limit,
+// reporting whether the order is the implicit newest-first one.
+func (q *plannedQuery) orderAndLimit(active *QueryStage) (defaultTimeOrder bool) {
+	plan, opts, layer := q.ctx.Plan, q.ctx.Opts, &active.Layer
+	if len(layer.OrderBy) == 0 && len(layer.GroupBy) == 0 && !plan.IsAggregated && !plan.ChartReadsAllRows {
 		if len(opts.SourceOrderBy) > 0 {
-			activeStage.Layer.OrderBy = opts.SourceOrderBy
-		} else if activeStage.IsSource {
+			layer.OrderBy = opts.SourceOrderBy
+		} else if active.IsSource {
 			// log_id breaks ties: it completes the logs sorting key (timestamp, log_id),
 			// so ClickHouse still reads in reverse key order, and without it the rows
 			// that survive the LIMIT at the boundary timestamp are arbitrary -- which
 			// also drifts the cursor page boundary between runs.
-			activeStage.Layer.OrderBy = []string{"timestamp DESC", "log_id DESC"}
+			layer.OrderBy = []OrderTerm{desc("timestamp"), desc("log_id")}
 			defaultTimeOrder = true
 		}
 	}
-	if activeStage.Layer.Limit == "" {
-		// A chained aggregate (groupby | ... | avg(x)) reads every group, so the
-		// display limit belongs on its single result row, not on its input.
-		if opts.MaxRows > 0 && !plan.ChartReadsAllRows && len(plan.outerAggregations) == 0 {
-			activeStage.Layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
+	// A chained aggregate (groupby | ... | avg(x)) reads every group, so the display
+	// limit belongs on its single result row, not on its input.
+	capRows := opts.MaxRows > 0 && !plan.ChartReadsAllRows && len(plan.outerAggregations) == 0
+	if layer.Limit == "" {
+		if capRows {
+			layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
 		}
-	} else {
-		// A command bounded the rows, not the caller's MaxRows. That is row
-		// selection rather than presentation, so a caller reading only the scan
-		// predicates would read past it.
-		plan.rowLimitByCommand = true
-		// The command may narrow the caller's cap but not lift it: the caller
-		// buffers every returned row, so head(999999999) would load them all.
-		if opts.MaxRows > 0 && !plan.ChartReadsAllRows && len(plan.outerAggregations) == 0 {
-			var n int
-			if _, err := fmt.Sscanf(activeStage.Layer.Limit, "LIMIT %d", &n); err == nil && n > opts.MaxRows {
-				activeStage.Layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
-			}
-		}
+		return defaultTimeOrder
 	}
-
-	// --- Defer out-of-scope ORDER BY (window fields, join/model_lookup outputs) ---
-	deferOutOfScopeOrderBy(ctx, plan, activeStage)
-
-	// --- Export the source columns those deferred expressions reference ---
-	if err := plan.exportDeferredColumns(); err != nil {
-		return nil, err
+	// A command bounded the rows, not the caller's MaxRows. That is row selection
+	// rather than presentation, so a caller reading only the scan predicates would
+	// read past it.
+	plan.rowLimitByCommand = true
+	// The command may narrow the caller's cap but not lift it: the caller buffers
+	// every returned row, so head(999999999) would load them all.
+	var n int
+	if _, err := fmt.Sscanf(layer.Limit, "LIMIT %d", &n); capRows && err == nil && n > opts.MaxRows {
+		layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
 	}
+	return defaultTimeOrder
+}
 
-	// --- Build chained aggregation stages ---
+// formatOutput builds the outer formatter SELECT and returns the columns shown.
+func (q *plannedQuery) formatOutput(active *QueryStage, defaultTimeOrder bool) []string {
+	plan := q.ctx.Plan
+	// A chained aggregation is not wrapped by a formatter.
 	if len(plan.outerAggregations) > 0 {
-		buildChainedAggStages(plan)
+		return columnNames(plan.outerAggregations)
 	}
-
-	// --- Build formatters and compute field order ---
-	selectStrings := selectExprStrings(activeStage.Layer.Selects)
-	var fieldOrder []string
-
-	if len(plan.outerAggregations) > 0 {
-		// Chained aggregation: no formatter wrapping, field order from outer agg
-		fieldOrder = plan.outerAggFieldOrder
-	} else {
-		// Standard: build outer SELECT with timestamp formatting + deferred math
-		plan.Formatters = buildFormatters(selectStrings, deferredAssignments)
-		fieldOrder = computeFieldOrder(selectStrings, deferredAssignments)
-		// Columns exported purely to make deferred expressions resolvable are
-		// stripped from the SQL result, so they must not be listed for display.
-		fieldOrder = dropHiddenDeferredFields(fieldOrder, plan)
-		// chain()'s internal columns stay in the result data but out of the display.
-		if plan.IsChain {
-			fieldOrder = dropField(fieldOrder, chainAnchorColumn)
-			fieldOrder = dropField(fieldOrder, chainDoneColumn)
-		}
-
-		// When formatters add a subquery wrapper AND the query uses the default
-		// timestamp-DESC order, mirror ORDER BY and LIMIT onto the formatter outer
-		// SELECT so the final output stays ordered after projection.
-		//
-		// The source keeps its own ORDER BY LIMIT. It must: the formatter projects
-		// toString(timestamp) AS timestamp, so an outer ORDER BY timestamp binds to
-		// that String alias rather than to the DateTime64 sorting key, which disables
-		// optimize_read_in_order and forces a full scan of the range no matter how
-		// small the LIMIT. Keeping the sort on the source lets ClickHouse read the
-		// MergeTree in reverse sorting-key order and stop at the LIMIT (measured on a
-		// 2M-row day: 130k rows read instead of 2M). On a cluster it also makes each
-		// shard limit its own output before the coordinator merge-sorts, rather than
-		// shipping every matching row. Join queries null out Formatters after this
-		// block, so only mirror when formatters will actually be rendered. Without a
-		// LIMIT the outer sort would buffer and re-sort every row on the String alias.
-		if defaultTimeOrder && activeStage.Layer.Limit != "" && len(plan.Formatters) > 0 && !plan.IsJoin {
-			plan.FormatterOrderBy = activeStage.Layer.OrderBy
-			plan.FormatterLimit = activeStage.Layer.Limit
-		}
-		// table(...) shows the columns it names. Every row still carries the ones
-		// projected for its identity, content and window value, which are only
-		// displayed if named.
-		if plan.TableHasExplicitColumns {
-			fieldOrder = slices.DeleteFunc(fieldOrder, func(f string) bool {
-				return (rowIdentityColumns[f] || f == windowValueColumn) && !slices.Contains(plan.TableColumns, f)
-			})
-		}
+	plan.Formatters = buildFormatters(active.Layer.Selects, q.deferredAssignments)
+	fieldOrder := computeFieldOrder(active.Layer.Selects, q.deferredAssignments)
+	// Columns exported purely to make deferred expressions resolvable are stripped
+	// from the SQL result, so they must not be listed for display.
+	fieldOrder = dropHiddenDeferredFields(fieldOrder, plan)
+	// chain()'s internal columns stay in the result data but out of the display.
+	if plan.Chain != nil {
+		fieldOrder = dropField(fieldOrder, chainAnchorColumn)
+		fieldOrder = dropField(fieldOrder, chainDoneColumn)
 	}
+	// With the default newest-first order, the formatter repeats the ORDER BY and
+	// LIMIT so the output stays ordered after projection. The source keeps its own:
+	// the formatter projects toString(timestamp) AS timestamp, so an outer ORDER BY
+	// alone binds to that String alias rather than the DateTime64 sorting key, which
+	// disables optimize_read_in_order and scans the whole range however small the
+	// LIMIT (measured on a 2M-row day: 130k rows read instead of 2M). On a cluster it
+	// also lets each shard limit its own output before the coordinator merges.
+	// Without a LIMIT the outer sort would re-sort every row on the String alias,
+	// and a join() renders no formatter.
+	if defaultTimeOrder && active.Layer.Limit != "" && len(plan.Formatters) > 0 && plan.join == nil {
+		plan.FormatterOrderBy = active.Layer.OrderBy
+		plan.FormatterLimit = active.Layer.Limit
+	}
+	// table(...) shows the columns it names. Every row still carries the ones
+	// projected for its identity, content and window value, which are only
+	// displayed if named.
+	if plan.TableHasExplicitColumns {
+		fieldOrder = slices.DeleteFunc(fieldOrder, func(f string) bool {
+			return (rowIdentityColumns[f] || f == windowValueColumn) && !slices.Contains(plan.TableColumns, f)
+		})
+	}
+	return fieldOrder
+}
 
-	// --- join() wrap: skip the explicit formatter so the
-	// wrapper's added columns pass through. An explicit formatter SELECT would drop
-	// them, breaking both the enrichment display and any trailing filter (deferred
-	// to a post-join WHERE that references those columns).
-	//
-	// Their outputs are then appended to the result column order, mirroring how
-	// z-score/histogram surface their computed fields. Skip any already present
-	// (e.g. a key column the source projected). An explicit `| table(...)` picks the
-	// columns, so show only the joined outputs it named; the wrap still projects them
-	// all, since a deferred filter or sort may reference one that is not displayed.
-	if plan.IsJoin && plan.JoinSubSQL != "" {
+// wrapLayers adds the layers that wrap the stages (join, z-score, histogram and
+// chart) and returns the columns shown once they have.
+func (q *plannedQuery) wrapLayers(fieldOrder []string) []string {
+	plan := q.ctx.Plan
+	// join() renders no formatter, so the columns its wrapper adds pass through to
+	// the display and to any filter deferred above the join. An explicit table()
+	// shows only the joined outputs it names; the wrap still projects them all,
+	// since a deferred filter or sort may read one that is not displayed.
+	if plan.join != nil && plan.join.SubSQL != "" {
 		plan.Formatters = nil
 		fieldOrder = appendJoinedFields(fieldOrder, joinDisplayNames(plan), plan)
 	}
-
-	// --- Build z-score window layers ---
 	if plan.ModifiedZScoreExpr != "" {
 		buildZScoreWindowLayers(plan)
 		fieldOrder = append(fieldOrder, "_median", "_mad", "_modified_z")
@@ -1128,10 +1118,8 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 			fieldOrder = append(fieldOrder, "_is_outlier")
 		}
 	}
-
-	// --- Build histogram window layers ---
 	if plan.HistogramBuckets > 0 {
-		buildHistogramLayers(plan, ctx)
+		buildHistogramLayers(plan, q.ctx)
 		fieldOrder = []string{"_bin_lower", "_bin_upper", "_bin_count"}
 		plan.IsAggregated = true
 	}
@@ -1140,28 +1128,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		fieldOrder = plan.ChartFieldOrder
 		plan.IsAggregated = true
 	}
-
-	// --- Render SQL ---
-	sql, err := plan.Render(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	return &TranslationResult{
-		SQL:                 sql,
-		SourceWhere:         append([]string(nil), plan.SourceStage().Layer.Where...),
-		SourceWhereComplete: plan.sourceWhereComplete(),
-		SourceProjections:   plan.sourceProjections(),
-		FieldOrder:          fieldOrder,
-		IsAggregated:        plan.IsAggregated || len(activeStage.Layer.GroupBy) > 0,
-		ChartType:           plan.ChartType,
-		ChartConfig:         plan.ChartConfig,
-		DefaultTimeOrder:    defaultTimeOrder,
-		TimeScopedSubquery:  plan.IsJoin || plan.hasModelLookup() || plan.usesBindingSet,
-		RowCapped:           plan.IsJoin || plan.usesBindingSet,
-		RangeDependentRows:  plan.rowLimitByCommand || len(plan.WindowLayers) > 0,
-		Chain:               plan.Chain,
-	}, nil
+	return fieldOrder
 }
 
 // pushAggregationStage finalizes the current aggregation stage and pushes an
@@ -1181,7 +1148,6 @@ func pushAggregationStage(ctx *CommandContext) error {
 	ctx.Plan.IsAggregated = false
 	ctx.Plan.aggregationOutputs = make(map[string]string)
 	ctx.Plan.outerAggregations = nil
-	ctx.Plan.outerAggFieldOrder = nil
 	ctx.Registry.ScopeToOutputs(prevOutputs)
 	return nil
 }
@@ -1200,19 +1166,15 @@ func pushCarryForwardStage(ctx *CommandContext) ([]string, error) {
 	}
 
 	var carried []string
-	seen := make(map[string]bool)
-	for _, sel := range prevStage.Layer.Selects {
-		alias := strings.Trim(extractFieldAlias(sel.String()), "`")
-		if alias != "" && !seen[alias] {
-			carried = append(carried, alias)
-			seen[alias] = true
+	for _, name := range columnNames(prevStage.Layer.Selects) {
+		if !slices.Contains(carried, name) {
+			carried = append(carried, name)
 		}
 	}
 
 	ctx.Plan.PushStage()
 	ctx.Plan.aggregationOutputs = make(map[string]string)
 	ctx.Plan.outerAggregations = nil
-	ctx.Plan.outerAggFieldOrder = nil
 
 	outputs := make(map[string]bool, len(carried))
 	for _, c := range carried {
@@ -1247,7 +1209,7 @@ func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
 		return fmt.Errorf("assignment %q stage finalize: %w", a.Field, err)
 	}
 
-	ctx.Plan.CurrentStage().Layer.project(fmt.Sprintf("%s AS %s", sqlExpr, safeField))
+	ctx.Plan.CurrentStage().Layer.project(selectAs(sqlExpr, safeField))
 
 	// The computed value is now a materialized column of this stage; references
 	// resolve to its alias.
@@ -1256,138 +1218,90 @@ func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
 	return nil
 }
 
-// assembleGroupBySelects builds the source SELECT for GROUP BY queries using
-// the FieldRegistry to identify aggregation fields instead of string matching
-// on SQL function names.
-func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentFields []string) error {
-	existingSelects := selectExprStrings(source.Layer.Selects)
-
-	// Index existing selects by alias and by expression prefix
-	existingByAlias := make(map[string]string)
-	for _, sel := range existingSelects {
-		alias := extractFieldAlias(sel)
-		existingByAlias[alias] = sel
+// assembleGroupBySelects builds the SELECT of a GROUP BY stage: each key as a
+// named column, then the aggregates, then the row-level assignments.
+func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignments []SelectExpr) error {
+	existing := source.Layer.Selects
+	var selects []SelectExpr
+	added := make(map[string]bool)
+	add := func(sel SelectExpr) {
+		selects = append(selects, sel)
+		added[sel.Name()] = true
 	}
 
-	var selects []string
-	addedAliases := make(map[string]bool)
-
-	// 1. Add grouped field expressions
-	for i, gf := range source.Layer.GroupBy {
-		fieldName := extractFieldName(gf)
-
-		// Check if an existing SELECT already produces this field (by alias)
-		if existing, ok := existingByAlias[fieldName]; ok {
-			selects = append(selects, existing)
-			addedAliases[fieldName] = true
-			// Update GroupBy to use the alias for cleaner SQL
-			source.Layer.GroupBy[i] = fieldName
+	// 1. The grouped keys, each read by its output name.
+	for i, key := range source.Layer.GroupBy {
+		// A SELECT already producing this key, by name or as its expression.
+		j := slices.IndexFunc(existing, func(sel SelectExpr) bool { return sel.Name() == key.Name })
+		if j < 0 {
+			j = slices.IndexFunc(existing, func(sel SelectExpr) bool { return sel.Alias != "" && sel.Expr == key.Expr })
+		}
+		if j >= 0 {
+			add(existing[j])
+			source.Layer.GroupBy[i].Expr = outputRef(existing[j])
 			continue
 		}
-
-		// Check if an existing SELECT matches by expression prefix (e.g., "expr AS alias")
-		found := false
-		for _, sel := range existingSelects {
-			if strings.HasPrefix(sel, gf+" AS ") {
-				alias := extractFieldAlias(sel)
-				selects = append(selects, sel)
-				addedAliases[alias] = true
-				source.Layer.GroupBy[i] = alias
-				found = true
-				break
-			}
+		expr := groupableCast(key.Expr)
+		// A per-row transform or assignment registered during Execute.
+		if entry := ctx.Registry.Get(key.Expr); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
+			expr = ctx.Registry.Resolve(key.Expr)
 		}
-		if found {
-			continue
-		}
-
-		// Check registry for per-row transforms or assignments registered during Execute
-		if entry := ctx.Registry.Get(gf); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
-			safeName, err := sanitizeIdentifier(gf)
-			if err != nil {
-				return fmt.Errorf("groupBy: %w", err)
-			}
-			resolveExpr := ctx.Registry.Resolve(gf)
-			selects = append(selects, fmt.Sprintf("%s AS %s", resolveExpr, safeName))
-			addedAliases[safeName] = true
-			source.Layer.GroupBy[i] = safeName
-			continue
-		}
-
-		// Generate SELECT from raw field reference. Cast raw JSON subcolumns to
-		// ::String so the grouped column is groupable even when the underlying
-		// path is stored as Dynamic (rows ingested before the field was
-		// type-hinted); a bare Dynamic ref triggers ClickHouse error 44.
-		quotedName, err := sanitizeIdentifier(fieldName)
+		// Raw JSON subcolumns are cast to ::String so the grouped column is
+		// groupable even when the path is stored as Dynamic (rows ingested before
+		// the field was type-hinted); a bare Dynamic ref triggers ClickHouse error 44.
+		safe, err := sanitizeIdentifier(key.Name)
 		if err != nil {
 			return fmt.Errorf("groupBy: %w", err)
 		}
-		selects = append(selects, fmt.Sprintf("%s AS %s", groupableCast(gf), quotedName))
-		addedAliases[quotedName] = true
-		source.Layer.GroupBy[i] = quotedName
+		add(selectAs(expr, safe))
+		source.Layer.GroupBy[i].Expr = safe
 	}
 
-	// 2. Add aggregation selects: first check registry/aggregationOutputs,
-	// then keep remaining selects the registry cannot classify as a fallback for
-	// handlers (table, bucket, heatmap, etc.) that add aggregation selects
-	// directly without registering them. A select the registry knows holds a
+	// 2. The aggregates. Selects the registry cannot classify are kept as a
+	// fallback for handlers (table, bucket, heatmap, etc.) that add aggregation
+	// selects directly without registering them. One the registry knows holds a
 	// per-row value (a base column, or a transform output such as lowercase, len,
 	// logSize) is dropped instead: past this point it is neither grouped nor
 	// aggregated, so projecting it fails with ClickHouse code 215.
 	hasExplicitAgg := false
-	for _, sel := range existingSelects {
-		alias := extractFieldAlias(sel)
-		if addedAliases[alias] {
+	for _, sel := range existing {
+		name := sel.Name()
+		if added[name] {
 			continue
 		}
-		_, inAggOutputs := ctx.Plan.aggregationOutputs[alias]
-		if inAggOutputs || ctx.Registry.IsAggregate(alias) || !ctx.Registry.IsRowLevel(alias) {
-			selects = append(selects, sel)
-			addedAliases[alias] = true
+		_, inAggOutputs := ctx.Plan.aggregationOutputs[name]
+		if inAggOutputs || ctx.Registry.IsAggregate(name) || !ctx.Registry.IsRowLevel(name) {
+			add(sel)
 			hasExplicitAgg = true
 		}
 	}
 
-	// 3. Handle chained aggregation dependencies
+	// 3. The aggregates a chained outer aggregation reads.
 	if len(ctx.Plan.outerAggregations) > 0 {
-		outerProduced := make(map[string]bool)
-		for _, f := range ctx.Plan.outerAggFieldOrder {
-			outerProduced[f] = true
-		}
-		for name, expr := range ctx.Plan.aggregationOutputs {
-			if outerProduced[name] || addedAliases[name] {
+		outer := columnNames(ctx.Plan.outerAggregations)
+		for _, name := range slices.Sorted(maps.Keys(ctx.Plan.aggregationOutputs)) {
+			if slices.Contains(outer, name) || added[name] {
 				continue
 			}
-			for _, outerExpr := range ctx.Plan.outerAggregations {
-				if strings.Contains(outerExpr, name) {
-					selects = append(selects, fmt.Sprintf("%s AS %s", expr, name))
-					addedAliases[name] = true
-					hasExplicitAgg = true
-					break
-				}
+			if slices.ContainsFunc(ctx.Plan.outerAggregations, func(o SelectExpr) bool { return slices.Contains(columnRefs(o.Expr), name) }) {
+				add(selectAs(ctx.Plan.aggregationOutputs[name], name))
+				hasExplicitAgg = true
 			}
 		}
 	}
 
-	// 4. Default COUNT(*) if no explicit aggregation found
-	if !hasExplicitAgg {
-		if !ctx.Plan.IsAggregated || len(ctx.Plan.outerAggregations) > 0 {
-			selects = append(selects, "COUNT(*) AS _count")
-		}
+	// 4. COUNT(*) when nothing else aggregates.
+	if !hasExplicitAgg && (!ctx.Plan.IsAggregated || len(ctx.Plan.outerAggregations) > 0) {
+		add(aggSelect(countAll, "_count"))
 	}
 
-	// 5. Assignment fields
-	for _, af := range assignmentFields {
-		if !addedAliases[extractFieldAlias(af)] {
-			selects = append(selects, af)
+	// 5. The assignments.
+	for _, a := range assignments {
+		if !added[a.Name()] {
+			selects = append(selects, a)
 		}
 	}
-
-	// Update source stage selects
-	source.Layer.Selects = nil
-	for _, s := range selects {
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: s})
-	}
+	source.Layer.Selects = selects
 	return nil
 }
 
@@ -1398,194 +1312,146 @@ func appendIngestTime(ctx *CommandContext, source *QueryStage) {
 	if !ctx.Opts.IncludeIngestTime {
 		return
 	}
-	for _, sel := range source.Layer.Selects {
-		// Already added, or the query binds the bare name itself (an explicit
-		// | table(ingest_timestamp), or an eval() that rebinds it). A second
-		// reference would resolve to that alias rather than to the column, so
-		// leave it out rather than carry a value that is not the ingest time.
-		switch extractFieldAlias(sel.String()) {
-		case ingestTimeColumn, "ingest_timestamp":
-			return
-		}
+	// Already added, or the query binds the bare name itself (an explicit
+	// | table(ingest_timestamp), or an eval() that rebinds it). A second reference
+	// would resolve to that alias rather than to the column, so leave it out rather
+	// than carry a value that is not the ingest time.
+	if hasSelectAlias(source.Layer.Selects, ingestTimeColumn) || hasSelectAlias(source.Layer.Selects, "ingest_timestamp") {
+		return
 	}
 	source.Layer.Selects = append(source.Layer.Selects,
-		SelectExpr{Expr: "ingest_timestamp AS " + ingestTimeColumn})
+		selectAs("ingest_timestamp", ingestTimeColumn))
 }
 
-// assembleNonGroupBySelects handles SELECT assembly for queries without GROUP BY.
-func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentFields []string) {
-	plan := ctx.Plan
-
-	// Subquery source (a resolved source command like pgr()): project the source's flat
-	// columns, never the logs-table norm_log/base defaults. Explicit table() columns are set
-	// by tableHandler (already bare); aggregate/select handlers set their own Selects.
+// assembleNonGroupBySelects builds the scan's SELECT list for a query without a
+// GROUP BY.
+func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentFields []SelectExpr) {
+	plan, layer := ctx.Plan, &source.Layer
+	// A subquery source (a resolved source command like pgr()) projects its flat
+	// columns, never the logs table's defaults. Explicit table() columns are set by
+	// tableHandler (already bare); aggregate/select handlers set their own Selects.
 	if ctx.Opts.SourceSubquery != "" {
 		if !plan.IsAggregated {
-			if !(plan.HasTableCmd && plan.TableHasExplicitColumns && len(source.Layer.Selects) > 0) {
-				source.Layer.Selects = sourceColumnSelects(ctx.Opts.SourceColumns)
+			if !(plan.HasTableCmd && plan.TableHasExplicitColumns && len(layer.Selects) > 0) {
+				layer.Selects = sourceColumnSelects(ctx.Opts.SourceColumns)
 			}
-			source.Layer.addAssignments(assignmentFields)
+			layer.addAssignments(assignmentFields)
 		}
 		return
 	}
-
-	// Both hot and iceberg archives carry a norm_log column (DEFAULT
-	// toString(fields) in the hot store, no n-gram index there; a plain JSON
-	// String in the archive), so the projection is identical and the result
-	// shape matches hot Query.
-	normLogSel := "norm_log"
-
-	// No commands and no assignments: use default field set
-	if len(ctx.Pipeline.Commands) == 0 && len(ctx.Pipeline.Assignments) == 0 {
-		// Alert queries: project only referenced fields + log_id + timestamp.
-		if ctx.Opts.MinimalProjection && ctx.Opts.SourceMode != SourceIceberg && len(ctx.Pipeline.HavingConditions) > 0 {
-			fields := map[string]bool{}
-			collectHavingConditionFields(ctx.Pipeline.HavingConditions, fields)
-			// Include alert-configured extra fields (throttle field, template fields)
-			for _, f := range ctx.Opts.AlertExtraFields {
-				if f != "" {
-					fields[f] = true
-				}
-			}
-			if !fields["*"] {
-				for _, base := range []string{"raw_log", normLogColumn, "timestamp", "log_id", "fractal_id", "ingest_timestamp"} {
-					delete(fields, base)
-				}
-				source.Layer.Selects = []SelectExpr{
-					{Expr: "timestamp"},
-					{Expr: "log_id"},
-					{Expr: "fractal_id"},
-				}
-				for _, field := range slices.Sorted(maps.Keys(fields)) {
-					// These names include alert-configured ones (throttle field, name
-					// template), which are not query text and are not constrained by
-					// the lexer. An unescaped backtick closed the alias and appended a
-					// select expression of the caller's choosing, so the name is both
-					// checked and escaped: the outer projection re-derives column names
-					// by string-parsing this expression, which escaping alone cannot
-					// make safe.
-					if !isPlainFieldName(field) {
-						continue
-					}
-					safe := fmt.Sprintf("%s AS `%s`", groupableCast(jsonFieldRef(field)), EscapeCHBacktickIdent(field))
-					source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: safe})
-				}
-				return
-			}
+	if len(ctx.Pipeline.Commands()) == 0 {
+		// Columns a filter projects (tlsh()) follow the row's own.
+		projected := layer.Selects
+		defer func() { layer.addAssignments(projected) }()
+		if len(ctx.Pipeline.Assignments()) == 0 && minimalProjection(ctx, layer) {
+			return
 		}
-		source.Layer.Selects = []SelectExpr{
-			{Expr: "timestamp"}, {Expr: normLogSel}, {Expr: "log_id"}, {Expr: "fractal_id"},
-		}
+		layer.Selects = []SelectExpr{{Expr: "timestamp"}, {Expr: normLogColumn}, {Expr: "log_id"}, {Expr: "fractal_id"}}
+		layer.Selects = append(layer.Selects, assignmentFields...)
 		if ctx.Opts.IncludeShardNum {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
+			layer.Selects = append(layer.Selects, SelectExpr{Expr: "toString(_shard_num)", Alias: "_shard_num"})
 		}
 		appendIngestTime(ctx, source)
 		return
 	}
-
-	// No commands but has assignments
-	if len(ctx.Pipeline.Commands) == 0 && len(ctx.Pipeline.Assignments) > 0 {
-		source.Layer.Selects = []SelectExpr{{Expr: "timestamp"}, {Expr: normLogSel}, {Expr: "log_id"}, {Expr: "fractal_id"}}
-		for _, af := range assignmentFields {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: af})
-		}
-		if ctx.Opts.IncludeShardNum {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
-		}
-		appendIngestTime(ctx, source)
-		return
-	}
-
-	// When the query is aggregated (e.g. | len(raw_log) | sum(_len)),
-	// per-row computed fields like _len or _time are already inlined into the
-	// aggregate expressions. Strip them from the SELECT to avoid mixing
-	// non-aggregated columns with aggregate functions.
+	// Aggregated (| len(raw_log) | sum(_len)), per-row computed fields such as _len
+	// are already inlined into the aggregate expressions, and mixing them in as
+	// columns would be invalid.
 	if plan.IsAggregated {
-		filtered := source.Layer.Selects[:0]
-		for _, sel := range source.Layer.Selects {
-			alias := extractFieldAlias(sel.String())
-			if alias != "" && ctx.Registry.IsPerRowOrAssignment(alias) {
-				if _, isAgg := plan.aggregationOutputs[alias]; !isAgg {
-					continue
-				}
-			}
-			filtered = append(filtered, sel)
-		}
-		source.Layer.Selects = filtered
+		layer.Selects = slices.DeleteFunc(layer.Selects, func(sel SelectExpr) bool {
+			_, isAgg := plan.aggregationOutputs[sel.Name()]
+			return ctx.Registry.IsPerRowOrAssignment(sel.Name()) && !isAgg
+		})
 	}
-
-	// Has commands: add _all_fields for table commands, assignment fields
-	if plan.HasTableCmd && !plan.TableHasExplicitColumns && len(source.Layer.Selects) > 0 {
-		hasFieldsMap := false
-		for _, sel := range source.Layer.Selects {
-			if strings.Contains(sel.String(), "_all_fields") {
-				hasFieldsMap = true
-				break
-			}
-		}
-		if !hasFieldsMap {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: contentColMode(ctx.Opts.SourceMode) + " AS _all_fields"})
-		}
+	// table() without columns shows every field.
+	if plan.HasTableCmd && !plan.TableHasExplicitColumns && len(layer.Selects) > 0 &&
+		!slices.ContainsFunc(layer.Selects, func(sel SelectExpr) bool { return strings.Contains(sel.String(), "_all_fields") }) {
+		layer.Selects = append(layer.Selects, SelectExpr{Expr: contentColMode(ctx.Opts.SourceMode), Alias: "_all_fields"})
 	}
-
-	source.Layer.addAssignments(assignmentFields)
-
-	// Ensure base fields for non-aggregated queries
+	layer.addAssignments(assignmentFields)
 	if !plan.IsAggregated {
-		ensureSelectExpr := func(name string) {
-			for _, sel := range source.Layer.Selects {
-				if extractFieldAlias(sel.String()) == name {
-					return
-				}
-			}
-			expr := name
-			if name == normLogColumn {
-				expr = normLogSel
-			}
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: expr})
-		}
-		ensureSelectExpr("timestamp")
-		ensureSelectExpr("log_id")
-		ensureSelectExpr("fractal_id")
-		// norm_log (flat normalized fields) is the default content column. Skip it when
-		// the user picks explicit columns. raw_log (original) is no longer projected;
-		// the Raw tab lazy-loads it on demand within its retention window.
-		if !plan.TableHasExplicitColumns {
-			ensureSelectExpr("norm_log")
-		}
-
-		hasFields := false
-		for _, sel := range source.Layer.Selects {
-			alias := extractFieldAlias(sel.String())
-			if alias == "fields" || strings.Contains(sel.String(), "_all_fields") {
-				hasFields = true
-				break
-			}
-		}
-		if !hasFields && plan.HasTableCmd && !plan.TableHasExplicitColumns {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: contentColMode(ctx.Opts.SourceMode) + " AS fields"})
-		}
-		// The scan-level model join's columns, after the log's own. An explicit
-		// table() projects the ones it names itself.
-		if plan.hasModelLookup() && plan.ModelLookupAtScan && !plan.TableHasExplicitColumns {
-			for _, f := range plan.ModelLookupFields {
-				source.Layer.project(f)
-			}
-		}
-		if ctx.Opts.IncludeShardNum {
-			hasShardNum := false
-			for _, sel := range source.Layer.Selects {
-				if extractFieldAlias(sel.String()) == "_shard_num" {
-					hasShardNum = true
-					break
-				}
-			}
-			if !hasShardNum {
-				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
-			}
-		}
-		appendIngestTime(ctx, source)
+		ensureRowColumns(ctx, source)
 	}
+}
+
+// minimalProjection projects only the fields a filter-only alert query reads, plus
+// log_id and timestamp, and reports whether it did.
+func minimalProjection(ctx *CommandContext, layer *QueryLayer) bool {
+	if !ctx.Opts.MinimalProjection || ctx.Opts.SourceMode == SourceIceberg || len(ctx.Pipeline.Filters()) == 0 {
+		return false
+	}
+	fields := map[string]bool{}
+	for _, f := range conditionFields(ctx.Pipeline.Filters()...) {
+		fields[f] = true
+	}
+	// Include alert-configured extra fields (throttle field, template fields).
+	for _, f := range ctx.Opts.AlertExtraFields {
+		if f != "" {
+			fields[f] = true
+		}
+	}
+	if fields["*"] {
+		return false
+	}
+	for _, base := range []string{"raw_log", normLogColumn, "timestamp", "log_id", "fractal_id", "ingest_timestamp"} {
+		delete(fields, base)
+	}
+	layer.Selects = []SelectExpr{{Expr: "timestamp"}, {Expr: "log_id"}, {Expr: "fractal_id"}}
+	for _, field := range slices.Sorted(maps.Keys(fields)) {
+		// These names include alert-configured ones (throttle field, name template),
+		// which are not query text and are not constrained by the lexer. An unescaped
+		// backtick closed the alias and appended a select expression of the caller's
+		// choosing, so the name is both checked and escaped: the outer projection
+		// re-derives column names by string-parsing this expression, which escaping
+		// alone cannot make safe.
+		if !isPlainFieldName(field) {
+			continue
+		}
+		layer.Selects = append(layer.Selects, selectAs(groupableCast(jsonFieldRef(field)), "`"+EscapeCHBacktickIdent(field)+"`"))
+	}
+	return true
+}
+
+// ensureRowColumns adds the columns every row of a row-level result carries: its
+// identity, its content unless table() picks the columns, the scan-level model
+// join's columns, and the shard and ingest time when asked for.
+func ensureRowColumns(ctx *CommandContext, source *QueryStage) {
+	plan, layer := ctx.Plan, &source.Layer
+	ensure := func(sel SelectExpr) {
+		if !hasSelectAlias(layer.Selects, sel.Name()) {
+			layer.Selects = append(layer.Selects, sel)
+		}
+	}
+	ensure(SelectExpr{Expr: "timestamp"})
+	ensure(SelectExpr{Expr: "log_id"})
+	ensure(SelectExpr{Expr: "fractal_id"})
+	// norm_log (flat normalized fields) is the default content column. raw_log
+	// (original) is not projected; the Raw tab lazy-loads it within its retention.
+	if !plan.TableHasExplicitColumns {
+		ensure(SelectExpr{Expr: normLogColumn})
+	}
+	hasFields := slices.ContainsFunc(layer.Selects, func(sel SelectExpr) bool {
+		return sel.Name() == "fields" || sel.Name() == "_all_fields"
+	})
+	if !hasFields && plan.HasTableCmd && !plan.TableHasExplicitColumns {
+		layer.Selects = append(layer.Selects, SelectExpr{Expr: contentColMode(ctx.Opts.SourceMode), Alias: "fields"})
+	}
+	// The scan-level model join's columns, after the log's own. An explicit table()
+	// projects the ones it names itself.
+	if plan.hasModelLookup() && plan.lookup.AtScan && !plan.TableHasExplicitColumns {
+		for _, f := range plan.lookup.Fields {
+			layer.project(SelectExpr{Expr: f})
+		}
+	}
+	if ctx.Opts.IncludeShardNum {
+		ensure(selectAs("toString(_shard_num)", "_shard_num"))
+	}
+	appendIngestTime(ctx, source)
+}
+
+// hasSelectAlias reports whether a select list names a column.
+func hasSelectAlias(selects []SelectExpr, name string) bool {
+	return slices.ContainsFunc(selects, func(sel SelectExpr) bool { return sel.Name() == name })
 }
 
 // deferOutOfScopeOrderBy moves ORDER BY clauses that reference columns produced
@@ -1600,18 +1466,16 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryStage) {
 	// A model join is not a wrap: it sits in the FROM of the stage that reads its
 	// columns, so nothing needs relocating and that stage's LIMIT follows the join.
-	hasJoinWrap := plan.IsJoin && plan.JoinSubSQL != ""
+	hasJoinWrap := plan.join != nil && plan.join.SubSQL != ""
 	if plan.ModifiedZScoreExpr == "" && !hasJoinWrap {
 		return
 	}
 
-	var innerOrder []string
-	var deferredOrder []string
+	var innerOrder []OrderTerm
+	var deferredOrder []OrderTerm
 
 	for _, ob := range source.Layer.OrderBy {
-		// Extract field name (strip direction suffix)
-		fieldName := strings.Fields(ob)[0]
-		if ctx.Registry.IsWindow(fieldName) || (hasJoinWrap && isJoinedField(ctx.Registry, fieldName)) {
+		if ctx.Registry.IsWindow(ob.Expr) || (hasJoinWrap && isJoinedField(ctx.Registry, ob.Expr)) {
 			deferredOrder = append(deferredOrder, ob)
 		} else {
 			innerOrder = append(innerOrder, ob)
@@ -1688,15 +1552,8 @@ func dropField(fieldOrder []string, name string) []string {
 
 // scopeOrderByExpr rewrites the expression part of an "<expr> ASC|DESC" ORDER BY
 // entry through the deferred scope, leaving the direction intact.
-func scopeOrderByExpr(orderBy string, scope *deferredScope) string {
-	expr, dir := orderBy, ""
-	if i := strings.LastIndex(orderBy, " "); i > 0 {
-		switch strings.ToUpper(orderBy[i+1:]) {
-		case "ASC", "DESC":
-			expr, dir = orderBy[:i], orderBy[i:]
-		}
-	}
-	return scope.ref(expr, "") + dir
+func scopeOrderByExpr(o OrderTerm, scope *deferredScope) OrderTerm {
+	return OrderTerm{Expr: scope.ref(o.Expr, ""), Desc: o.Desc}
 }
 
 // appendJoinedFields adds a JOIN wrap's output columns to the display order,
@@ -1732,21 +1589,13 @@ func buildChainedAggStages(plan *QueryPlan) {
 	if plan.MADWindowExpr != "" {
 		plan.Stages = append(plan.Stages, QueryStage{
 			Layer: QueryLayer{
-				Selects: []SelectExpr{
-					{Expr: fmt.Sprintf("*, median(%s) OVER () AS _median_val", plan.MADWindowExpr)},
-				},
+				Selects: []SelectExpr{{Expr: "*"}, selectAs(fmt.Sprintf("median(%s) OVER ()", plan.MADWindowExpr), "_median_val")},
 			},
 		})
 	}
 
 	// Add the outer aggregation stage
-	var outerSelects []SelectExpr
-	for _, expr := range plan.outerAggregations {
-		outerSelects = append(outerSelects, SelectExpr{Expr: expr})
-	}
-	plan.Stages = append(plan.Stages, QueryStage{
-		Layer: QueryLayer{Selects: outerSelects},
-	})
+	plan.Stages = append(plan.Stages, QueryStage{Layer: QueryLayer{Selects: plan.outerAggregations}})
 }
 
 // buildZScoreWindowLayers creates window layers for modified z-score computation:
@@ -1755,28 +1604,18 @@ func buildChainedAggStages(plan *QueryPlan) {
 // Layer 3: z-score calculation + optional outlier flag
 func buildZScoreWindowLayers(plan *QueryPlan) {
 	expr := plan.ModifiedZScoreExpr
-
-	// Layer 1: median
-	plan.WindowLayers = append(plan.WindowLayers, QueryLayer{
-		Selects: []SelectExpr{{Expr: fmt.Sprintf("*, median(%s) OVER () AS _median", expr)}},
-	})
-
-	// Layer 2: MAD (median absolute deviation)
-	plan.WindowLayers = append(plan.WindowLayers, QueryLayer{
-		Selects: []SelectExpr{{Expr: fmt.Sprintf("*, median(abs(%s - _median)) OVER () AS _mad", expr)}},
-	})
-
-	// Layer 3: modified z-score + optional outlier
-	outlierCol := ""
+	all := SelectExpr{Expr: "*"}
+	// The median, then the median absolute deviation from it, then the modified
+	// z-score and, with a threshold, whether the row is an outlier.
+	scored := []SelectExpr{all, selectAs(fmt.Sprintf("if(_mad = 0, 0, round(0.6745 * (%s - _median) / _mad, 4))", expr), "_modified_z")}
 	if plan.OutlierThreshold != "" {
-		outlierCol = fmt.Sprintf(", toString(if(abs(_modified_z) > %s, 1, 0)) AS _is_outlier", plan.OutlierThreshold)
+		scored = append(scored, selectAs(fmt.Sprintf("toString(if(abs(_modified_z) > %s, 1, 0))", plan.OutlierThreshold), "_is_outlier"))
 	}
-	plan.WindowLayers = append(plan.WindowLayers, QueryLayer{
-		Selects: []SelectExpr{{Expr: fmt.Sprintf(
-			"*, if(_mad = 0, 0, round(0.6745 * (%s - _median) / _mad, 4)) AS _modified_z%s",
-			expr, outlierCol,
-		)}},
-	})
+	plan.WindowLayers = append(plan.WindowLayers,
+		QueryLayer{Selects: []SelectExpr{all, selectAs(fmt.Sprintf("median(%s) OVER ()", expr), "_median")}},
+		QueryLayer{Selects: []SelectExpr{all, selectAs(fmt.Sprintf("median(abs(%s - _median)) OVER ()", expr), "_mad")}},
+		QueryLayer{Selects: scored},
+	)
 }
 
 // buildHistogramLayers creates window layers for histogram bucketing:
@@ -1801,22 +1640,23 @@ func buildHistogramLayers(plan *QueryPlan, ctx *CommandContext) {
 
 	// Layer 1: window functions for val, min, max
 	plan.WindowLayers = append(plan.WindowLayers, QueryLayer{
-		Selects: []SelectExpr{{Expr: fmt.Sprintf(
-			"%s AS _val, min(%s) OVER () AS _min_val, max(%s) OVER () AS _max_val",
-			valExpr, valExpr, valExpr,
-		)}},
+		Selects: []SelectExpr{
+			selectAs(valExpr, "_val"),
+			selectAs(fmt.Sprintf("min(%s) OVER ()", valExpr), "_min_val"),
+			selectAs(fmt.Sprintf("max(%s) OVER ()", valExpr), "_max_val"),
+		},
 	})
 
 	// Layer 2: bucketing with GROUP BY
 	plan.WindowLayers = append(plan.WindowLayers, QueryLayer{
 		Selects: []SelectExpr{
-			{Expr: fmt.Sprintf("%s AS _bin_lower", lowerExpr)},
-			{Expr: fmt.Sprintf("%s AS _bin_upper", upperExpr)},
-			{Expr: "count(*) AS _bin_count"},
+			{Expr: lowerExpr, Alias: "_bin_lower"},
+			{Expr: upperExpr, Alias: "_bin_upper"},
+			{Expr: "count(*)", Alias: "_bin_count"},
 		},
 		Where:   []string{"_val IS NOT NULL"},
-		GroupBy: []string{fmt.Sprintf("%s AS _bucket", bucketExpr), "_min_val", "_max_val"},
-		OrderBy: []string{"_bin_lower ASC"},
+		GroupBy: []groupKey{{Expr: bucketExpr + " AS _bucket", Name: "_bucket"}, {Expr: "_min_val", Name: "_min_val"}, {Expr: "_max_val", Name: "_max_val"}},
+		OrderBy: []OrderTerm{asc("_bin_lower")},
 	})
 }
 
@@ -1828,58 +1668,53 @@ type deferredAssignment struct {
 
 // buildFormatters creates the outer SELECT expressions for timestamp formatting
 // and deferred math assignments.
-func buildFormatters(selectFields []string, deferredAssignments []deferredAssignment) []SelectExpr {
-	if len(selectFields) == 0 {
-		return []SelectExpr{
-			{Expr: "toString(timestamp) as timestamp"},
-			{Expr: "log_id"},
-			{Expr: "norm_log AS fields"},
-		}
+func buildFormatters(selects []SelectExpr, deferredAssignments []deferredAssignment) []SelectExpr {
+	if len(selects) == 0 {
+		return []SelectExpr{selectAs("toString(timestamp)", "timestamp"), {Expr: "log_id"}, {Expr: "norm_log", Alias: "fields"}}
 	}
-
 	var formatters []SelectExpr
-	for _, field := range selectFields {
-		alias := extractFieldAlias(field)
-		if alias == "timestamp" {
-			formatters = append(formatters, SelectExpr{Expr: "toString(timestamp) as timestamp"})
-		} else if field == "fields" {
+	for _, sel := range selects {
+		switch {
+		case sel.Name() == "timestamp":
+			formatters = append(formatters, selectAs("toString(timestamp)", "timestamp"))
+		case sel.Expr == "fields" && sel.Alias == "":
 			// The raw JSON `fields` column is kept in the inner SELECT only so
 			// deferred math assignments can reference fields.`x`. The ClickHouse
 			// driver cannot scan the native JSON type, so it must never be
 			// projected to the final result. (Table commands use the explicit
 			// toString(fields) form, which is unaffected by this guard.)
-			continue
-		} else if alias != "" {
-			formatters = append(formatters, SelectExpr{Expr: alias})
+		default:
+			formatters = append(formatters, SelectExpr{Expr: outputRef(sel)})
 		}
 	}
-
-	// Add deferred math assignments to the outer SELECT
-	if len(deferredAssignments) > 0 {
-		projected := map[string]bool{}
-		for _, f := range selectFields {
-			projected[strings.Trim(extractFieldAlias(f), "`")] = true
-		}
-		for _, da := range deferredAssignments {
-			// A later command may already project this column. Recomputing it here
-			// would alias two expressions to one name (ClickHouse code 179).
-			if projected[da.Field] {
-				continue
-			}
-			formatters = append(formatters, SelectExpr{Expr: fmt.Sprintf("%s AS %s", da.SQL, da.Alias)})
+	projected := columnNames(selects)
+	for _, da := range deferredAssignments {
+		// A later command may already project this column. Recomputing it here
+		// would alias two expressions to one name (ClickHouse code 179).
+		if !slices.Contains(projected, da.Field) {
+			formatters = append(formatters, SelectExpr{Expr: da.SQL, Alias: da.Alias})
 		}
 	}
-
 	return formatters
 }
 
-// computeFieldOrder extracts the field order from SELECT expressions.
-func computeFieldOrder(selectFields []string, deferredAssignments []deferredAssignment) []string {
-	fieldOrder := make([]string, 0, len(selectFields))
-	for _, field := range selectFields {
-		alias := extractFieldAlias(field)
-		if alias != "_all_fields" && alias != "fields" && alias != "_shard_num" && alias != ingestTimeColumn {
-			fieldOrder = append(fieldOrder, strings.Trim(alias, "`"))
+// outputRef is how a query over the column's SELECT references it: its alias, or
+// the column itself.
+func outputRef(sel SelectExpr) string {
+	if sel.Alias != "" {
+		return sel.Alias
+	}
+	return sel.Expr
+}
+
+// computeFieldOrder lists the columns a result shows, in order.
+func computeFieldOrder(selects []SelectExpr, deferredAssignments []deferredAssignment) []string {
+	fieldOrder := make([]string, 0, len(selects))
+	for _, sel := range selects {
+		switch name := sel.Name(); name {
+		case "_all_fields", "fields", "_shard_num", ingestTimeColumn:
+		default:
+			fieldOrder = append(fieldOrder, name)
 		}
 	}
 	for _, da := range deferredAssignments {
@@ -1888,15 +1723,6 @@ func computeFieldOrder(selectFields []string, deferredAssignments []deferredAssi
 		}
 	}
 	return fieldOrder
-}
-
-// selectExprStrings converts SelectExpr slice to string slice.
-func selectExprStrings(exprs []SelectExpr) []string {
-	result := make([]string, len(exprs))
-	for i, e := range exprs {
-		result[i] = e.String()
-	}
-	return result
 }
 
 // capsAggregatedRows reports whether cmd, just run, capped the rows of an
@@ -1912,9 +1738,14 @@ func capsAggregatedRows(cmd CommandNode, ctx *CommandContext) bool {
 // pipelineContinuesAfter reports whether a command, assignment or filter follows
 // command i.
 func pipelineContinuesAfter(pipeline *PipelineNode, i int) bool {
-	if i+1 < len(pipeline.Commands) {
-		return true
+	seen := -1
+	for _, st := range pipeline.Steps {
+		if seen == i {
+			return true
+		}
+		if st.Command != nil {
+			seen++
+		}
 	}
-	return slices.ContainsFunc(pipeline.Assignments, func(a AssignmentNode) bool { return a.CmdIndex > i }) ||
-		slices.ContainsFunc(pipeline.HavingConditions, func(c HavingCondition) bool { return c.CmdIndex > i })
+	return false
 }

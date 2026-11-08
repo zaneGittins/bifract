@@ -19,7 +19,7 @@ func translateAfterAggregation(q string) (*TranslationResult, error) {
 // aggregation's output.
 func TestFilterCommandAfterAggregationBindsLikeAComparison(t *testing.T) {
 	cases := []struct{ name, query, want string }{
-		{"negated in on a key", `* | groupby(user) | !in(user, values=["a"])`, "NOT (fields.`user`::String IN ('a')) GROUP BY"},
+		{"negated in on a key", `* | groupby(user) | !in(user, values=["a"])`, "fields.`user`::String NOT IN ('a') GROUP BY"},
 		{"in on an aggregate", `* | groupby(user) | in(_count, values=["1"])`, "HAVING _count IN ('1')"},
 		{"in on a chain aggregate", `* | chain(user) { a=1; b=2 } | in(chain_count, values=["1"])`, "HAVING sequenceMatch"},
 		{"in on a chain identity", `* | chain(user) { a=1; b=2 } | in(user, values=["a"])`, "fields.`user`::String IN ('a')"},

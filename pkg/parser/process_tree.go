@@ -66,7 +66,7 @@ func ProcessTreeCommand(pipeline *PipelineNode) (ProcessTreeParams, bool, error)
 	if pipeline == nil {
 		return ProcessTreeParams{}, false, nil
 	}
-	for _, c := range pipeline.Commands {
+	for _, c := range pipeline.Commands() {
 		if c.Name == "ptg" {
 			p, err := ParseProcessTreeParams(c)
 			return p, true, err
@@ -81,34 +81,39 @@ var processTreeViews = map[string]bool{"pgraph": true, "graph": true}
 // validateProcessTreeTail rejects what ptg() cannot apply. Its rows are the walked tree, so
 // after it only _depth/_path filters and a graph take effect; anything else would be dropped.
 func validateProcessTreeTail(pipeline *PipelineNode) error {
-	at := commandIndex(pipeline.Commands, "ptg")
+	at := commandIndex(pipeline.Commands(), "ptg")
 	if at < 0 {
 		return nil
 	}
 	const hint = "filter with _depth or _path, or pipe to pgraph() or graph()"
-	for _, cmd := range pipeline.Commands[at+1:] {
+	for _, cmd := range pipeline.Commands()[at+1:] {
 		if !processTreeViews[canonicalCommandName(cmd.Name)] {
 			return fmt.Errorf("ptg() returns its process tree as is, so %s() cannot follow it: %s", cmd.Name, hint)
 		}
 	}
-	for _, a := range pipeline.Assignments {
-		if a.CmdIndex > at {
-			return fmt.Errorf("ptg() returns its process tree as is, so %s := cannot follow it: %s", a.Field, hint)
+	var err error
+	pipeline.forEachStep(func(st Step, pos position) {
+		if err != nil || pos.Cmd <= at {
+			return
 		}
-	}
-	for _, c := range pipeline.HavingConditions {
-		if c.CmdIndex > at {
-			if f := nonTreeField(c); f != "" {
-				return fmt.Errorf("ptg() can only be filtered on _depth and _path, not %s", f)
+		switch {
+		case st.Assign != nil:
+			err = fmt.Errorf("ptg() returns its process tree as is, so %s := cannot follow it: %s", st.Assign.Field, hint)
+		case st.Filter != nil:
+			if f := nonTreeField(*st.Filter); f != "" {
+				err = fmt.Errorf("ptg() can only be filtered on _depth and _path, not %s", f)
 			}
 		}
+	})
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
 // nonTreeField returns the first field in cond that is not _depth or _path, or "".
-func nonTreeField(cond HavingCondition) string {
-	if cond.IsCompound {
+func nonTreeField(cond Condition) string {
+	if cond.IsCompound() {
 		for _, child := range cond.Children {
 			if f := nonTreeField(child); f != "" {
 				return f

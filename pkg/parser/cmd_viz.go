@@ -349,17 +349,17 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else {
 			for i, ref := range refs {
 				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: ref, Alias: aliases[i]})
-				source.Layer.GroupBy = append(source.Layer.GroupBy, ref)
+				source.Layer.groupBy(ref, aliases[i])
 			}
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
 		}
-		source.Layer.OrderBy = append([]string{"_count DESC"}, source.Layer.OrderBy...)
+		source.Layer.OrderBy = append([]OrderTerm{desc("_count")}, source.Layer.OrderBy...)
 	default:
 		return fmt.Errorf("timechart(): unknown function %s()", fn.Name)
 	}
 
-	source.Layer.GroupBy = append(source.Layer.GroupBy, bucketExpr)
-	source.Layer.OrderBy = append(source.Layer.OrderBy, "time_bucket ASC")
+	source.Layer.groupBy(bucketExpr, "time_bucket")
+	source.Layer.OrderBy = append(source.Layer.OrderBy, asc("time_bucket"))
 	// Its outputs, so a filter after it reads them rather than log fields.
 	declareChartKey(ctx, "time_bucket", "time_bucket")
 	for _, sel := range source.Layer.Selects {

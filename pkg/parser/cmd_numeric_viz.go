@@ -33,7 +33,7 @@ func chartColumn(arg Argument, ctx *CommandContext, cmdName, scanAlias string) (
 		return "", "", fmt.Errorf("%s(): %w", cmdName, err)
 	}
 	scanExpr = groupableCast(ref)
-	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", scanExpr, scanAlias)})
+	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: scanExpr, Alias: scanAlias})
 	ctx.Registry.SetResolveExpr(scanAlias, ref)
 	return scanAlias, scanExpr, nil
 }
@@ -87,50 +87,50 @@ func (h *boxplotHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	k := strconv.Itoa(extremes)
 	ctx.Plan.ChartLayers = []QueryLayer{
 		{Selects: []SelectExpr{
-			{Expr: chartNumeric(valCol) + " AS _bp_val"},
-			{Expr: groupExpr + " AS _group"},
+			{Expr: chartNumeric(valCol), Alias: "_bp_val"},
+			{Expr: groupExpr, Alias: "_group"},
 		}},
 		{
 			Selects: []SelectExpr{
 				{Expr: "_group"},
-				{Expr: "count() AS _count"},
-				{Expr: "quantilesGK(1000, 0.25, 0.5, 0.75)(_bp_val) AS _bp_q"},
-				{Expr: "min(_bp_val) AS _bp_min"},
-				{Expr: "max(_bp_val) AS _bp_max"},
-				{Expr: "avg(_bp_val) AS _bp_mean"},
-				{Expr: "stddevPop(_bp_val) AS _bp_sd"},
-				{Expr: fmt.Sprintf("groupArraySorted(%s)(_bp_val) AS _bp_low", k)},
-				{Expr: fmt.Sprintf("arrayMap(x -> -x, groupArraySorted(%s)(-_bp_val)) AS _bp_high", k)},
+				{Expr: "count()", Alias: "_count"},
+				{Expr: "quantilesGK(1000, 0.25, 0.5, 0.75)(_bp_val)", Alias: "_bp_q"},
+				{Expr: "min(_bp_val)", Alias: "_bp_min"},
+				{Expr: "max(_bp_val)", Alias: "_bp_max"},
+				{Expr: "avg(_bp_val)", Alias: "_bp_mean"},
+				{Expr: "stddevPop(_bp_val)", Alias: "_bp_sd"},
+				{Expr: fmt.Sprintf("groupArraySorted(%s)(_bp_val)", k), Alias: "_bp_low"},
+				{Expr: fmt.Sprintf("arrayMap(x -> -x, groupArraySorted(%s)(-_bp_val))", k), Alias: "_bp_high"},
 			},
 			Where:   []string{"isFinite(_bp_val)"},
-			GroupBy: []string{"_group"},
-			OrderBy: []string{"_count DESC", "_group ASC"},
+			GroupBy: []groupKey{{Expr: "_group", Name: "_group"}},
+			OrderBy: []OrderTerm{desc("_count"), asc("_group")},
 			Limit:   fmt.Sprintf("LIMIT %d", groups),
 		},
 		{Selects: []SelectExpr{
 			{Expr: "*"},
-			{Expr: fmt.Sprintf("_bp_q[1] - %s * (_bp_q[3] - _bp_q[1]) AS _bp_lf", f)},
-			{Expr: fmt.Sprintf("_bp_q[3] + %s * (_bp_q[3] - _bp_q[1]) AS _bp_uf", f)},
+			{Expr: fmt.Sprintf("_bp_q[1] - %s * (_bp_q[3] - _bp_q[1])", f), Alias: "_bp_lf"},
+			{Expr: fmt.Sprintf("_bp_q[3] + %s * (_bp_q[3] - _bp_q[1])", f), Alias: "_bp_uf"},
 		}},
 		{Selects: []SelectExpr{
 			{Expr: "_group"},
 			{Expr: "_count"},
-			{Expr: "round(_bp_min, 4) AS _min"},
-			{Expr: "round(_bp_q[1], 4) AS _q1"},
-			{Expr: "round(_bp_q[2], 4) AS _median"},
-			{Expr: "round(_bp_q[3], 4) AS _q3"},
-			{Expr: "round(_bp_max, 4) AS _max"},
-			{Expr: "round(_bp_mean, 4) AS _mean"},
-			{Expr: "round(_bp_sd, 4) AS _stddev"},
-			{Expr: "round(_bp_lf, 4) AS _lower_fence"},
-			{Expr: "round(_bp_uf, 4) AS _upper_fence"},
+			{Expr: "round(_bp_min, 4)", Alias: "_min"},
+			{Expr: "round(_bp_q[1], 4)", Alias: "_q1"},
+			{Expr: "round(_bp_q[2], 4)", Alias: "_median"},
+			{Expr: "round(_bp_q[3], 4)", Alias: "_q3"},
+			{Expr: "round(_bp_max, 4)", Alias: "_max"},
+			{Expr: "round(_bp_mean, 4)", Alias: "_mean"},
+			{Expr: "round(_bp_sd, 4)", Alias: "_stddev"},
+			{Expr: "round(_bp_lf, 4)", Alias: "_lower_fence"},
+			{Expr: "round(_bp_uf, 4)", Alias: "_upper_fence"},
 			// A whisker is the most extreme value inside its fence. When every
 			// retained extreme lies past the fence the true one is unseen, so the
 			// whisker is drawn at the fence.
-			{Expr: "round(if(arrayExists(x -> x >= _bp_lf, _bp_low), arrayFirst(x -> x >= _bp_lf, _bp_low), _bp_lf), 4) AS _whisker_low"},
-			{Expr: "round(if(arrayExists(x -> x <= _bp_uf, _bp_high), arrayFirst(x -> x <= _bp_uf, _bp_high), _bp_uf), 4) AS _whisker_high"},
-			{Expr: "arrayMap(x -> round(x, 4), arrayFilter(x -> x < _bp_lf, _bp_low)) AS _outliers_low"},
-			{Expr: "arrayMap(x -> round(x, 4), arrayFilter(x -> x > _bp_uf, _bp_high)) AS _outliers_high"},
+			{Expr: "round(if(arrayExists(x -> x >= _bp_lf, _bp_low), arrayFirst(x -> x >= _bp_lf, _bp_low), _bp_lf), 4)", Alias: "_whisker_low"},
+			{Expr: "round(if(arrayExists(x -> x <= _bp_uf, _bp_high), arrayFirst(x -> x <= _bp_uf, _bp_high), _bp_uf), 4)", Alias: "_whisker_high"},
+			{Expr: "arrayMap(x -> round(x, 4), arrayFilter(x -> x < _bp_lf, _bp_low))", Alias: "_outliers_low"},
+			{Expr: "arrayMap(x -> round(x, 4), arrayFilter(x -> x > _bp_uf, _bp_high))", Alias: "_outliers_high"},
 		}},
 	}
 	ctx.Plan.ChartReadsAllRows = true
@@ -196,8 +196,8 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("scatter(): y=: %w", err)
 	}
 	selects := []SelectExpr{
-		{Expr: fmt.Sprintf("%s AS %s", chartNumeric(xCol), xAlias)},
-		{Expr: fmt.Sprintf("%s AS %s", chartNumeric(yCol), yAlias)},
+		{Expr: chartNumeric(xCol), Alias: xAlias},
+		{Expr: chartNumeric(yCol), Alias: yAlias},
 	}
 	order := []string{xName, yName}
 	labelName := ""
@@ -214,14 +214,14 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if err != nil {
 			return fmt.Errorf("scatter(): label=: %w", err)
 		}
-		selects = append([]SelectExpr{{Expr: fmt.Sprintf("toString(%s) AS %s", col, labelAlias)}}, selects...)
+		selects = append([]SelectExpr{{Expr: fmt.Sprintf("toString(%s)", col), Alias: labelAlias}}, selects...)
 		order = append([]string{labelName}, order...)
 	}
 
 	ctx.Plan.ChartLayers = []QueryLayer{
 		{Selects: []SelectExpr{
-			{Expr: chartNumeric(xCol) + " AS _sc_x"},
-			{Expr: chartNumeric(yCol) + " AS _sc_y"},
+			{Expr: chartNumeric(xCol), Alias: "_sc_x"},
+			{Expr: chartNumeric(yCol), Alias: "_sc_y"},
 			{Expr: "*"},
 		}},
 		{
@@ -240,7 +240,7 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	if source.IsSource && len(source.Layer.GroupBy) == 0 && !ctx.Plan.IsAggregated && !ctx.Plan.HasGroupBy {
 		if len(source.Layer.OrderBy) == 0 {
-			source.Layer.OrderBy = []string{"timestamp DESC", "log_id DESC"}
+			source.Layer.OrderBy = []OrderTerm{desc("timestamp"), desc("log_id")}
 		}
 		if source.Layer.Limit == "" {
 			source.Layer.Limit = fmt.Sprintf("LIMIT %d", limit)

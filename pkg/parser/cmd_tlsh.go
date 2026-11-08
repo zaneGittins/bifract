@@ -42,41 +42,19 @@ const (
 // repeat heavily across rows, the work collapses to the number of DISTINCT digests,
 // which a tlsh model indexes. The resolved matches then come back as an ordinary
 // IN filter, so the rest of the pipeline composes normally.
-type tlshHandler struct{}
+type tlshHandler struct{ rowFilter }
 
 func (h *tlshHandler) appliesNegate() {}
+func (h *tlshHandler) readsLogRows()  {}
 
-func (h *tlshHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
+func (h *tlshHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
 	p, found, err := extractTLSHFromCommand(cmd)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !found {
-		return nil
+		return "", fmt.Errorf("tlsh() needs field= and hash= or dict=")
 	}
-
-	// The probe is a plain scan of the source table, so it cannot see a column that
-	// only exists further down the pipeline. Say so rather than letting ClickHouse
-	// fail with an unknown identifier.
-	if ctx.Registry.IsComputed(p.Field) {
-		return fmt.Errorf("tlsh(): field %q is computed by an earlier command; tlsh() can only filter a stored log field", p.Field)
-	}
-
-	// Projected at the source stage, so they resolve as bare columns downstream.
-	ctx.Registry.Register(TLSHDistanceField, FieldKindPerRow, TLSHDistanceField, ctx.CmdIndex)
-	ctx.Registry.Register(TLSHMatchField, FieldKindPerRow, TLSHMatchField, ctx.CmdIndex)
-	return nil
-}
-
-func (h *tlshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	p, found, err := extractTLSHFromCommand(cmd)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nil
-	}
-
 	// Reached only where a caller translates without pre-resolving the digests.
 	// Name the contexts that legitimately cannot, so the message is actionable
 	// rather than describing an internal contract: a join() subquery is translated
@@ -84,64 +62,33 @@ func (h *tlshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// them would filter the inner field by the outer field's digests), and archive
 	// search has no TLSH model index to resolve against.
 	if !ctx.Opts.HasTLSHFilter {
-		return fmt.Errorf("tlsh() cannot be resolved in this context; it is not supported inside a join() subquery or in archive search")
+		return "", fmt.Errorf("tlsh() cannot be resolved in this context; it is not supported inside a join() subquery or in archive search")
 	}
-
+	// The digests were resolved against the stored field, so a field computed
+	// before the filter is not what they describe.
+	if ctx.Registry.IsComputed(p.Field) {
+		return "", fmt.Errorf("tlsh(): field %q is computed by an earlier command; tlsh() can only filter a stored log field", p.Field)
+	}
 	// A similarity filter reads as "keep the rows whose digest looks like this".
-	// Hoisting it above an aggregation would silently turn it into a filter on the
-	// pre-aggregation rows instead, which is not what anyone writing it after a
-	// groupby means. Execute runs in pipeline order, so a
-	// populated GroupBy (or a pushed stage, from chained aggregation) means an
-	// aggregation already happened.
-	if len(ctx.Plan.CurrentStage().Layer.GroupBy) > 0 || ctx.Plan.SourceStage() != ctx.Plan.CurrentStage() {
-		return fmt.Errorf("tlsh() must come before groupby/stats: it filters log rows, not aggregated ones")
+	// After an aggregation it would silently filter the rows before it instead.
+	if lastAggregatingCommandIndex(ctx.Plan.commands, ctx.CmdIndex) >= 0 {
+		return "", fmt.Errorf("tlsh() must come before groupby/stats: it filters log rows, not aggregated ones")
 	}
-
-	source := ctx.Plan.SourceStage()
-
-	// ExtractTLSHParams rejects a second tlsh() at the API boundary; this catches a
-	// caller that reaches the translator directly. Both matter, because there is only
-	// one resolved match set: a second command would filter its own field with the
-	// first field's digests and silently overwrite the first's projections.
-	for _, sel := range source.Layer.Selects {
-		if sel.Alias == TLSHDistanceField {
-			return fmt.Errorf("tlsh(): only one similarity filter per query")
-		}
-	}
-
-	fieldRef := groupableCast(jsonFieldRef(p.Field))
-
-	digests, distances, needles := renderTLSHLiterals(ctx.Opts.TLSHMatches)
-
+	digests, _, _ := renderTLSHLiterals(ctx.Opts.TLSHMatches)
 	// No match, or nothing that fits. An empty IN list is a syntax error, so emit a
 	// constant predicate: nothing is similar, so the positive form matches no rows
 	// and the negated form matches every row.
 	if len(digests) == 0 {
 		if cmd.Negate {
-			source.Layer.Where = append(source.Layer.Where, "1 = 1")
-		} else {
-			source.Layer.Where = append(source.Layer.Where, "1 = 0")
+			return "1 = 1", nil
 		}
-		projectTLSHConstants(ctx, source)
-		return nil
+		return "1 = 0", nil
 	}
-
 	op := "IN"
 	if cmd.Negate {
 		op = "NOT IN"
 	}
-	source.Layer.Where = append(source.Layer.Where,
-		fmt.Sprintf("%s %s (%s)", fieldRef, op, strings.Join(digests, ", ")))
-
-	// Every surviving row of a negated filter is by definition not a match, so the
-	// distance and needle are constants rather than a lookup.
-	if cmd.Negate {
-		projectTLSHConstants(ctx, source)
-		return nil
-	}
-
-	projectTLSHTransforms(ctx, source, fieldRef, digests, distances, needles)
-	return nil
+	return fmt.Sprintf("%s %s (%s)", groupableCast(jsonFieldRef(p.Field)), op, strings.Join(digests, ", ")), nil
 }
 
 // renderTLSHLiterals turns resolved matches into the quoted SQL literals the IN
@@ -205,35 +152,20 @@ func projectTLSHConstants(ctx *CommandContext, source *QueryStage) {
 	publishTLSHExprs(ctx, "toInt32(-1)", "''")
 }
 
-// DeclareTLSHOperandColumns registers and projects tlsh_distance / tlsh_match when
-// tlsh() appears only as a boolean operand (`a=1 OR tlsh(...)`) rather than as a
-// pipeline command. The condition machinery renders the filter correctly on its
-// own, but never runs the command handler, so without this the two columns resolve
-// as ordinary log fields: a downstream sort would silently order by an always-empty
-// JSON path instead of failing. Projection does not depend on where the filter
-// sits, so the same transform() is correct in both forms.
-//
-// No-op unless a tlsh() operand is present and the columns are not already there.
-func DeclareTLSHOperandColumns(pipeline *PipelineNode, ctx *CommandContext) error {
+// projectTLSHColumns registers and projects tlsh_distance and tlsh_match for a
+// query using tlsh(), so a hunt can rank by closeness and see which needle it hit.
+// The filter itself compiles as a condition wherever it is written; the columns
+// are the same transform() of the field in every form, a match or not.
+func projectTLSHColumns(pipeline *PipelineNode, ctx *CommandContext) error {
 	if !ctx.Opts.HasTLSHFilter {
 		return nil
-	}
-	for _, cmd := range pipeline.Commands {
-		if strings.EqualFold(cmd.Name, "tlsh") {
-			return nil // the handler owns it
-		}
 	}
 	p, found, err := ExtractTLSHParams(pipeline)
 	if err != nil || !found {
 		return err
 	}
-	if ctx.Registry.IsComputed(p.Field) {
-		return fmt.Errorf("tlsh(): field %q is computed by an earlier command; tlsh() can only filter a stored log field", p.Field)
-	}
-
-	ctx.Registry.Register(TLSHDistanceField, FieldKindPerRow, TLSHDistanceField, ctx.CmdIndex)
-	ctx.Registry.Register(TLSHMatchField, FieldKindPerRow, TLSHMatchField, ctx.CmdIndex)
-
+	ctx.Registry.Register(TLSHDistanceField, FieldKindPerRow, TLSHDistanceField, -1)
+	ctx.Registry.Register(TLSHMatchField, FieldKindPerRow, TLSHMatchField, -1)
 	source := ctx.Plan.SourceStage()
 	digests, distances, needles := renderTLSHLiterals(ctx.Opts.TLSHMatches)
 	if len(digests) == 0 {
@@ -247,7 +179,7 @@ func DeclareTLSHOperandColumns(pipeline *PipelineNode, ctx *CommandContext) erro
 // extractTLSHFromCommand parses one tlsh() node, reusing the pipeline-level parser
 // so the command and the server-side resolver can never disagree on the arguments.
 func extractTLSHFromCommand(cmd CommandNode) (TLSHParams, bool, error) {
-	return ExtractTLSHParams(&PipelineNode{Commands: []CommandNode{cmd}})
+	return ExtractTLSHParams(&PipelineNode{Steps: []Step{{Command: &cmd}}})
 }
 
 func init() {

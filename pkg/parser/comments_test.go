@@ -17,7 +17,7 @@ func TestParseQueryIgnoresCommentLines(t *testing.T) {
 		t.Fatalf("a comment line should parse: %v", err)
 	}
 	if !reflect.DeepEqual(commandNames(commented), commandNames(plain)) ||
-		!reflect.DeepEqual(commented.HavingConditions, plain.HavingConditions) {
+		!reflect.DeepEqual(commented.Filters(), plain.Filters()) {
 		t.Fatalf("comments changed the pipeline: %+v, want %+v", commented, plain)
 	}
 	if _, err := ParseQuery("status=500 // trailing"); err == nil {
@@ -26,8 +26,8 @@ func TestParseQueryIgnoresCommentLines(t *testing.T) {
 }
 
 func commandNames(p *PipelineNode) []string {
-	names := make([]string, 0, len(p.Commands))
-	for _, c := range p.Commands {
+	names := make([]string, 0, len(p.Commands()))
+	for _, c := range p.Commands() {
 		names = append(names, c.Name)
 	}
 	return names

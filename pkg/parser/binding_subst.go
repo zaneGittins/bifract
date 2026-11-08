@@ -19,18 +19,17 @@ func (p *Parser) substitutePipeline(pipeline *PipelineNode) error {
 	if len(p.bindings) == 0 || pipeline == nil {
 		return nil
 	}
-	for i := range pipeline.Assignments {
-		if err := p.substituteExpr(pipeline.Assignments[i].Expr); err != nil {
-			return err
+	for _, st := range pipeline.Steps {
+		var err error
+		switch {
+		case st.Assign != nil:
+			err = p.substituteExpr(st.Assign.Expr)
+		case st.Filter != nil:
+			err = p.substituteCondition(st.Filter)
+		case st.Command != nil:
+			err = p.substituteCommand(st.Command)
 		}
-	}
-	for i := range pipeline.HavingConditions {
-		if err := p.substituteHavingCondition(&pipeline.HavingConditions[i]); err != nil {
-			return err
-		}
-	}
-	for i := range pipeline.Commands {
-		if err := p.substituteCommand(&pipeline.Commands[i]); err != nil {
+		if err != nil {
 			return err
 		}
 	}
@@ -158,12 +157,12 @@ func (p *Parser) substituteExpr(e *ExprNode) error {
 	return nil
 }
 
-func (p *Parser) substituteHavingCondition(c *HavingCondition) error {
+func (p *Parser) substituteCondition(c *Condition) error {
 	if err := p.substituteExpr(c.Expr); err != nil {
 		return err
 	}
 	for i := range c.Children {
-		if err := p.substituteHavingCondition(&c.Children[i]); err != nil {
+		if err := p.substituteCondition(&c.Children[i]); err != nil {
 			return err
 		}
 	}
@@ -232,7 +231,7 @@ func (p *Parser) budget() *int {
 	return p.bindingBudget
 }
 
-func cloneCondition(c *HavingCondition, budget *int) (*HavingCondition, error) {
+func cloneCondition(c *Condition, budget *int) (*Condition, error) {
 	if c == nil {
 		return nil, nil
 	}
@@ -245,7 +244,7 @@ func cloneCondition(c *HavingCondition, budget *int) (*HavingCondition, error) {
 		out.Values = append([]string(nil), c.Values...)
 	}
 	if c.Children != nil {
-		out.Children = make([]HavingCondition, len(c.Children))
+		out.Children = make([]Condition, len(c.Children))
 		for i := range c.Children {
 			child, err := cloneCondition(&c.Children[i], budget)
 			if err != nil {

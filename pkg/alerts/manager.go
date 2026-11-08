@@ -1484,7 +1484,7 @@ func queryHasAggregation(pipeline *parser.PipelineNode) bool {
 	if pipeline == nil {
 		return false
 	}
-	for _, cmd := range pipeline.Commands {
+	for _, cmd := range pipeline.Commands() {
 		if aggregateCommands[cmd.Name] {
 			return true
 		}

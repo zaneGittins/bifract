@@ -15,7 +15,7 @@ func TestSubPipelineConditionsAreKept(t *testing.T) {
 	}{
 		{"case branch condition after a negated function",
 			`* | case { !in(prog,["sshd"]) AND level="error" | tier:="x"; * | tier:="y" }`,
-			[]string{"NOT (fields.`prog`::String IN ('sshd'))", "fields.`level`::String = 'error'"}},
+			[]string{"fields.`prog`::String NOT IN ('sshd')", "fields.`level`::String = 'error'"}},
 		{"case branch stage condition",
 			`* | case { level="error" | in(prog,["sshd"]) | tier:="x"; * | tier:="y" }`,
 			[]string{"fields.`level`::String = 'error'", "IN ('sshd')"}},

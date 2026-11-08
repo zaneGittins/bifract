@@ -77,6 +77,14 @@ func NewLexer(input string) *Lexer {
 	return l
 }
 
+// newExprLexer lexes src in expression mode from start, reporting positions in
+// src's own coordinates.
+func newExprLexer(src []rune, start int) *Lexer {
+	l := &Lexer{runes: src, pos: start, exprMode: true}
+	l.readChar()
+	return l
+}
+
 func (l *Lexer) readChar() {
 	if l.pos >= len(l.runes) {
 		l.ch = 0
@@ -432,10 +440,7 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 	for {
 		tok := l.NextToken()
 		if tok.Type == TokenError {
-			if tok.Value == "//" {
-				return nil, newPosError(tok, "unexpected '//': a comment goes on its own line")
-			}
-			return nil, newPosError(tok, "unexpected character %q in query", tok.Value)
+			return nil, lexError(tok)
 		}
 		if tok.Type == TokenEOF && len(tokens) > 0 {
 			// End of query reads as just after the last token, not after
@@ -448,6 +453,14 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 		}
 	}
 	return tokens, nil
+}
+
+// lexError reports a token the lexer could not read.
+func lexError(tok Token) error {
+	if tok.Value == "//" {
+		return newPosError(tok, "unexpected '//': a comment goes on its own line")
+	}
+	return newPosError(tok, "unexpected character %q in query", tok.Value)
 }
 
 // String names the token kind as a user would read it in an error message.

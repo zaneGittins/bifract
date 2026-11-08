@@ -2,7 +2,6 @@ package parser
 
 import (
 	"slices"
-	"strings"
 )
 
 // FieldKind categorizes the type of a field in the query pipeline.
@@ -78,7 +77,7 @@ type FieldRegistry struct {
 	// rather than accumulated.
 	groupKeyCmd int
 	// rowLevel marks a registry conditions resolve against row by row, with no
-	// aggregation before them (firstStageView, a case branch, a chain step): count,
+	// aggregation before them (the first stage, a case branch, a chain step): count,
 	// sum and avg name log fields there, not aggregates.
 	rowLevel bool
 	// normLogIndexHints allows norm_log index hints on scan filters (see normLogHint).
@@ -107,6 +106,7 @@ func NewFieldRegistry(mode SourceMode, icePromoted map[string]bool) *FieldRegist
 			Expr:       expr,
 			ProducedBy: -1,
 		}
+		r.order = append(r.order, name)
 	}
 	return r
 }
@@ -134,39 +134,6 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 		c.fields[k] = &entry
 	}
 	return c
-}
-
-// firstStageView is the registry as a condition before the first command sees it:
-// the base columns, a source command's columns and the assignments, but nothing a
-// command produces. Conditions are classified after every command has run, so
-// without it a later transform, grouping alias or aggregate reached back into a
-// filter written before it.
-func (r *FieldRegistry) firstStageView() *FieldRegistry {
-	v := NewFieldRegistry(r.sourceMode, r.icePromoted)
-	v.rowLevel = true
-	v.normLogIndexHints = r.normLogIndexHints
-	for _, name := range r.order {
-		if e := r.fields[name]; e.ProducedBy < 0 {
-			entry := *e
-			v.fields[name] = &entry
-			v.order = append(v.order, name)
-		}
-	}
-	return v
-}
-
-// unassign sets each name back to its entry in before, dropping it when before
-// has none: the view of a condition written ahead of those assignments.
-func (r *FieldRegistry) unassign(names []string, before *FieldRegistry) {
-	for _, name := range names {
-		if e, ok := before.fields[name]; ok {
-			entry := *e
-			r.fields[name] = &entry
-		} else if _, ok := r.fields[name]; ok {
-			delete(r.fields, name)
-			r.order = slices.DeleteFunc(r.order, func(n string) bool { return n == name })
-		}
-	}
 }
 
 // changedSince lists the names whose entries differ from before.
@@ -292,9 +259,6 @@ func (r *FieldRegistry) Resolve(name string) string {
 				return r.fieldRef(name)
 			}
 			expr = entry.Expr
-		}
-		if idx := strings.LastIndex(expr, " AS "); idx != -1 {
-			return expr[:idx]
 		}
 		return expr
 	}

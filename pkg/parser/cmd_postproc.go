@@ -22,17 +22,14 @@ func (h *sortHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return nil
 	}
 
-	direction := "ASC"
-	if d := strings.ToUpper(b.Str("order", "")); d == "DESC" || d == "ASC" {
-		direction = d
-	}
+	descending := strings.EqualFold(b.Str("order", ""), "desc")
 
 	fieldRef, err := sortFieldRef(arg, ctx)
 	if err != nil {
 		return fmt.Errorf("sort(): %w", err)
 	}
 	source := ctx.Plan.CurrentStage()
-	source.Layer.OrderBy = append(source.Layer.OrderBy, fieldRef+" "+direction)
+	source.Layer.OrderBy = append(source.Layer.OrderBy, OrderTerm{Expr: fieldRef, Desc: descending})
 	return nil
 }
 
@@ -91,7 +88,7 @@ func (h *headHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// ordering by it is invalid (ClickHouse error 215). Keep the existing
 	// ordering (e.g. a prior sort) and just take its first N rows.
 	if onScan(ctx) || !isAggregatedStage(ctx.Plan, source) {
-		source.Layer.OrderBy = []string{"timestamp ASC"}
+		source.Layer.OrderBy = []OrderTerm{asc("timestamp")}
 	}
 	source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
 	capRows(ctx)
@@ -117,7 +114,7 @@ func (h *tailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if !onScan(ctx) && isAggregatedStage(ctx.Plan, source) {
 		source.Layer.OrderBy = reverseOrderBy(source.Layer.OrderBy)
 	} else {
-		source.Layer.OrderBy = []string{"timestamp DESC"}
+		source.Layer.OrderBy = []OrderTerm{desc("timestamp")}
 	}
 	source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
 	capRows(ctx)
@@ -139,7 +136,7 @@ func capRows(ctx *CommandContext) {
 // onScan reports whether the running command reads the raw scan: no stage or
 // aggregation precedes it.
 func onScan(ctx *CommandContext) bool {
-	return len(ctx.Plan.Stages) == 1 && ctx.CmdIndex < firstAggregatingCommandIndex(ctx.Pipeline.Commands)
+	return len(ctx.Plan.Stages) == 1 && ctx.CmdIndex < firstAggregatingCommandIndex(ctx.Pipeline.Commands())
 }
 
 // rowCount reads a row-count argument, rejecting a negative or non-numeric one
@@ -163,40 +160,24 @@ func isAggregatedStage(plan *QueryPlan, stage *QueryStage) bool {
 }
 
 // reverseOrderBy flips the direction of each ORDER BY term so that the tail of
-// a result set becomes its head. Terms without an explicit direction default to
-// ASC in ClickHouse, so they become DESC.
-func reverseOrderBy(order []string) []string {
-	if len(order) == 0 {
-		return order
-	}
-	flipped := make([]string, len(order))
-	for i, term := range order {
-		t := strings.TrimSpace(term)
-		switch {
-		case strings.HasSuffix(strings.ToUpper(t), " DESC"):
-			flipped[i] = t[:len(t)-len(" DESC")] + " ASC"
-		case strings.HasSuffix(strings.ToUpper(t), " ASC"):
-			flipped[i] = t[:len(t)-len(" ASC")] + " DESC"
-		default:
-			flipped[i] = t + " DESC"
-		}
+// a result set becomes its head.
+func reverseOrderBy(order []OrderTerm) []OrderTerm {
+	flipped := make([]OrderTerm, len(order))
+	for i, t := range order {
+		flipped[i] = OrderTerm{Expr: t.Expr, Desc: !t.Desc}
 	}
 	return flipped
 }
 
 // stageOutputs returns the column names a stage projects: its group keys plus
-// the aliases of its SELECT expressions. Group keys are still raw field
-// references at Execute time (assembleGroupBySelects rewrites them to aliases
-// later), so they are reduced to their field name.
+// the names of its SELECT columns.
 func stageOutputs(stage *QueryStage) map[string]bool {
 	outputs := make(map[string]bool)
-	for _, gf := range stage.Layer.GroupBy {
-		outputs[extractFieldName(gf)] = true
+	for _, k := range stage.Layer.GroupBy {
+		outputs[k.Name] = true
 	}
-	for _, sel := range stage.Layer.Selects {
-		if alias := strings.Trim(extractFieldAlias(sel.String()), "`"); alias != "" {
-			outputs[alias] = true
-		}
+	for _, name := range columnNames(stage.Layer.Selects) {
+		outputs[name] = true
 	}
 	return outputs
 }
@@ -210,16 +191,7 @@ func scanExprFor(field string, ctx *CommandContext, stage *QueryStage) string {
 	if entry := ctx.Registry.Get(field); entry != nil && entry.ResolveAs != "" {
 		return ctx.Registry.Resolve(field)
 	}
-	for _, sel := range stage.Layer.Selects {
-		s := sel.String()
-		if strings.Trim(extractFieldAlias(s), "`") != field {
-			continue
-		}
-		if idx := strings.LastIndex(s, " AS "); idx != -1 {
-			return s[:idx]
-		}
-	}
-	return ""
+	return stageSelectExpr(stage, field)
 }
 
 // dedupHandler handles dedup(field1, field2, ...) using LIMIT 1 BY. On the scan
@@ -244,12 +216,12 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Position in the pipeline, not Plan.IsAggregated: that flag is set during
 	// Declare by an aggregation anywhere in the pipeline, including one this
 	// dedup precedes.
-	firstAgg := firstAggregatingCommandIndex(ctx.Pipeline.Commands)
+	firstAgg := firstAggregatingCommandIndex(ctx.Pipeline.Commands())
 	postAggregation := firstAgg < ctx.CmdIndex
 	// A dedup on the scan caps the rows the rest of the pipeline reads. Read
 	// through, it renders around the scan, where the stage's computed columns do
 	// not exist yet, so each key also has its scan form.
-	aggregationAhead := firstAgg < len(ctx.Pipeline.Commands) && !postAggregation
+	aggregationAhead := firstAgg < len(ctx.Pipeline.Commands()) && !postAggregation
 	outputs := stageOutputs(stage)
 
 	var keys, scanKeys []string

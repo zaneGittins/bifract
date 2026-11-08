@@ -111,7 +111,7 @@ func TestValidateCommandArgs(t *testing.T) {
 			t.Errorf("parse %q: %v", q, err)
 			continue
 		}
-		for _, cmd := range pipeline.Commands {
+		for _, cmd := range pipeline.Commands() {
 			if err := ValidateCommandArgs(cmd); err != nil {
 				t.Errorf("%q rejected: %v", q, err)
 			}
@@ -128,7 +128,7 @@ func TestValidateCommandArgs(t *testing.T) {
 	for _, c := range reject {
 		pipeline, got := ParseQuery(c.query)
 		if got == nil {
-			for _, cmd := range pipeline.Commands {
+			for _, cmd := range pipeline.Commands() {
 				if err := ValidateCommandArgs(cmd); err != nil {
 					got = err
 				}

@@ -133,7 +133,7 @@ func icebergSupportedFeatures(pipeline *PipelineNode) error {
 	if pipeline == nil {
 		return nil
 	}
-	if len(pipeline.Assignments) > 0 {
+	if len(pipeline.Assignments()) > 0 {
 		return fmt.Errorf("field assignments (:=) are not supported in archive search yet")
 	}
 	return validateCommands(pipeline, func(cmd CommandNode) error {

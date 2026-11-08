@@ -2631,23 +2631,18 @@ const bareSearchColumn = "norm_log"
 
 // isRawLogRegexQuery detects if this is a raw log regex search that could return massive results
 func isRawLogRegexQuery(pipeline *parser.PipelineNode) bool {
-	return hasBareSearch(pipeline.HavingConditions)
-}
-
-// hasBareSearch reports whether any condition, at any depth, is a bare search of
-// the whole log text.
-func hasBareSearch(conditions []parser.HavingCondition) bool {
-	for _, c := range conditions {
-		if hasBareSearch(c.Children) || c.Field == bareSearchColumn && c.IsRegex {
-			return true
-		}
+	found := false
+	for _, f := range pipeline.Filters() {
+		f.Walk(func(c parser.Condition) {
+			found = found || c.Field == bareSearchColumn && c.IsRegex
+		})
 	}
-	return false
+	return found
 }
 
 // hasExplicitLimit checks if the user has explicitly set a limit with head() or tail()
 func hasExplicitLimit(pipeline *parser.PipelineNode) bool {
-	for _, cmd := range pipeline.Commands {
+	for _, cmd := range pipeline.Commands() {
 		if cmd.Name == "head" || cmd.Name == "tail" {
 			return true
 		}

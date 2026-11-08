@@ -131,24 +131,13 @@ func readsOnlyScanColumns(sql string) bool {
 	return readsOnly(sql, func(c string) bool { return scanColumns[c] })
 }
 
-// orderingReadsOnlyScan reports whether ORDER BY entries ("expr DESC") and LIMIT
-// BY keys can be evaluated over the logs table's own columns.
-func orderingReadsOnlyScan(orderBy []string, limitBy string) bool {
+// orderingReadsOnlyScan reports whether ORDER BY terms and LIMIT BY keys can be
+// evaluated over the logs table's own columns.
+func orderingReadsOnlyScan(orderBy []OrderTerm, limitBy string) bool {
 	for _, o := range orderBy {
-		if !readsOnlyScanColumns(orderingExpr(o)) {
+		if !readsOnlyScanColumns(o.Expr) {
 			return false
 		}
 	}
 	return readsOnlyScanColumns(strings.TrimPrefix(limitBy, "LIMIT 1 BY "))
-}
-
-// orderingExpr strips an ORDER BY entry's direction and NULLS placement.
-func orderingExpr(entry string) string {
-	e := strings.TrimSpace(entry)
-	for _, suffix := range []string{" NULLS FIRST", " NULLS LAST", " ASC", " DESC"} {
-		if len(e) > len(suffix) && strings.EqualFold(e[len(e)-len(suffix):], suffix) {
-			e = strings.TrimSpace(e[:len(e)-len(suffix)])
-		}
-	}
-	return e
 }

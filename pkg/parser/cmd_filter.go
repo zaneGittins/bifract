@@ -8,20 +8,16 @@ import (
 )
 
 // inHandler handles in(field, values=[v1,v2,...])
-type inHandler struct{}
+type inHandler struct{ rowFilter }
 
-func (h *inHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	return nil
-}
-
-func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+func (h *inHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return err
+		return "", err
 	}
 	fieldArg, ok := b.First("field")
 	if !ok {
-		return nil
+		return "", fmt.Errorf("in() needs a field and values, e.g. in(user, values=[\"a\"])")
 	}
 
 	field := fieldArg.FieldName()
@@ -29,7 +25,7 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	switch {
 	case field == "":
 		if fieldRef, err = ResolveArg(fieldArg, ctx.Registry); err != nil {
-			return fmt.Errorf("in(): %w", err)
+			return "", fmt.Errorf("in(): %w", err)
 		}
 	case ctx.Registry.IsComputed(field):
 		// The expression, not the alias: an alias names the field's final value.
@@ -46,19 +42,17 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		sub, err := bindingSubquerySQL(set.Binding, ctx, field)
 		if err != nil {
 			if errors.Is(err, errBindingWorkExhausted) {
-				return err
+				return "", err
 			}
-			return fmt.Errorf("in(): %w", err)
+			return "", fmt.Errorf("in(): %w", err)
 		}
-		ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
-			fmt.Sprintf("%s %s (%s)", fieldRef, ctx.Opts.subqueryIn(cmd.Negate), sub))
-		return nil
+		return fmt.Sprintf("%s %s (%s)", fieldRef, ctx.Opts.subqueryIn(cmd.Negate), sub), nil
 	}
 
 	for _, a := range b.All("values") {
 		for _, e := range a.List {
 			if e.Kind == ArgList {
-				return fmt.Errorf("in(): values cannot be nested lists")
+				return "", fmt.Errorf("in(): values cannot be nested lists")
 			}
 		}
 	}
@@ -68,55 +62,45 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	// No values would add no condition, so the filter would match every event.
 	if len(values) == 0 {
-		return fmt.Errorf("in() needs at least one value")
+		return "", fmt.Errorf("in() needs at least one value")
 	}
-
 	op := "IN"
 	if cmd.Negate {
 		op = "NOT IN"
 	}
-	ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
-		fmt.Sprintf("%s %s (%s)", fieldRef, op, strings.Join(values, ", ")))
-	return nil
+	return fmt.Sprintf("%s %s (%s)", fieldRef, op, strings.Join(values, ", ")), nil
 }
 
 func (h *inHandler) appliesNegate() {}
-func (h *inHandler) filtersOutput() {}
 
 // cidrHandler handles cidr(field, "range") - filter by CIDR range
-type cidrHandler struct{}
+type cidrHandler struct{ rowFilter }
 
 func (h *cidrHandler) appliesNegate() {}
-func (h *cidrHandler) filtersOutput() {}
 
-func (h *cidrHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	return nil
-}
-
-func (h *cidrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+func (h *cidrHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return err
+		return "", err
 	}
 	fieldArg, hasField := b.First("field")
 	rangeArg, hasRange := b.First("range")
 	if !hasField || !hasRange {
-		return nil
+		return "", fmt.Errorf("cidr() needs a field and a range, e.g. cidr(src_ip, \"10.0.0.0/8\")")
 	}
 	cidrRange := rangeArg.Value()
 	if err := validateCIDR(cidrRange); err != nil {
-		return fmt.Errorf("cidr(): %w", err)
+		return "", fmt.Errorf("cidr(): %w", err)
 	}
 	fieldRef, err := ResolveArg(fieldArg, ctx.Registry)
 	if err != nil {
-		return fmt.Errorf("cidr(): %w", err)
+		return "", fmt.Errorf("cidr(): %w", err)
 	}
 	cidrExpr := cidrPredicateSQL(fieldRef, "'"+escapeString(cidrRange)+"'")
 	if cmd.Negate {
 		cidrExpr = "NOT " + cidrExpr
 	}
-	ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, cidrExpr)
-	return nil
+	return cidrExpr, nil
 }
 
 // validateCIDR rejects a range ClickHouse cannot parse. isIPAddressInRange
@@ -148,35 +132,24 @@ func cidrPredicateSQL(fieldRef, quotedRange string) string {
 	return fmt.Sprintf("(isIPAddressInRange(%s, %s) AND %s)", safeAddr, quotedRange, valid)
 }
 
-// commentHandler handles comment() - filter to logs with matching comments
-type commentHandler struct{}
+// commentHandler handles comment(): the logs the server found matching comments
+// for, resolved before translation.
+type commentHandler struct{ rowFilter }
 
-func (h *commentHandler) filtersOutput() {}
-func (h *commentHandler) readsLogRows()  {}
+func (h *commentHandler) readsLogRows() {}
 
-func (h *commentHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	return nil
-}
-
-func (h *commentHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+func (h *commentHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
 	if !ctx.Opts.HasCommentFilter {
-		return fmt.Errorf("comment() requires server-side pre-processing")
+		return "", fmt.Errorf("comment() requires server-side pre-processing")
 	}
-
 	if len(ctx.Opts.CommentLogIDs) == 0 {
-		// No matching comments - return empty result
-		ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, "1 = 0")
-		return nil
+		return "1 = 0", nil
 	}
-
-	// Build IN clause with pre-fetched log IDs
 	quoted := make([]string, len(ctx.Opts.CommentLogIDs))
 	for i, id := range ctx.Opts.CommentLogIDs {
 		quoted[i] = fmt.Sprintf("'%s'", escapeString(id))
 	}
-	ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
-		fmt.Sprintf("log_id IN (%s)", strings.Join(quoted, ", ")))
-	return nil
+	return fmt.Sprintf("log_id IN (%s)", strings.Join(quoted, ", ")), nil
 }
 
 func init() {

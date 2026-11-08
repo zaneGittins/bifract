@@ -274,20 +274,10 @@ func referencedFields(bql string) []string {
 		out = append(out, f)
 	}
 
-	var walkStage func(conds []parser.HavingCondition)
-	walkStage = func(conds []parser.HavingCondition) {
-		for _, c := range conds {
-			walkStage(c.Children)
-			add(c.Field)
-			add(c.ValueField)
-		}
-	}
-	walkStage(pipeline.HavingConditions)
-	for _, b := range pipeline.Bindings {
-		if b.Pipe != nil {
-			walkStage(b.Pipe.HavingConditions)
-		}
-	}
+	parser.ForEachCondition(pipeline, func(c parser.Condition) {
+		add(c.Field)
+		add(c.ValueField)
+	})
 
 	// Commands reference fields too: `table(src_ip, user)` and `groupby(user)`
 	// are every bit as much "this field is queried" as a filter is, and counting

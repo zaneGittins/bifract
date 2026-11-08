@@ -34,7 +34,7 @@ func FirstSourceCommand(pipeline *PipelineNode) (CommandNode, bool) {
 	if pipeline == nil {
 		return CommandNode{}, false
 	}
-	for _, c := range pipeline.Commands {
+	for _, c := range pipeline.Commands() {
 		if sourceCommandNames[c.Name] {
 			return c, true
 		}
@@ -51,7 +51,7 @@ func ValidateSourceCommandPlacement(pipeline *PipelineNode) error {
 		return nil
 	}
 	srcIdx, srcName := -1, ""
-	for i, c := range pipeline.Commands {
+	for i, c := range pipeline.Commands() {
 		if !sourceCommandNames[c.Name] {
 			continue
 		}
@@ -63,11 +63,15 @@ func ValidateSourceCommandPlacement(pipeline *PipelineNode) error {
 	if srcIdx == -1 {
 		return nil
 	}
-	if slices.ContainsFunc(pipeline.HavingConditions, func(c HavingCondition) bool { return c.CmdIndex <= srcIdx }) {
+	filterFirst := false
+	pipeline.forEachStep(func(st Step, at position) {
+		filterFirst = filterFirst || st.Filter != nil && at.Cmd <= srcIdx
+	})
+	if filterFirst {
 		return fmt.Errorf("%s() must be the first command: a filter before it (e.g. `event_id=1 | %s(...)`) is ignored, because %s() is scoped only by its arguments, the time range, and the fractal. Filter after it instead: `%s(...) | field=value`", srcName, srcName, srcName, srcName)
 	}
 	if srcIdx != 0 {
-		before := pipeline.Commands[0].Name
+		before := pipeline.Commands()[0].Name
 		return fmt.Errorf("%s() must be the first command; `%s()` before it is ignored. Move it after: `%s(...) | %s(...)`", srcName, before, srcName, before)
 	}
 	return nil
@@ -78,12 +82,8 @@ func ValidateSourceCommandPlacement(pipeline *PipelineNode) error {
 // source, leaving the downstream commands (filters/aggregations/charts) to translate over it.
 func StripCommand(pipeline *PipelineNode, name string) *PipelineNode {
 	out := *pipeline
-	out.Commands = nil
-	for _, c := range pipeline.Commands {
-		if c.Name == name {
-			continue
-		}
-		out.Commands = append(out.Commands, c)
-	}
+	out.Steps = slices.DeleteFunc(slices.Clone(pipeline.Steps), func(st Step) bool {
+		return st.Command != nil && st.Command.Name == name
+	})
 	return &out
 }

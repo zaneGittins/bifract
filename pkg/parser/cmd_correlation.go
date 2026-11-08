@@ -2,24 +2,6 @@ package parser
 
 import "fmt"
 
-// rankCorrSample bounds the rows rankcorr() ranks per group. Spearman needs every
-// value held to rank it, so an unbounded rankCorr grows with the scan; a sample of
-// this size keeps memory fixed with a standard error near 0.003. Parallel merges
-// pick the sample, so a larger group can differ by about that between runs.
-const rankCorrSample = 100000
-
-// correlationSQL renders corr() or rankcorr() over two numeric operands, rounded
-// to 4 places (+ 0 turns -0 into 0) and NULL when undefined (fewer than two rows,
-// or a constant operand). corr() is Pearson via corrStable: plain corr() loses precision on
-// values far from zero, such as epoch times, and returned 1.17 on test data.
-func correlationSQL(name, x, y string) string {
-	if name == "corr" {
-		return fmt.Sprintf("ifNotFinite(round(corrStable(%s, %s), 4) + 0, NULL)", x, y)
-	}
-	sample := fmt.Sprintf("groupArraySampleIf(%d, 1)((%[2]s, %[3]s), isNotNull(%[2]s) AND isNotNull(%[3]s))", rankCorrSample, x, y)
-	return fmt.Sprintf("ifNotFinite(round(arrayReduce('rankCorr', arrayMap(t -> assumeNotNull(t.1), %[1]s), arrayMap(t -> assumeNotNull(t.2), %[1]s)), 4) + 0, NULL)", sample)
-}
-
 // correlationOperands finds the two operands of a correlation spec: x= and y=
 // when named, otherwise the first two bare arguments.
 func correlationOperands(args []Argument) (x, y Argument, ok bool) {
@@ -82,9 +64,9 @@ func (h *correlationHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		return fmt.Errorf("%s(): both fields must be outputs of the preceding aggregation, or neither", h.name)
 	}
 	if xOut {
-		sqlExpr := correlationSQL(h.name, fmt.Sprintf("toFloat64(%s)", xArg.FieldName()), fmt.Sprintf("toFloat64(%s)", yArg.FieldName()))
-		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations, sqlExpr+" AS "+alias)
-		ctx.Plan.outerAggFieldOrder = append(ctx.Plan.outerAggFieldOrder, alias)
+		agg := corrAgg{rank: h.name == "rankcorr", x: fmt.Sprintf("toFloat64(%s)", xArg.FieldName()), y: fmt.Sprintf("toFloat64(%s)", yArg.FieldName())}
+		sqlExpr := agg.sql()
+		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations, aggSelect(agg, alias))
 		ctx.Plan.aggregationOutputs[alias] = sqlExpr
 	} else {
 		x, err := aggOperandNumeric(xArg, ctx.Registry)
@@ -96,11 +78,12 @@ func (h *correlationHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 			return fmt.Errorf("%s(): %w", h.name, err)
 		}
 		source := ctx.Plan.CurrentStage()
-		sqlExpr := correlationSQL(h.name, x, y)
+		agg := corrAgg{rank: h.name == "rankcorr", x: x, y: y}
+		sqlExpr := agg.sql()
 		if err := aggAliasClash(source, h.name, alias, sqlExpr); err != nil {
 			return err
 		}
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", sqlExpr, alias)})
+		source.Layer.Selects = append(source.Layer.Selects, aggSelect(agg, alias))
 		ctx.Plan.aggregationOutputs[alias] = sqlExpr
 	}
 	ctx.Registry.SetResolveExpr(alias, alias)
