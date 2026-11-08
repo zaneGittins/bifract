@@ -1089,6 +1089,17 @@ func TestFirstSeenAggSQLShapes(t *testing.T) {
 	} {
 		mustHaveML(t, w, want)
 	}
+	if strings.Contains(w, "bound_first") {
+		t.Errorf("unbounded read added bound columns:\n%s", w)
+	}
+	b := FirstSeenAggSQL(FirstSeenAgg{Source: "`t`", Scope: "1", KeyCol: "entity_key", HistoryDays: 30, Bound: "_day >= toDate('2026-01-01')"})
+	for _, want := range []string{
+		"minIf(first_seen, _day > toDate(now(), 'UTC') - 30 AND _day >= toDate('2026-01-01')) AS _bfs",
+		"maxIf(last_seen, _day > toDate(now(), 'UTC') - 30 AND _day >= toDate('2026-01-01')) AS _bls",
+		"_bfs AS bound_first", "_bls AS bound_last",
+	} {
+		mustHaveML(t, b, want)
+	}
 	if HistoryRetentionDays(30) != 61 {
 		t.Errorf("retention %d, want the lookback and a day", HistoryRetentionDays(30))
 	}

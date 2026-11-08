@@ -62,6 +62,9 @@ type FirstSeenAgg struct {
 	HistoryDays           int  // a windowed first_seen table's window, else 0
 	Recorded              bool // add recorded_at (first_seen tables only)
 	Days                  bool // add the sorted day list
+	// Bound, a predicate on a windowed table's day column, adds bound_first and
+	// bound_last: the key's first and last times on window days it admits.
+	Bound string
 }
 
 // FirstSeenAggSQL returns one row per entity: KeyCol, first_seen, last_seen,
@@ -91,8 +94,14 @@ GROUP BY %s`, a.KeyCol, extraCols(cols), a.Source, a.Scope, a.KeyCol)
 	// Inner aliases differ from the columns they aggregate, which would otherwise
 	// nest aggregates (code 184).
 	in := HistoryPredicate(a.HistoryDays, "")
+	inner := ""
 	if a.Days {
 		cols = append(cols, "_ds AS days")
+	}
+	if a.Bound != "" {
+		b := in + " AND " + a.Bound
+		inner = fmt.Sprintf(",\n        minIf(first_seen, %[1]s) AS _bfs,\n        maxIf(last_seen, %[1]s) AS _bls", b)
+		cols = append(cols, "_bfs AS bound_first", "_bls AS bound_last")
 	}
 	if a.Recorded {
 		// The earliest recording from the return on, so a late log for an
@@ -112,13 +121,13 @@ FROM (
         sumIf(event_count, %[3]s) AS _ec,
         arraySort(groupUniqArrayIf(%[4]s, %[3]s)) AS _ds,
         arraySort(groupArray((%[4]s, first_recorded))) AS _dr,
-        %[5]s AS _ri
+        %[5]s AS _ri%[9]s
     FROM %[6]s
     WHERE %[7]s AND %[8]s
     GROUP BY %[1]s
     HAVING length(_ds) > 0
 )`, a.KeyCol, extraCols(cols), in, HistoryDayColumn, historyReturnIndex("_dr", ".1", a.HistoryDays),
-		a.Source, a.Scope, historyLookbackPredicate(a.HistoryDays))
+		a.Source, a.Scope, historyLookbackPredicate(a.HistoryDays), inner)
 }
 
 func extraCols(cols []string) string {

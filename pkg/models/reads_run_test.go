@@ -313,3 +313,16 @@ func TestReadStateSummary(t *testing.T) {
 		t.Error("unknown type summarized")
 	}
 }
+
+// The listing's history starts no earlier than the model's record start.
+func TestReadStateSummaryFromRecordStart(t *testing.T) {
+	env := newEnv(t)
+	mo := clusterModel(env, ModelTypeVolumeBaseline, ModelDefinition{KeyFields: []string{"u"}})
+	mo.CreatedAt = time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)
+	if _, err := env.mgr.readStateSummary(context.Background(), mo, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if q := env.ch.Queried(); len(q) != 1 || !strings.Contains(q[0], "toDate(bucket, 'UTC') >= toDate('2026-10-02')") {
+		t.Errorf("summary is not bounded by the record start: %v", q)
+	}
+}

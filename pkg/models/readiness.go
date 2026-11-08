@@ -112,10 +112,10 @@ func readinessHasGroups(mt ModelType, def ModelDefinition) bool {
 }
 
 // readinessSource is one row per key with kept, its sorted days inside the window,
-// which is what caps T at the window. A log's timestamp is whatever it claims, so
-// days at the epoch or ahead of today, which no history can hold, are dropped.
-// scored adds the group columns, at the cost of the scored read's window step.
-func readinessSource(mt ModelType, def ModelDefinition, qt, fidEsc string, scored bool) string {
+// which is what caps T at the window, and drops days the model cannot have
+// recorded (see recordedDay). scored adds the group columns, at the cost of the
+// scored read's window step.
+func readinessSource(mt ModelType, def ModelDefinition, qt, fidEsc string, from time.Time, scored bool) string {
 	hist := def.HistoryDaysFor(mt)
 	var src string
 	switch {
@@ -126,9 +126,9 @@ func readinessSource(mt ModelType, def ModelDefinition, qt, fidEsc string, score
 	default:
 		src = "SELECT seen_days AS days FROM (\n" + parser.RarityPairDaysSQL(qt, fidScope(fidEsc), hist, false) + "\n)"
 	}
-	return fmt.Sprintf(`SELECT *, arrayFilter(d -> d > toDate(0) AND d <= toDate(now(), 'UTC'), days) AS kept
+	return fmt.Sprintf(`SELECT *, arrayFilter(d -> %s, days) AS kept
 FROM (%s)
-WHERE length(kept) > 0`, src)
+WHERE length(kept) > 0`, recordedDay("d", from), src)
 }
 
 // newKeyPredicate narrows a windowed first_seen model to keys it would call new:
@@ -144,7 +144,7 @@ func newKeyPredicate(mt ModelType, def ModelDefinition) string {
 // readinessSummarySQL reads T's bounds, N1 and, for a grouped rarity model, the
 // group counts. model_total and coverage repeat on a group's rows, so groups are
 // counted distinct.
-func readinessSummarySQL(mt ModelType, def ModelDefinition, qt, fidEsc string) string {
+func readinessSummarySQL(mt ModelType, def ModelDefinition, qt, fidEsc string, from time.Time) string {
 	groups := ""
 	hasGroups := readinessHasGroups(mt, def)
 	if hasGroups {
@@ -156,17 +156,17 @@ func readinessSummarySQL(mt ModelType, def ModelDefinition, qt, fidEsc string) s
 	return fmt.Sprintf(`SELECT toUInt64(toUnixTimestamp(toDateTime(min(kept[1]), 'UTC'))) AS oldest,
     toUInt64(toUnixTimestamp(toDateTime(max(kept[-1]), 'UTC'))) AS newest,
     toUInt64(countIf(length(kept) = 1%s)) AS seen_once%s
-FROM (%s)`, newKeyPredicate(mt, def), groups, readinessSource(mt, def, qt, fidEsc, hasGroups))
+FROM (%s)`, newKeyPredicate(mt, def), groups, readinessSource(mt, def, qt, fidEsc, from, hasGroups))
 }
 
 // selfCheckSQL counts the keys seen on exactly one first-half day (the second
 // element of a sorted list decides) and the keys first seen in the second half.
-func selfCheckSQL(mt ModelType, def ModelDefinition, qt, fidEsc string, s selfCheckHalves) string {
+func selfCheckSQL(mt ModelType, def ModelDefinition, qt, fidEsc string, from time.Time, s selfCheckHalves) string {
 	mid := "toDate('" + s.mid.Format("2006-01-02") + "')"
 	end := "toDate('" + s.end.Format("2006-01-02") + "')"
 	return fmt.Sprintf(`SELECT toUInt64(countIf(kept[1] < %[1]s AND (length(kept) = 1 OR kept[2] >= %[1]s)%[3]s)) AS forecast,
     toUInt64(countIf(kept[1] >= %[1]s AND kept[1] < %[2]s%[3]s)) AS actual
-FROM (%[4]s)`, mid, end, newKeyPredicate(mt, def), readinessSource(mt, def, qt, fidEsc, false))
+FROM (%[4]s)`, mid, end, newKeyPredicate(mt, def), readinessSource(mt, def, qt, fidEsc, from, false))
 }
 
 func parseReadinessGroups(r map[string]interface{}, readyDays int) *ReadinessGroups {
@@ -193,8 +193,8 @@ func (m *Manager) addReadiness(ctx context.Context, model *Model, qt, fid string
 }
 
 func (m *Manager) readReadiness(ctx context.Context, model *Model, qt, fid string) (*ModelReadiness, error) {
-	mt, def := model.ModelType, model.Definition
-	rows, err := m.ch.QuerySchema(ctx, readinessSummarySQL(mt, def, qt, fid))
+	mt, def, from := model.ModelType, model.Definition, recordStart(model)
+	rows, err := m.ch.QuerySchema(ctx, readinessSummarySQL(mt, def, qt, fid, from))
 	if err != nil {
 		return nil, fmt.Errorf("summary: %w", err)
 	}
@@ -222,7 +222,7 @@ func (m *Manager) readReadiness(ctx context.Context, model *Model, qt, fid strin
 	if !ok {
 		return r, nil
 	}
-	rows, err = m.ch.QuerySchema(ctx, selfCheckSQL(mt, def, qt, fid, s))
+	rows, err = m.ch.QuerySchema(ctx, selfCheckSQL(mt, def, qt, fid, from, s))
 	if err != nil {
 		log.Printf("[Models] readiness self-check %s: %v", model.ID, err)
 		return r, nil

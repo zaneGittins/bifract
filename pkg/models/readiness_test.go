@@ -215,7 +215,7 @@ func TestReadinessGroups(t *testing.T) {
 	def := rarityDef
 	def.MinSample = 3
 	def.Alert = &AlertConfig{CoverageThreshold: 0.85, PercentThreshold: 5}
-	q := readinessSummarySQL(ModelTypeRarity, def, "`t`", "f1")
+	q := readinessSummarySQL(ModelTypeRarity, def, "`t`", "f1", time.Time{})
 	for _, want := range []string{
 		"uniqExact(partition_val) AS groups",
 		"uniqExactIf(partition_val, model_total >= 21) AS groups_ready",
@@ -230,21 +230,21 @@ func TestReadinessGroups(t *testing.T) {
 	coverageOnly := rarityDef
 	coverageOnly.MinSample = 3
 	coverageOnly.Alert = &AlertConfig{CoverageThreshold: 0.85}
-	if q := readinessSummarySQL(ModelTypeRarity, coverageOnly, "`t`", "f1"); !strings.Contains(q, "model_total >= 3)") {
+	if q := readinessSummarySQL(ModelTypeRarity, coverageOnly, "`t`", "f1", time.Time{}); !strings.Contains(q, "model_total >= 3)") {
 		t.Errorf("not the alert's gate: %s", q)
 	}
 
 	noGate := rarityDef
 	noGate.Alert = nil
-	if q := readinessSummarySQL(ModelTypeRarity, noGate, "`t`", "f1"); strings.Contains(q, "groups_covered") {
+	if q := readinessSummarySQL(ModelTypeRarity, noGate, "`t`", "f1", time.Time{}); strings.Contains(q, "groups_covered") {
 		t.Errorf("no coverage gate, but counted one: %s", q)
 	}
 	ungrouped := rarityDef
 	ungrouped.PartitionKey = ""
-	if q := readinessSummarySQL(ModelTypeRarity, ungrouped, "`t`", "f1"); strings.Contains(q, "groups") {
+	if q := readinessSummarySQL(ModelTypeRarity, ungrouped, "`t`", "f1", time.Time{}); strings.Contains(q, "groups") {
 		t.Errorf("no group, but counted them: %s", q)
 	}
-	if q := readinessSummarySQL(ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"u"}}, "`t`", "f1"); strings.Contains(q, "groups") {
+	if q := readinessSummarySQL(ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"u"}}, "`t`", "f1", time.Time{}); strings.Contains(q, "groups") {
 		t.Errorf("first_seen has no groups to count: %s", q)
 	}
 }
@@ -263,11 +263,11 @@ func TestReadinessSources(t *testing.T) {
 		windowFn bool
 		newOnly  bool
 	}{
-		{"grouped summary", readinessSummarySQL(ModelTypeRarity, grouped, "`t`", "f1"), true, false},
-		{"ungrouped summary", readinessSummarySQL(ModelTypeRarity, ungrouped, "`t`", "f1"), false, false},
-		{"rarity self-check", selfCheckSQL(ModelTypeRarity, grouped, "`t`", "f1", s), false, false},
-		{"first_seen summary", readinessSummarySQL(ModelTypeFirstSeen, seen, "`t`", "f1"), false, true},
-		{"first_seen self-check", selfCheckSQL(ModelTypeFirstSeen, seen, "`t`", "f1", s), false, true},
+		{"grouped summary", readinessSummarySQL(ModelTypeRarity, grouped, "`t`", "f1", time.Time{}), true, false},
+		{"ungrouped summary", readinessSummarySQL(ModelTypeRarity, ungrouped, "`t`", "f1", time.Time{}), false, false},
+		{"rarity self-check", selfCheckSQL(ModelTypeRarity, grouped, "`t`", "f1", time.Time{}, s), false, false},
+		{"first_seen summary", readinessSummarySQL(ModelTypeFirstSeen, seen, "`t`", "f1", time.Time{}), false, true},
+		{"first_seen self-check", selfCheckSQL(ModelTypeFirstSeen, seen, "`t`", "f1", time.Time{}, s), false, true},
 	}
 	for _, c := range cases {
 		if got := strings.Contains(c.q, windowFn); got != c.windowFn {
@@ -321,5 +321,53 @@ func TestValidateEstimateHalfDays(t *testing.T) {
 	}
 	if err := validateEstimateHalfDays(ModelDefinition{}); err != nil {
 		t.Errorf("no alert: %v", err)
+	}
+}
+
+// A model holds days from its creation, or its backfill's start when earlier. A
+// dataset's logs and a network model's score ranges carry no such bound.
+func TestRecordStart(t *testing.T) {
+	created := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	earlier, later := created.AddDate(0, 0, -30), created.AddDate(0, 0, 3)
+	cases := []struct {
+		name string
+		mo   Model
+		want time.Time
+	}{
+		{"created", Model{ModelType: ModelTypeRarity, CreatedAt: created}, created},
+		{"backfilled", Model{ModelType: ModelTypeFirstSeen, CreatedAt: created, BackfillFrom: &earlier}, earlier},
+		{"backfill after creation", Model{ModelType: ModelTypeVolumeBaseline, CreatedAt: created, BackfillFrom: &later}, created},
+		{"dataset", Model{ModelType: ModelTypeRarity, CreatedAt: created, DatasetEnd: &later}, time.Time{}},
+		{"network", Model{ModelType: ModelTypeBeacon, CreatedAt: created}, time.Time{}},
+	}
+	for _, c := range cases {
+		if got := recordStart(&c.mo); !got.Equal(c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+	if got := recordedDay("d", time.Time{}); got != "d > toDate(0) AND d <= toDate(now(), 'UTC')" {
+		t.Errorf("unbounded: %s", got)
+	}
+	if got := recordedDay("d", earlier); got != "d >= toDate('2026-09-01') AND d <= toDate(now(), 'UTC')" {
+		t.Errorf("bounded: %s", got)
+	}
+}
+
+// The estimate's reads drop days before the model's record start.
+func TestGetStatsReadinessFromRecordStart(t *testing.T) {
+	env := newEnv(t)
+	mo := clusterModel(env, ModelTypeRarity, rarityDef)
+	from := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+	mo.BackfillFrom = &from
+	env.ch.On("AS seen_once", summaryResult(readinessStart, readinessStart.AddDate(0, 0, 29), 39))
+	env.ch.On("AS forecast", fakedb.CHResult{Cols: cols("forecast", "UInt64", "actual", "UInt64"), Rows: [][]any{{uint64(20), uint64(17)}}})
+	if _, err := env.mgr.GetStats(context.Background(), mo, fracA); err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"AS seen_once", "AS forecast"} {
+		q := env.ch.QueriedMatching(marker)
+		if len(q) != 1 || !strings.Contains(q[0], "d >= toDate('2026-08-20') AND d <= toDate(now(), 'UTC')") {
+			t.Errorf("%s read is not bounded by the record start: %v", marker, q)
+		}
 	}
 }
