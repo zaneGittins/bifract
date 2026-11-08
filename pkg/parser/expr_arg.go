@@ -39,16 +39,12 @@ func exprArgAlias(arg string) string {
 // argument without returning an error cannot turn a broken expression into a
 // field reference that matches nothing.
 func validateExprArgs(pipeline *PipelineNode, registry *FieldRegistry) error {
-	var err error
-	ForEachCommand(pipeline, func(cmd CommandNode) {
-		if err != nil {
-			return
+	return validateCommands(pipeline, func(cmd CommandNode) error {
+		if err := validateArgExprs(cmd.Args, registry); err != nil {
+			return fmt.Errorf("%s(): %w", cmd.Name, err)
 		}
-		if e := validateArgExprs(cmd.Args, registry); e != nil {
-			err = fmt.Errorf("%s(): %w", cmd.Name, e)
-		}
+		return nil
 	})
-	return err
 }
 
 // validateArgExprs compiles every expression a command's arguments hold. An

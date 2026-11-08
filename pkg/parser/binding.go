@@ -153,6 +153,9 @@ func (p *Parser) parseBindingValue(name string, nameTok Token, end int) (*Bindin
 		if err != nil {
 			return nil, fmt.Errorf("let %s: %w", name, err)
 		}
+		if cmd := queryResolvedCommand(sub); cmd != "" {
+			return nil, newPosError(nameTok, "let %s: %s() cannot be used in a let binding: write it in the query", name, cmd)
+		}
 		return &BindingNode{Name: name, Kind: BindingPipeline, Body: body, Pipe: sub, Pos: nameTok.Pos}, nil
 	}
 
@@ -188,6 +191,23 @@ func (p *Parser) parseBindingValue(name string, nameTok Token, end int) (*Bindin
 		return nil, newPosError(p.current(), "let %s: unexpected %q", name, p.current().Value)
 	}
 	return binding, nil
+}
+
+// queryResolvedCommand names a command a binding cannot run, or "". comment() and
+// tlsh() are resolved for the outer query alone, and every read of a binding would
+// repeat a pgrHas walk that ClickHouse could not cancel.
+func queryResolvedCommand(pipeline *PipelineNode) string {
+	name := ""
+	ForEachCommand(pipeline, func(cmd CommandNode) {
+		if name != "" {
+			return
+		}
+		_, pgr := getCommandHandler(cmd.Name).(pgrFilter)
+		if c := strings.ToLower(cmd.Name); pgr || c == "comment" || c == "comments" || c == "tlsh" {
+			name = CommandDisplayName(cmd.Name)
+		}
+	})
+	return name
 }
 
 // findStatementEnd returns the index of the ';' closing the statement that starts

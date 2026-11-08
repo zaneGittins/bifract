@@ -128,6 +128,8 @@ event_id="4624"
 
 `in()` tests the column with the same name as the field; a subquery returning a single column, or ending in a one-key `groupby()`, needs no name match. The subquery uses the same fractal and time range as the outer query and runs once even if referenced twice. This is how to test two subquery memberships, since `join()` cannot nest.
 
+A result set cannot use `comment()`, `tlsh()` or a `pgrHas` filter, since those are resolved for the whole query: write them in the query itself.
+
 ## Boolean parameters
 
 Switches such as `require=`, `distinct=`, `percent=` and `directed=` are off by default. They accept `true`/`false`, `yes`/`no` or `1`/`0`; any other value leaves the default, so a typo cannot flip a switch.

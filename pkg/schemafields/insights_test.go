@@ -1,6 +1,7 @@
 package schemafields
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -71,6 +72,13 @@ func TestReferencedFieldsCoversCommands(t *testing.T) {
 		if !idx[want] {
 			t.Errorf("missing %q in %v", want, got)
 		}
+	}
+}
+
+func TestReferencedFieldsCoversBindings(t *testing.T) {
+	got := referencedFields(`let &s := os="win" | groupby(host); user=x | in(user, &s)`)
+	if !slices.Contains(got, "host") || !slices.Contains(got, "os") {
+		t.Errorf("fields in the binding not counted: %v", got)
 	}
 }
 

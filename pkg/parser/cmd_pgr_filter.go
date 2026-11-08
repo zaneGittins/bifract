@@ -421,30 +421,11 @@ func (h *pgrHasAncestorHandler) readsProvenance() {}
 func (h *pgrHasNetworkHandler) readsProvenance()  {}
 func (h *pgrContextHandler) readsProvenance()     {}
 
-// forEachCommandIn visits every command a pipeline runs, saying whether it sits in a let binding.
-func forEachCommandIn(pipeline *PipelineNode, inBinding bool, fn func(cmd CommandNode, inBinding bool)) {
-	if pipeline == nil {
-		return
-	}
-	visit := func(cmd CommandNode) { fn(cmd, inBinding) }
-	for _, cmd := range pipeline.Commands {
-		visit(cmd)
-		for _, sub := range nestedPipelines(cmd) {
-			forEachCommandIn(sub, inBinding, fn)
-		}
-	}
-	forEachHavingCommand(pipeline.HavingConditions, visit)
-	for _, b := range pipeline.Bindings {
-		forEachCommandIn(b.Pipe, true, fn)
-	}
-}
-
-// forEachPgrFilter visits every provenance filter a pipeline runs, saying whether it sits in a
-// let binding.
-func forEachPgrFilter(pipeline *PipelineNode, inBinding bool, fn func(cmd CommandNode, f pgrFilter, inBinding bool)) {
-	forEachCommandIn(pipeline, inBinding, func(cmd CommandNode, inBinding bool) {
+// forEachPgrFilter visits every provenance filter a pipeline runs.
+func forEachPgrFilter(pipeline *PipelineNode, fn func(cmd CommandNode, f pgrFilter)) {
+	ForEachCommand(pipeline, func(cmd CommandNode) {
 		if f, ok := getCommandHandler(cmd.Name).(pgrFilter); ok {
-			fn(cmd, f, inBinding)
+			fn(cmd, f)
 		}
 	})
 }
@@ -453,7 +434,7 @@ func forEachPgrFilter(pipeline *PipelineNode, inBinding bool, fn func(cmd Comman
 // provenance tables, or "".
 func FirstPgrFilter(pipeline *PipelineNode) string {
 	first := ""
-	forEachCommandIn(pipeline, false, func(cmd CommandNode, _ bool) {
+	ForEachCommand(pipeline, func(cmd CommandNode) {
 		if _, ok := getCommandHandler(cmd.Name).(provenanceReader); ok && first == "" {
 			first = CommandDisplayName(cmd.Name)
 		}
@@ -462,20 +443,16 @@ func FirstPgrFilter(pipeline *PipelineNode) string {
 }
 
 // ValidatePgrFilters refuses what the filters cannot do. They test log rows at the source scan,
-// so past an aggregation they would change the input instead of the output. A binding is
-// refused because each read repeats the walk, and ClickHouse could not cancel stacked reads.
+// so past an aggregation they would change the input instead of the output. A let binding
+// cannot hold one (see queryResolvedCommand).
 func ValidatePgrFilters(pipeline *PipelineNode) error {
-	name, total, bound := "", 0, false
-	forEachPgrFilter(pipeline, false, func(cmd CommandNode, f pgrFilter, inBinding bool) {
+	name, total := "", 0
+	forEachPgrFilter(pipeline, func(cmd CommandNode, f pgrFilter) {
 		name = CommandDisplayName(cmd.Name)
 		total += f.lookups(cmd)
-		bound = bound || inBinding
 	})
 	if name == "" {
 		return nil
-	}
-	if bound {
-		return fmt.Errorf("%s() cannot be used in a let binding: write it in the query", name)
 	}
 	if total > maxPgrLookups {
 		return fmt.Errorf("this query needs %d pgrHas lookups, and the limit is %d: use fewer filters or a smaller depth=", total, maxPgrLookups)
@@ -487,15 +464,15 @@ func ValidatePgrFilters(pipeline *PipelineNode) error {
 	}
 	blocked := firstAggregatingCommandIndex(pipeline.Commands)
 	late := false
-	note := func(cmd CommandNode, _ pgrFilter, _ bool) { late = true }
+	note := func(cmd CommandNode, _ pgrFilter) { late = true }
 	for i, cmd := range pipeline.Commands {
 		if i > blocked {
-			forEachPgrFilter(&PipelineNode{Commands: []CommandNode{cmd}}, false, note)
+			forEachPgrFilter(&PipelineNode{Commands: []CommandNode{cmd}}, note)
 		}
 	}
 	for _, c := range pipeline.HavingConditions {
 		if c.CmdIndex > blocked {
-			forEachPgrFilter(&PipelineNode{HavingConditions: []HavingCondition{c}}, false, note)
+			forEachPgrFilter(&PipelineNode{HavingConditions: []HavingCondition{c}}, note)
 		}
 	}
 	if late {

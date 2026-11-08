@@ -108,6 +108,7 @@ func TestModelNamesIn(t *testing.T) {
 		`* | chain(user) { NOT modelLookup(model="e", key=[user]); x=1 }`:                                            "e",
 		`* | case { NOT modelLookup(model="f", key=[user]) | y:=1; * }`:                                              "f",
 		`* | join(user) { * | modelLookup(model="g", key=[user]) | groupby(user) }`:                                  "g",
+		`let &s := * | modelLookup(model="h", key=[user]) | groupby(user); * | in(user, &s)`:                         "h",
 		`* | groupby(`: "",
 	}
 	for q, want := range cases {
@@ -285,7 +286,7 @@ func TestBuildQueryOptsReadsProvenanceAcrossShards(t *testing.T) {
 }
 
 func TestValidateRunsInEngineRefusesBadPgrFilters(t *testing.T) {
-	for _, q := range []string{`groupBy(user) | pgrHasNetwork()`, `let &s := pgrHasNetwork() | groupby(user); in(user, &s)`} {
+	for _, q := range []string{`groupBy(user) | pgrHasNetwork()`} {
 		pipeline, err := parser.ParseQuery(q)
 		if err != nil {
 			t.Fatal(err)
