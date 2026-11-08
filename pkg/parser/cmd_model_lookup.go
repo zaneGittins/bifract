@@ -13,16 +13,12 @@ import (
 // It joins the model's scoring subquery, one row per scored key, onto the rows it
 // reads and adds the model's output columns (modelOutputColumns). With no
 // aggregation before it the join sits in the log scan's FROM (see
-// QueryPlan.ModelLookupAtScan); after one it joins the aggregated rows, as the layer
+// QueryPlan.lookup.AtScan); after one it joins the aggregated rows, as the layer
 // between that stage and the next (see modelJoinLayer). Either way, every command
 // after it reads the model's columns as ordinary columns.
 type modelLookupHandler struct{}
 
 func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if ctx.AsCondition {
-		// A condition tests the key and adds no columns.
-		return nil
-	}
 	modelName, _, _, err := parseModelLookupArgs(cmd)
 	if err != nil {
 		return err
@@ -43,7 +39,7 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 	// Register each output field as a model-lookup column: it exists only after the
 	// JOIN, so it resolves to its bare output name, and anything reading it is
 	// placed after the join (see FieldRegistry.DependsOnJoin).
-	if info.ModelType == "rarity" && conditionsReference(ctx.Pipeline.HavingConditions, "confidence") {
+	if info.ModelType == "rarity" && conditionsReference(ctx.Pipeline.Filters(), "confidence") {
 		// confidence was the old name for coverage. A filter on it would read an
 		// absent log field and silently match nothing, so name the rename instead.
 		return fmt.Errorf("modelLookup(): rarity models report coverage, not confidence; filter on coverage instead")
@@ -52,7 +48,7 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 	for _, n := range names {
 		ctx.Registry.Register(n, FieldKindJoined, n, ctx.CmdIndex)
 	}
-	ctx.Plan.ModelLookupOutputs = append([]string(nil), names...)
+	ctx.Plan.lookup.Outputs = append([]string(nil), names...)
 	return nil
 }
 
@@ -68,9 +64,6 @@ var modelColumns = map[string][]string{
 }
 
 func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if ctx.AsCondition {
-		return h.executeCondition(cmd, ctx)
-	}
 	if err := claimLookup(ctx.Plan, "modelLookup"); err != nil {
 		return err
 	}
@@ -84,16 +77,16 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		return err
 	}
 
-	ctx.Plan.ModelLookupFields = ks.fields
-	ctx.Plan.modelKeys = ks
-	ctx.Plan.ModelLookupCmd = ctx.CmdIndex
-	ctx.Plan.ModelLookupStrict = strict
+	ctx.Plan.lookup.Fields = ks.fields
+	ctx.Plan.lookup.keys = ks
+	ctx.Plan.lookup.Cmd = ctx.CmdIndex
+	ctx.Plan.lookup.Strict = strict
 	keyExprs := make([]string, len(keyFields))
 	for i, kf := range keyFields {
 		keyExprs[i] = modelLookupFieldRef(kf, ctx.Registry)
 	}
-	if ctx.Plan.ModelLookupAtScan {
-		ctx.Plan.ModelLookupKeyExprs = keyExprs
+	if ctx.Plan.lookup.AtScan {
+		ctx.Plan.lookup.KeyExprs = keyExprs
 		return nil
 	}
 	return joinModelAfterAggregation(ctx, keyFields, keyExprs)
@@ -112,55 +105,54 @@ func joinModelAfterAggregation(ctx *CommandContext, keyFields, keyExprs []string
 	enrichesScan := len(plan.Stages) == 1 && len(src.Caps) == 0 && src.Limit == "" && src.LimitBy == "" && src.ScanLimitBy == ""
 	carried, err := pushCarryForwardStage(ctx)
 	if err != nil {
-		return fmt.Errorf("%s(): %w", plan.lookupName, err)
+		return fmt.Errorf("%s(): %w", plan.lookup.name, err)
 	}
 	if enrichesScan && len(plan.keysLostToAggregation(plan.SourceStage(), keyExprs, keyFields)) == 0 {
-		plan.ModelLookupKeyExprs = keyExprs
+		plan.lookup.KeyExprs = keyExprs
 	}
 	left := make([]string, len(keyFields))
 	for i, kf := range keyFields {
 		if !slices.Contains(carried, kf) {
-			return fmt.Errorf("%[2]s() key %[1]s must be part of the grouping to survive aggregation: add %[1]s to the group/table columns, or drop the aggregation", kf, plan.lookupName)
+			return fmt.Errorf("%[2]s() key %[1]s must be part of the grouping to survive aggregation: add %[1]s to the group/table columns, or drop the aggregation", kf, plan.lookup.name)
 		}
 		left[i] = modelKeyString("_outer." + quoteIdent(kf))
 	}
 	stage := plan.CurrentStage()
-	for _, f := range plan.ModelLookupFields {
+	for _, f := range plan.lookup.Fields {
 		if slices.Contains(carried, f) {
-			return fmt.Errorf("%s(): the aggregated rows already have a column %q, which it adds", plan.lookupName, f)
+			return fmt.Errorf("%s(): the aggregated rows already have a column %q, which it adds", plan.lookup.name, f)
 		}
 		stage.Layer.Selects = append(stage.Layer.Selects, SelectExpr{Expr: f})
 		ctx.Registry.Register(f, FieldKindAssignment, f, ctx.CmdIndex)
 		ctx.Registry.SetResolveExpr(f, f)
 	}
 	stage.Layer.ModelJoin = plan.modelJoinOn(left)
-	stage.Layer.ModelJoinFields = plan.ModelLookupFields
+	stage.Layer.ModelJoinFields = plan.lookup.Fields
 	return nil
 }
 
-// executeCondition compiles modelLookup() used as a row condition: the log's key is
-// one the model scores, exactly the rows the default join keeps. NOT around it keeps
+// predicate compiles modelLookup() used as a row condition: the log's key is one
+// the model scores, exactly the rows the default join keeps. NOT around it keeps
 // the rows the model does not score.
-func (h *modelLookupHandler) executeCondition(cmd CommandNode, ctx *CommandContext) error {
+func (h *modelLookupHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, name := range []string{"require", "strict"} {
 		if b.Has(name) {
-			return fmt.Errorf("modelLookup() as a condition only tests whether the model scores the key, so %s= has no effect; drop it", name)
+			return "", fmt.Errorf("modelLookup() as a condition only tests whether the model scores the key, so %s= has no effect; drop it", name)
 		}
 	}
 	ks, err := resolveModelKeySet(cmd, ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	keys := make([]string, len(ks.keyFields))
 	for i, kf := range ks.keyFields {
 		keys[i] = modelLookupFieldRef(kf, ctx.Registry)
 	}
-	ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, ks.membership(keys, nil))
-	return nil
+	return ks.membership(keys, nil), nil
 }
 
 // modelKeySet is what a model scores: its scoring subquery and the key set that
@@ -582,9 +574,9 @@ func init() {
 }
 
 // conditionsReference reports whether any condition reads field on either side.
-func conditionsReference(conds []HavingCondition, field string) bool {
+func conditionsReference(conds []Condition, field string) bool {
 	for _, c := range conds {
-		if c.IsCompound {
+		if c.IsCompound() {
 			if conditionsReference(c.Children, field) {
 				return true
 			}

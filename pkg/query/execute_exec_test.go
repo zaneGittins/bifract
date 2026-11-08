@@ -268,7 +268,11 @@ func TestExecuteBQLHonorsSourcePreferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "ORDER BY " + strings.Join(parser.ProvenanceOrderBy, ", "); !strings.Contains(res.SQL, want) {
+	var terms []string
+	for _, t := range parser.ProvenanceOrderBy {
+		terms = append(terms, t.String())
+	}
+	if want := "ORDER BY " + strings.Join(terms, ", "); !strings.Contains(res.SQL, want) {
 		t.Errorf("sql is missing %q: %s", want, res.SQL)
 	}
 	if !regexp.MustCompile(`\bLIMIT 7\b`).MatchString(res.SQL) {

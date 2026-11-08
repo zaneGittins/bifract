@@ -21,22 +21,10 @@ import (
 // This file reads the statements. binding_subst.go puts what they name into the
 // tree; binding_sql.go renders the ones that name a set of rows.
 
-// A let binding names an expression so a query can state it once and use it in
-// several places:
-//
-//	let &lolbin = lower(image) =~ "rundll32.exe","mshta.exe";
-//	* | &lolbin AND parent_image = "winword.exe"
-//
-// The & sigil is mandatory and is part of the name. BQL resolves an unknown
-// identifier to an empty JSON field rather than erroring, so a binding sharing a
-// namespace with log fields would turn a typo into a query that silently matches
-// nothing. The sigil keeps the two apart, and an unresolved reference is a hard
-// error (see compileFieldRef).
-//
-// Bindings are substituted into the AST as they are parsed, so everything
-// downstream sees the query the author would have written by hand. A binding may
-// reference one declared before it; referencing itself or a later one cannot
-// resolve, which is what stops a cycle.
+// BindingKind is what a let binding names. Bindings are substituted into the
+// tree as it is parsed, so everything downstream sees the query the author would
+// have written by hand. A binding may reference one declared before it;
+// referencing itself or a later one cannot resolve, which is what stops a cycle.
 type BindingKind int
 
 const (
@@ -65,12 +53,11 @@ func (k BindingKind) describe() string {
 type BindingNode struct {
 	Name string // with the sigil, e.g. "&lolbin"
 	Kind BindingKind
-	Expr *ExprNode        // BindingValue
-	Cond *HavingCondition // BindingCondition
+	Expr *ExprNode  // BindingValue
+	Cond *Condition // BindingCondition
 	// Regex marks a value binding whose literal is a /pattern/. The expression
 	// grammar has no regex literal, so the statement reads it directly.
 	Regex bool
-	Body  string        // BindingPipeline: the source, as written
 	Pipe  *PipelineNode // BindingPipeline
 	// SetRefs counts the places that read this binding as a set. More than one
 	// means the query materialises it once rather than pasting the subquery in
@@ -148,15 +135,14 @@ func (p *Parser) parseLetStatement() error {
 // closed by a match operator the expression grammar does not have.
 func (p *Parser) parseBindingValue(name string, nameTok Token, end int) (*BindingNode, error) {
 	if p.spanHasTopLevelPipe(p.pos, end) {
-		body := strings.TrimSpace(string(p.input[p.tokens[p.pos].Pos:p.tokens[end].Pos]))
-		sub, err := p.parseSubPipeline(body)
+		sub, err := p.parseBlockPipeline(p.pos, end)
 		if err != nil {
 			return nil, fmt.Errorf("let %s: %w", name, err)
 		}
 		if cmd := queryResolvedCommand(sub); cmd != "" {
 			return nil, newPosError(nameTok, "let %s: %s() cannot be used in a let binding: write it in the query", name, cmd)
 		}
-		return &BindingNode{Name: name, Kind: BindingPipeline, Body: body, Pipe: sub, Pos: nameTok.Pos}, nil
+		return &BindingNode{Name: name, Kind: BindingPipeline, Pipe: sub, Pos: nameTok.Pos}, nil
 	}
 
 	// A regex is a literal BQL already has, and the expression grammar has no
@@ -181,7 +167,7 @@ func (p *Parser) parseBindingValue(name string, nameTok Token, end int) (*Bindin
 	}
 	binding := &BindingNode{Name: name, Kind: BindingValue, Expr: expr, Pos: nameTok.Pos}
 	if p.atExprMatchOperator() {
-		cond := HavingCondition{Expr: expr}
+		cond := Condition{Expr: expr}
 		if err := p.readExprMatchOperator(&cond); err != nil {
 			return nil, fmt.Errorf("let %s: %w", name, err)
 		}
@@ -251,30 +237,6 @@ func (p *Parser) spanHasTopLevelPipe(start, end int) bool {
 	return false
 }
 
-// parseSubPipeline parses a binding's pipeline body. The bindings declared so far
-// are in scope, so one binding can build on another.
-func (p *Parser) parseSubPipeline(body string) (*PipelineNode, error) {
-	if strings.TrimSpace(body) == "" {
-		return nil, fmt.Errorf("the pipeline is empty")
-	}
-	lexer := NewLexer(body)
-	tokens, err := lexer.Tokenize()
-	if err != nil {
-		return nil, err
-	}
-	sub := NewParser(tokens)
-	sub.input = []rune(body)
-	// A copy, not the map itself: a body cannot declare a binding today, since
-	// the statement ends at the first ';', but sharing the map would make it leak
-	// into the outer query the day that changes.
-	sub.bindings = make(map[string]*BindingNode, len(p.bindings))
-	for k, v := range p.bindings {
-		sub.bindings[k] = v
-	}
-	sub.bindingBudget = p.budget()
-	return sub.Parse()
-}
-
 // lookupBinding resolves a reference, reporting what is declared when it misses.
 func (p *Parser) lookupBinding(tok Token) (*BindingNode, error) {
 	if b, ok := p.bindings[tok.Value]; ok {
@@ -303,7 +265,7 @@ func (p *Parser) atBindingExpr() bool {
 }
 
 // parseBindingCondition reads a binding used as a filter leaf.
-func (p *Parser) parseBindingCondition(negate bool) (*HavingCondition, error) {
+func (p *Parser) parseBindingCondition() (*Condition, error) {
 	b, err := p.lookupBinding(p.current())
 	if err != nil {
 		return nil, err
@@ -312,7 +274,7 @@ func (p *Parser) parseBindingCondition(negate bool) (*HavingCondition, error) {
 		return nil, newPosError(p.current(), "%s is a result set, not a filter: use it in in(field, %s) or a join() block", b.Name, b.Name)
 	}
 	p.advance()
-	var cond HavingCondition
+	var cond Condition
 	if b.Kind == BindingCondition {
 		clone, err := cloneCondition(b.Cond, p.budget())
 		if err != nil {
@@ -324,35 +286,14 @@ func (p *Parser) parseBindingCondition(negate bool) (*HavingCondition, error) {
 		if err != nil {
 			return nil, err
 		}
-		cond = HavingCondition{Expr: clone}
+		cond = Condition{Expr: clone}
 		// `&susp =~ "a","b"`: the match operators are filter syntax, so they
 		// follow the substituted expression exactly as they follow a written one.
 		if err := p.readExprMatchOperator(&cond); err != nil {
 			return nil, err
 		}
 	}
-	if negate {
-		cond.Negate = !cond.Negate
-	}
 	return &cond, nil
-}
-
-// resolveBlockBinding expands a join block written as nothing but a binding
-// reference. The block becomes that binding's own source, which already parsed as
-// a pipeline, so the handler reads exactly what the author wrote under the name.
-func (p *Parser) resolveBlockBinding(body string) (string, error) {
-	name := strings.TrimSpace(body)
-	if !strings.HasPrefix(name, "&") {
-		return body, nil
-	}
-	b, err := p.lookupBinding(Token{Value: name})
-	if err != nil {
-		return "", err
-	}
-	if b.Kind != BindingPipeline {
-		return "", fmt.Errorf("%s is %s, not a result set: a join() block needs a pipeline", b.Name, b.Kind.describe())
-	}
-	return b.Body, nil
 }
 
 // bindingValueLiteral reads a binding used where a value goes, as in

@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,7 +17,7 @@ func buildAnalyzeFieldsSQL(
 	scanLimit int,
 	whereConditions []string,
 	havingConditions []string,
-	orderByFields []string,
+	orderByFields []OrderTerm,
 	limitClause string,
 	chartType string,
 	chartConfig map[string]interface{},
@@ -49,7 +50,7 @@ func buildAnalyzeFieldsSQL(
 	// Order: default to _events DESC, respect user sort if provided
 	orderClause := "ORDER BY _events DESC"
 	if len(orderByFields) > 0 {
-		orderClause = "ORDER BY " + strings.Join(orderByFields, ", ")
+		orderClause = "ORDER BY " + orderSQL(orderByFields)
 	}
 
 	// Output limit: default high for field metadata (not raw logs)
@@ -208,103 +209,27 @@ func buildProcessTreeSQL(
 	}, nil
 }
 
-// qualifyColumnRefs prefixes bare column references with a table alias,
-// skipping content inside SQL string literals to avoid corrupting values.
-func qualifyColumnRefs(sql, alias string) string {
-	var result strings.Builder
-	inString := false
-
-	for i := 0; i < len(sql); i++ {
-		if inString {
-			result.WriteByte(sql[i])
-			if sql[i] == '\\' && i+1 < len(sql) {
-				i++
-				result.WriteByte(sql[i])
-			} else if sql[i] == '\'' {
-				inString = false
-			}
-			continue
-		}
-
-		if sql[i] == '\'' {
-			result.WriteByte(sql[i])
-			inString = true
-			continue
-		}
-
-		rest := sql[i:]
-		replaced := false
-
-		// fields.`...` - JSON subcolumn reference; may have multiple backtick-quoted
-		// segments for nested paths (e.g. fields.`event`.`name`.:String)
-		if strings.HasPrefix(rest, "fields.`") && (i == 0 || !isWordByte(sql[i-1])) {
-			end := 6 // len("fields") - start scanning from the first dot
-			for end < len(rest) && rest[end] == '.' && end+1 < len(rest) && rest[end+1] == '`' {
-				end += 2 // skip .`
-				for end < len(rest) {
-					if rest[end] == '`' {
-						if end+1 < len(rest) && rest[end+1] == '`' {
-							end += 2 // escaped backtick
-						} else {
-							end++ // closing backtick
-							break
-						}
-					} else {
-						end++
-					}
-				}
-			}
-			// Include .:String type suffix if present
-			if end < len(rest) && strings.HasPrefix(rest[end:], ".:String") {
-				end += len(".:String")
-			}
-			result.WriteString(alias + "." + rest[:end])
-			i += end - 1
-			replaced = true
-		}
-
-		if !replaced {
-			for _, col := range []string{"fractal_id", "timestamp", "norm_log", "log_id"} {
-				if strings.HasPrefix(rest, col) {
-					prevOk := i == 0 || !isWordByte(sql[i-1])
-					nextOk := i+len(col) >= len(sql) || !isWordByte(sql[i+len(col)])
-					if prevOk && nextOk {
-						result.WriteString(alias + "." + col)
-						i += len(col) - 1
-						replaced = true
-						break
-					}
-				}
-			}
-		}
-
-		if !replaced {
-			result.WriteByte(sql[i])
-		}
-	}
-
-	return result.String()
-}
-
 func isWordByte(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
-// collectHavingConditionFields recursively collects all leaf field names from
-// HavingConditions (including compound nodes) into the provided map.
-func collectHavingConditionFields(conditions []HavingCondition, fields map[string]bool) {
-	for _, cond := range conditions {
-		if cond.IsCompound {
-			collectHavingConditionFields(cond.Children, fields)
-			continue
-		}
-		if cond.Field != "" {
-			fields[cond.Field] = true
-		}
-		if cond.ValueField != "" {
-			fields[cond.ValueField] = true
-		}
+// conditionFields lists every field the conditions read, once each, in the
+// order they are written: comparisons, condition commands and expressions alike.
+func conditionFields(conds ...Condition) []string {
+	var out []string
+	for _, c := range conds {
+		c.Walk(func(n Condition) {
+			if n.IsCompound() {
+				return
+			}
+			for _, f := range conditionReads(n) {
+				if !slices.Contains(out, f) {
+					out = append(out, f)
+				}
+			}
+		})
 	}
+	return out
 }
 
 func escapeString(s string) string {
@@ -313,26 +238,6 @@ func escapeString(s string) string {
 	// Escape single quotes for SQL
 	s = strings.ReplaceAll(s, "'", "\\'")
 	return s
-}
-
-// unescapeSQLString reverses escapeString (\\ -> \, \' -> '). A single left-to-
-// right scan is used rather than two ReplaceAlls so overlapping sequences like
-// \\' (an escaped backslash followed by an escaped quote) decode correctly.
-func unescapeSQLString(s string) string {
-	if !strings.Contains(s, "\\") {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+1 < len(s) {
-			i++
-			b.WriteByte(s[i]) // emit the escaped char (\ or ') literally
-			continue
-		}
-		b.WriteByte(s[i])
-	}
-	return b.String()
 }
 
 // namedGroupOpenRe matches the opening syntax of a named capture group in every
@@ -648,10 +553,7 @@ func escapeRegexForClickHouse(pattern string) string {
 // pattern, matching what splitByNonAlpha produces. Only tokens >= 3 chars
 // are returned (shorter ones are too common for useful index pruning).
 func extractLiteralTokens(pattern string) []string {
-	p := pattern
-	if strings.HasPrefix(p, "(?i)") {
-		p = p[4:]
-	}
+	p := strings.TrimPrefix(pattern, "(?i)")
 
 	var tokens []string
 	var current []byte
@@ -961,72 +863,6 @@ func lowerRegexForLowercasedColumn(pattern string) (string, bool) {
 	return b.String(), true
 }
 
-func extractFieldName(fieldRef string) string {
-	// Iceberg norm_log access: JSONExtractString(norm_log, 'a.b') -> a.b. The key
-	// was escaped by escapeString (mapFieldRef), so reverse both escapes (\\ and \').
-	const jsonExtractPrefix = "JSONExtractString(norm_log, '"
-	if strings.HasPrefix(fieldRef, jsonExtractPrefix) && strings.HasSuffix(fieldRef, "')") {
-		inner := fieldRef[len(jsonExtractPrefix) : len(fieldRef)-len("')")]
-		return unescapeSQLString(inner)
-	}
-	// Extract field name from JSON subcolumn ref: fields.`a`.`b`::String -> a.b
-	ref := fieldRef
-	ref = strings.TrimSuffix(ref, ".:String")
-	ref = strings.TrimSuffix(ref, "::String")
-	if !strings.HasPrefix(ref, "fields.`") {
-		return fieldRef
-	}
-	// Strip "fields." prefix, then split backtick-quoted segments
-	ref = ref[7:] // remove "fields."
-	var parts []string
-	for len(ref) > 0 {
-		if ref[0] != '`' {
-			return fieldRef
-		}
-		ref = ref[1:] // skip opening backtick
-		end := 0
-		for end < len(ref) {
-			if ref[end] == '`' {
-				if end+1 < len(ref) && ref[end+1] == '`' {
-					end += 2 // escaped backtick
-					continue
-				}
-				break
-			}
-			end++
-		}
-		if end >= len(ref) {
-			return fieldRef
-		}
-		part := strings.ReplaceAll(ref[:end], "``", "`")
-		parts = append(parts, part)
-		ref = ref[end+1:] // skip closing backtick
-		if len(ref) > 0 && ref[0] == '.' {
-			ref = ref[1:] // skip separator dot
-		}
-	}
-	return strings.Join(parts, ".")
-}
-
-func extractFieldAlias(selectField string) string {
-	// Extract alias from "expression AS alias" or return the field as-is
-	parts := strings.Split(selectField, " AS ")
-	if len(parts) >= 2 {
-		return strings.TrimSpace(parts[len(parts)-1])
-	}
-	// Try lowercase "as"
-	parts = strings.Split(selectField, " as ")
-	if len(parts) >= 2 {
-		return strings.TrimSpace(parts[len(parts)-1])
-	}
-	return selectField
-}
-
-// selectName is the unquoted output column name of a SELECT expression.
-func selectName(sel string) string {
-	return strings.Trim(extractFieldAlias(sel), "`")
-}
-
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
@@ -1247,35 +1083,18 @@ func spanToSeconds(span string) int {
 	}
 }
 
-// parseChainSteps parses chain block tokens into per-step SQL boolean expressions
-// plus the fields those steps filter on.
+// compileChainSteps compiles a chain() block's steps into per-step SQL boolean
+// expressions plus the fields those steps filter on.
 //
-// Each step is parsed as a full pipeline and its commands are run against a
-// throwaway plan, so condition commands (cidr, in, comment) contribute their
+// Each step is a full pipeline, and its commands are run against a throwaway plan, so condition commands (cidr, in, comment) contribute their
 // predicate to that step instead of the whole query. Anything that is not a row
 // predicate (projections, aggregates, structural commands) is rejected.
-func parseChainSteps(tokens []Token, source []rune, opts QueryOptions, parentReg *FieldRegistry) ([]string, []string, error) {
-	var allSteps [][]Token
-	var current []Token
-	for _, tok := range tokens {
-		if tok.Type == TokenSemicolon {
-			if len(current) > 0 {
-				allSteps = append(allSteps, current)
-				current = nil
-			}
-			continue
-		}
-		current = append(current, tok)
-	}
-	if len(current) > 0 {
-		allSteps = append(allSteps, current)
-	}
-
+func compileChainSteps(sequence []*PipelineNode, opts QueryOptions, parentReg *FieldRegistry) ([]string, []string, error) {
 	var steps []string
 	var fields []string
 	seen := make(map[string]bool)
-	for _, stepTokens := range allSteps {
-		sql, stepFields, err := buildChainStep(append(stepTokens, Token{Type: TokenEOF}), source, opts, parentReg)
+	for _, step := range sequence {
+		sql, stepFields, err := buildChainStep(step, opts, parentReg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1294,17 +1113,7 @@ func parseChainSteps(tokens []Token, source []rune, opts QueryOptions, parentReg
 // buildChainStep compiles one step into a single boolean expression, or errors.
 // It never returns an empty expression: a step that matched nothing would be
 // dropped from the pattern and silently change which sequences match.
-func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parentReg *FieldRegistry) (string, []string, error) {
-	// The step's tokens carry absolute offsets into the original query, so giving
-	// the sub-parser that source lets a step use source-backed syntax such as an
-	// expression filter.
-	stepParser := NewParser(stepTokens)
-	stepParser.input = source
-	pl, err := stepParser.Parse()
-	if err != nil {
-		return "", nil, fmt.Errorf("chain step: %w", err)
-	}
-
+func buildChainStep(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistry) (string, []string, error) {
 	// A clone: the step's own projections must resolve its own predicates without
 	// leaking into the query that contains the chain.
 	reg := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
@@ -1318,30 +1127,31 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 
 	// Conditions before the step's first command resolve before its projections
 	// are registered, ahead of them; later ones (`a=1 | _len > 500`) after.
-	first, later := SplitFirstStage(pl.HavingConditions)
+	first, later := SplitFirstStage(pl)
 	if w, err := conditionsPredicate(first, reg.rowLevelClone(), opts); err != nil {
 		return "", nil, fmt.Errorf("chain step: %w", err)
 	} else if w != "" {
 		conjuncts = append(conjuncts, w)
 	}
-	for _, c := range first {
-		fields = collectHavingFieldsOrdered(c, seen, &fields)
+	addFields := func(names []string) {
+		for _, f := range names {
+			if f != normLogColumn && !seen[f] {
+				seen[f] = true
+				fields = append(fields, f)
+			}
+		}
 	}
+	addFields(conditionFields(first...))
 
 	// Before the conditions below: len()/match()/lookupIP() register the expressions
 	// that a later `_len > 500` in the same step resolves against.
-	if len(pl.Commands) > 0 {
+	if len(pl.Commands()) > 0 {
 		w, cf, err := harvestChainCommands(pl, opts, reg)
 		if err != nil {
 			return "", nil, fmt.Errorf("chain step: %w", err)
 		}
 		conjuncts = append(conjuncts, w...)
-		for _, f := range cf {
-			if !seen[f] {
-				seen[f] = true
-				fields = append(fields, f)
-			}
-		}
+		addFields(cf)
 	}
 
 	if w, err := conditionsPredicate(later, reg.rowLevelClone(), opts); err != nil {
@@ -1349,11 +1159,9 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 	} else if w != "" {
 		conjuncts = append(conjuncts, w)
 	}
-	for _, c := range later {
-		fields = collectHavingFieldsOrdered(c, seen, &fields)
-	}
+	addFields(conditionFields(later...))
 
-	if len(pl.Assignments) > 0 {
+	if len(pl.Assignments()) > 0 {
 		return "", nil, fmt.Errorf("chain step: field assignments cannot be used inside a chain step")
 	}
 
@@ -1369,51 +1177,43 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 	}
 }
 
-// CommandPredicate compiles a condition function into a boolean expression whose
-// fields resolve through registry. The handler runs against a throwaway plan and
-// registry copy, so its effect is captured as a predicate instead of being
-// appended to the query's WHERE.
-func CommandPredicate(cmd CommandNode, registry *FieldRegistry, opts QueryOptions) (string, error) {
-	pl := &PipelineNode{Commands: []CommandNode{cmd}}
-	where, _, err := harvestChainCommands(pl, opts, registry.Clone())
-	if err != nil {
-		return "", err
-	}
-	switch len(where) {
-	case 0:
-		return "", notConditionError(fmt.Sprintf("%s() is not a condition", cmd.Name))
-	case 1:
-		return where[0], nil
-	default:
-		return "(" + andJoin(where) + ")", nil
-	}
-}
-
-// harvestChainCommands runs a step's commands against a throwaway plan and returns
-// the predicates they produced, rejecting anything that reshapes the result. A
-// command that only projects contributes no predicate but registers an expression
-// the step's own conditions can reference.
+// harvestChainCommands runs a chain step's commands against a throwaway plan and
+// returns the predicates they produced, rejecting anything that reshapes the
+// result. A step is a row condition, so a command that can be one compiles as one;
+// a command that only projects contributes no predicate but registers an
+// expression the step's own conditions can reference.
 func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistry) ([]string, []string, error) {
 	plan := NewQueryPlan()
 	reg := parentReg
 	if reg == nil {
 		reg = NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
 	}
-	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl, AsCondition: true}
-
-	for _, cmd := range pl.Commands {
+	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl}
+	commands := pl.Commands()
+	for _, cmd := range commands {
 		if getCommandHandler(cmd.Name) == nil {
 			return nil, nil, fmt.Errorf("unsupported command %s()", cmd.Name)
 		}
 	}
-	for i, cmd := range pl.Commands {
+	for i, cmd := range commands {
+		if isPredicateCommand(cmd.Name) {
+			continue
+		}
 		ctx.CmdIndex = i
 		if err := getCommandHandler(cmd.Name).Declare(cmd, ctx); err != nil {
 			return nil, nil, err
 		}
 	}
-	for i, cmd := range pl.Commands {
+	for i, cmd := range commands {
 		ctx.CmdIndex = i
+		if isPredicateCommand(cmd.Name) {
+			sql, err := negatedCommandPredicate(cmd, ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, sql)
+			continue
+		}
 		if err := getCommandHandler(cmd.Name).Execute(cmd, ctx); err != nil {
 			return nil, nil, err
 		}
@@ -1421,10 +1221,10 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 
 	src := &plan.SourceStage().Layer
 	if len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" ||
-		src.LimitBy != "" || len(src.Having) > 0 || plan.IsAggregated || plan.IsJoin ||
-		plan.IsChain || plan.IsProcessTree || len(plan.WindowLayers) > 0 ||
+		src.LimitBy != "" || len(src.Having) > 0 || plan.IsAggregated || plan.join != nil ||
+		plan.Chain != nil || plan.special != nil || len(plan.WindowLayers) > 0 ||
 		plan.hasModelLookup() || len(plan.Stages) > 1 {
-		return nil, nil, notConditionError(fmt.Sprintf("only row conditions are allowed; %s() changes the shape of the result", pl.Commands[0].Name))
+		return nil, nil, notConditionError(fmt.Sprintf("only row conditions are allowed; %s() changes the shape of the result", pl.Commands()[0].Name))
 	}
 
 	// A projection (len, match, lookupIP) is a per-row scalar, so it belongs in a
@@ -1432,18 +1232,17 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	// it as the expression itself, folding it into the predicate. An alias the
 	// registry does not know would resolve to a column that never exists.
 	for _, sel := range src.Selects {
-		alias := extractFieldAlias(sel.String())
-		if alias == "" || !reg.Has(alias) {
-			return nil, nil, notConditionError(fmt.Sprintf("only row conditions are allowed; %s() projects a column that cannot be scoped to one step", pl.Commands[0].Name))
+		if !reg.Has(sel.Name()) {
+			return nil, nil, notConditionError(fmt.Sprintf("only row conditions are allowed; %s() projects a column that cannot be scoped to one step", pl.Commands()[0].Name))
 		}
 	}
 
 	if len(src.Where) == 0 && len(src.Selects) == 0 {
-		return nil, nil, notConditionError(fmt.Sprintf("%s() produced no condition", pl.Commands[0].Name))
+		return nil, nil, notConditionError(fmt.Sprintf("%s() produced no condition", pl.Commands()[0].Name))
 	}
 
 	var fields []string
-	for _, cmd := range pl.Commands {
+	for _, cmd := range pl.Commands() {
 		fields = append(fields, conditionCommandFields(cmd)...)
 	}
 	return src.Where, fields, nil
@@ -1454,8 +1253,9 @@ type notConditionError string
 
 func (e notConditionError) Error() string { return string(e) }
 
-// conditionCommandFields names the fields a condition command reads: modelLookup()'s
-// keys, otherwise the field it names first (cidr(dst_ip, ...), in(user, [...])).
+// conditionCommandFields names the fields a condition command reads: the fields
+// its schema's field parameters name (cidr(dst_ip, ...), in(user, [...])), or
+// modelLookup()'s keys. A value such as pgrHasAncestor()'s is not a field.
 func conditionCommandFields(cmd CommandNode) []string {
 	if canonicalCommandName(cmd.Name) == canonicalCommandName("modelLookup") {
 		if _, keys, _, err := parseModelLookupArgs(cmd); err == nil {
@@ -1463,22 +1263,7 @@ func conditionCommandFields(cmd CommandNode) []string {
 		}
 		return nil
 	}
-	if len(cmd.Args) == 0 {
-		return nil
-	}
-	first := cmd.Args[0]
-	if b, err := BindCommand(cmd); err == nil {
-		if named, ok := b.First("field"); ok {
-			first = named
-		}
-	}
-	if first.Kind == ArgList && len(first.List) > 0 {
-		first = first.List[0]
-	}
-	if f := first.Value(); f != "" && isPlainFieldName(f) {
-		return []string{f}
-	}
-	return nil
+	return commandFieldReads(cmd)
 }
 
 // IsPlainFieldName reports whether s is shaped like a log field name, and so is
@@ -1500,23 +1285,6 @@ func isPlainFieldName(s string) bool {
 		}
 	}
 	return true
-}
-
-// collectHavingFieldsOrdered appends a having condition's leaf field names in order.
-func collectHavingFieldsOrdered(c HavingCondition, seen map[string]bool, out *[]string) []string {
-	if c.IsCompound {
-		for _, ch := range c.Children {
-			collectHavingFieldsOrdered(ch, seen, out)
-		}
-		return *out
-	}
-	for _, f := range []string{c.Field, c.ValueField} {
-		if f != "" && f != normLogColumn && !seen[f] {
-			seen[f] = true
-			*out = append(*out, f)
-		}
-	}
-	return *out
 }
 
 // commandIndex returns the index of the first top-level command answering to the

@@ -37,7 +37,7 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.HasGroupBy = false
 
 		newSource := ctx.Plan.CurrentStage()
-		newSource.Layer.Selects = append(newSource.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS _count"})
+		newSource.Layer.Selects = append(newSource.Layer.Selects, aggSelect(countAll, "_count"))
 		ctx.Plan.IsAggregated = true
 		ctx.Plan.aggregationOutputs["_count"] = "COUNT(*)"
 		// The outer COUNT(*) is a fresh aggregate of this stage; register its kind
@@ -54,17 +54,15 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if err != nil {
 			return fmt.Errorf("count(): %w", err)
 		}
-		sqlExpr := fmt.Sprintf("count(%s)", ref)
+		agg := aggCall{fn: "count", args: ref}
 		if unique {
-			sqlExpr = fmt.Sprintf("uniqExact(%s)", ref)
+			agg.fn = "uniqExact"
 		}
+		sqlExpr := agg.sql()
 		if err := aggAliasClash(source, "count", alias, sqlExpr); err != nil {
 			return err
 		}
-		expr := sqlExpr + " AS " + alias
-		if !contains(selectExprStrings(source.Layer.Selects), expr) {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: expr})
-		}
+		source.Layer.addColumn(aggSelect(agg, alias))
 		ctx.Plan.IsAggregated = true
 		ctx.Plan.aggregationOutputs[alias] = sqlExpr
 		ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
@@ -73,47 +71,38 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	// Bare count() without groupby
-	if !contains(selectExprStrings(source.Layer.Selects), "COUNT(*) AS "+alias) {
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS " + alias})
-	}
+	source.Layer.addColumn(aggSelect(countAll, alias))
 	ctx.Plan.IsAggregated = true
 	ctx.Plan.aggregationOutputs[alias] = "COUNT(*)"
 	ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
 	ctx.Registry.SetResolveExpr(alias, alias)
 
 	// When count() is used with case statements, GROUP BY the case-produced fields
-	for _, cmd2 := range ctx.Pipeline.Commands {
-		if cmd2.Name == "case" && cmd2.Block != "" {
-			caseExpr := cmd2.Block
-			compiled, err := compileCase(caseExpr, ctx.Registry, ctx.Opts)
+	for _, cmd2 := range ctx.Pipeline.Commands() {
+		if cmd2.Name == "case" {
+			compiled, err := compileCase(cmd2.Branches, ctx.Registry, ctx.Opts)
 			if err != nil {
 				return err
 			}
 			if len(compiled.assignments) > 0 {
 				for _, assignment := range compiled.assignments {
-					if !contains(source.Layer.GroupBy, assignment.Field) {
-						source.Layer.GroupBy = append(source.Layer.GroupBy, assignment.Field)
-					}
+					source.Layer.groupBy(assignment.Field, assignment.Field)
 				}
 			} else {
 				outputField := caseOutputColumn
-				if !contains(source.Layer.GroupBy, outputField) {
-					source.Layer.GroupBy = append(source.Layer.GroupBy, outputField)
-				}
+				source.Layer.groupBy(outputField, outputField)
 			}
 		}
 	}
 	return nil
 }
 
-// simpleAggHandler handles sum, avg, max, min, median aggregation commands.
 // simpleAggHandler is every aggregate command whose shape is one numeric operand
-// in, one column out. format renders the operand; keeping them in one handler is
-// what makes them agree on naming, on as=, and on chaining over a prior
-// aggregate's output.
+// in, one column out (see operandAggregate). Keeping them in one handler is what
+// makes them agree on naming, on as=, and on chaining over a prior aggregate's
+// output.
 type simpleAggHandler struct {
-	name   string // the BQL name, which is also the output column: sum -> _sum
-	format string // ClickHouse expression, given the operand
+	name string // the BQL name, which is also the output column: sum -> _sum
 }
 
 func (h *simpleAggHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
@@ -147,10 +136,9 @@ func (h *simpleAggHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
 		// Chained over a prior aggregation's output column, which is already a
 		// number: read it directly rather than through the string casts.
-		sqlExpr := fmt.Sprintf(h.format, fmt.Sprintf("toFloat64(%s)", field))
-		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations, sqlExpr+" AS "+alias)
-		ctx.Plan.outerAggFieldOrder = append(ctx.Plan.outerAggFieldOrder, alias)
-		ctx.Plan.aggregationOutputs[alias] = sqlExpr
+		agg, _ := operandAggregate(h.name, fmt.Sprintf("toFloat64(%s)", field))
+		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations, aggSelect(agg, alias))
+		ctx.Plan.aggregationOutputs[alias] = agg.sql()
 	} else {
 		// max/min over the event time read the column itself: a DateTime cannot
 		// take the numeric casts, and the extreme of a timestamp is a timestamp.
@@ -160,12 +148,12 @@ func (h *simpleAggHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				return fmt.Errorf("%s(): %w", h.name, err)
 			}
 		}
-		sqlExpr := fmt.Sprintf(h.format, operand)
-		if err := aggAliasClash(source, h.name, alias, sqlExpr); err != nil {
+		agg, _ := operandAggregate(h.name, operand)
+		if err := aggAliasClash(source, h.name, alias, agg.sql()); err != nil {
 			return err
 		}
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", sqlExpr, alias)})
-		ctx.Plan.aggregationOutputs[alias] = sqlExpr
+		source.Layer.Selects = append(source.Layer.Selects, aggSelect(agg, alias))
+		ctx.Plan.aggregationOutputs[alias] = agg.sql()
 	}
 	ctx.Registry.SetResolveExpr(alias, alias)
 	ctx.Plan.IsAggregated = true
@@ -210,14 +198,14 @@ func (h *frequencyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	source := ctx.Plan.CurrentStage()
 
-	source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)
+	source.Layer.groupBy(fieldRef, keyName(arg, fieldRef))
 	source.Layer.Selects = append(source.Layer.Selects,
-		SelectExpr{Expr: fmt.Sprintf("%s AS _value", fieldRef)},
-		SelectExpr{Expr: "count(*) AS _count"},
-		SelectExpr{Expr: "round(_count * 100.0 / sum(_count) OVER (), 2) AS _percentage"},
-		SelectExpr{Expr: "round(sum(_count) OVER (ORDER BY _count DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) * 100.0 / sum(_count) OVER (), 2) AS _cumulative_pct"},
+		SelectExpr{Expr: fieldRef, Alias: "_value"},
+		SelectExpr{Expr: "count(*)", Alias: "_count"},
+		SelectExpr{Expr: "round(_count * 100.0 / sum(_count) OVER (), 2)", Alias: "_percentage"},
+		SelectExpr{Expr: "round(sum(_count) OVER (ORDER BY _count DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) * 100.0 / sum(_count) OVER (), 2)", Alias: "_cumulative_pct"},
 	)
-	source.Layer.OrderBy = append(source.Layer.OrderBy, "_count DESC")
+	source.Layer.OrderBy = append(source.Layer.OrderBy, desc("_count"))
 	ctx.Plan.aggregationOutputs["_count"] = "count(*)"
 	ctx.Plan.aggregationOutputs["_percentage"] = "_percentage"
 	ctx.Plan.aggregationOutputs["_cumulative_pct"] = "_cumulative_pct"
@@ -258,26 +246,22 @@ func (h *iqrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
 
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
+		v := fmt.Sprintf("toFloat64(%s)", field)
+		q1, q3 := aggCall{fn: "quantile", params: "0.25", args: v}, aggCall{fn: "quantile", params: "0.75", args: v}
 		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations,
-			fmt.Sprintf("quantile(0.25)(toFloat64(%s)) AS _q1", field),
-			fmt.Sprintf("quantile(0.75)(toFloat64(%s)) AS _q3", field),
-			fmt.Sprintf("quantile(0.75)(toFloat64(%s)) - quantile(0.25)(toFloat64(%s)) AS %s", field, field, iqrAlias))
-		ctx.Plan.outerAggFieldOrder = append(ctx.Plan.outerAggFieldOrder, "_q1", "_q3", iqrAlias)
-		ctx.Plan.aggregationOutputs["_q1"] = fmt.Sprintf("quantile(0.25)(toFloat64(%s))", field)
-		ctx.Plan.aggregationOutputs["_q3"] = fmt.Sprintf("quantile(0.75)(toFloat64(%s))", field)
+			aggSelect(q1, "_q1"), aggSelect(q3, "_q3"), aggSelect(aggDiff{a: q3, b: q1}, iqrAlias))
+		ctx.Plan.aggregationOutputs["_q1"] = q1.sql()
+		ctx.Plan.aggregationOutputs["_q3"] = q3.sql()
 		ctx.Plan.aggregationOutputs[iqrAlias] = iqrAlias
 	} else {
 		cast, err := aggOperandNumeric(arg, ctx.Registry)
 		if err != nil {
 			return err
 		}
-		source.Layer.Selects = append(source.Layer.Selects,
-			SelectExpr{Expr: fmt.Sprintf("quantile(0.25)(%s) AS _q1", cast)},
-			SelectExpr{Expr: fmt.Sprintf("quantile(0.75)(%s) AS _q3", cast)},
-			SelectExpr{Expr: fmt.Sprintf("quantile(0.75)(%s) - quantile(0.25)(%s) AS %s", cast, cast, iqrAlias)},
-		)
-		ctx.Plan.aggregationOutputs["_q1"] = fmt.Sprintf("quantile(0.25)(%s)", cast)
-		ctx.Plan.aggregationOutputs["_q3"] = fmt.Sprintf("quantile(0.75)(%s)", cast)
+		q1, q3 := aggCall{fn: "quantile", params: "0.25", args: cast}, aggCall{fn: "quantile", params: "0.75", args: cast}
+		source.Layer.Selects = append(source.Layer.Selects, aggSelect(q1, "_q1"), aggSelect(q3, "_q3"), aggSelect(aggDiff{a: q3, b: q1}, iqrAlias))
+		ctx.Plan.aggregationOutputs["_q1"] = q1.sql()
+		ctx.Plan.aggregationOutputs["_q3"] = q3.sql()
 		ctx.Plan.aggregationOutputs[iqrAlias] = iqrAlias
 	}
 	ctx.Plan.IsAggregated = true
@@ -317,16 +301,16 @@ func (h *headtailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	source := ctx.Plan.CurrentStage()
 
-	source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)
+	source.Layer.groupBy(fieldRef, keyName(arg, fieldRef))
 	cumulExpr := "round(sum(_count) OVER (ORDER BY _count DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) * 100.0 / sum(_count) OVER (), 2)"
 	source.Layer.Selects = append(source.Layer.Selects,
-		SelectExpr{Expr: fmt.Sprintf("%s AS _value", fieldRef)},
-		SelectExpr{Expr: "count(*) AS _count"},
-		SelectExpr{Expr: "round(_count * 100.0 / sum(_count) OVER (), 2) AS _percentage"},
-		SelectExpr{Expr: fmt.Sprintf("%s AS _cumulative_pct", cumulExpr)},
-		SelectExpr{Expr: fmt.Sprintf("CASE WHEN %s <= %s THEN 'head' ELSE 'tail' END AS _segment", cumulExpr, threshold)},
+		SelectExpr{Expr: fieldRef, Alias: "_value"},
+		SelectExpr{Expr: "count(*)", Alias: "_count"},
+		SelectExpr{Expr: "round(_count * 100.0 / sum(_count) OVER (), 2)", Alias: "_percentage"},
+		SelectExpr{Expr: cumulExpr, Alias: "_cumulative_pct"},
+		SelectExpr{Expr: fmt.Sprintf("CASE WHEN %s <= %s THEN 'head' ELSE 'tail' END", cumulExpr, threshold), Alias: "_segment"},
 	)
-	source.Layer.OrderBy = append(source.Layer.OrderBy, "_count DESC")
+	source.Layer.OrderBy = append(source.Layer.OrderBy, desc("_count"))
 	ctx.Plan.aggregationOutputs["_count"] = "count(*)"
 	ctx.Plan.aggregationOutputs["_percentage"] = "_percentage"
 	ctx.Plan.aggregationOutputs["_cumulative_pct"] = "_cumulative_pct"
@@ -340,21 +324,25 @@ func (h *headtailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
-// selectfirstHandler handles selectFirst(field)
-type selectfirstHandler struct{}
+// selectEdgeHandler handles selectFirst(field) and selectLast(field): the value
+// of the field on the earliest or latest event.
+type selectEdgeHandler struct {
+	name string // selectFirst or selectLast
+	out  string // the output column's base name: first or last
+}
 
-func (h *selectfirstHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
+func (h *selectEdgeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if len(cmd.Args) == 0 {
 		return nil
 	}
 	ctx.Plan.IsAggregated = true
-	if alias, err := commandAggAlias(cmd, "first"); err == nil {
+	if alias, err := commandAggAlias(cmd, h.out); err == nil {
 		ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
 	}
 	return nil
 }
 
-func (h *selectfirstHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+func (h *selectEdgeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	b, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
@@ -362,70 +350,24 @@ func (h *selectfirstHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 	if !ok {
 		return nil
 	}
-	field := arg.FieldName()
-	fieldRef, err := ResolveArg(arg, ctx.Registry)
+	alias, err := aggregateAlias(b.Str("as", ""), h.out)
 	if err != nil {
-		return fmt.Errorf("selectFirst(): %w", err)
+		return fmt.Errorf("%s(): %w", h.name, err)
 	}
-	alias, err := aggregateAlias(b.Str("as", ""), "first")
-	if err != nil {
-		return fmt.Errorf("selectFirst(): %w", err)
+	// Over the event time itself it is the earliest or latest time.
+	var agg aggregate = aggCall{fn: map[string]string{"first": "min", "last": "max"}[h.out], args: "timestamp"}
+	if arg.FieldName() != "timestamp" {
+		ref, err := ResolveArg(arg, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("%s(): %w", h.name, err)
+		}
+		agg, _ = operandAggregate(strings.ToLower(h.name), ref)
 	}
 	source := ctx.Plan.CurrentStage()
-	if field == "timestamp" {
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "min(timestamp) AS " + alias})
-	} else {
-		sqlExpr := fmt.Sprintf("argMin(%s, timestamp)", fieldRef)
-		if err := aggAliasClash(source, "selectFirst", alias, sqlExpr); err != nil {
-			return err
-		}
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: sqlExpr + " AS " + alias})
-	}
-	ctx.Plan.IsAggregated = true
-	return nil
-}
-
-// selectlastHandler handles selectLast(field)
-type selectlastHandler struct{}
-
-func (h *selectlastHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Args) == 0 {
-		return nil
-	}
-	ctx.Plan.IsAggregated = true
-	if alias, err := commandAggAlias(cmd, "last"); err == nil {
-		ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
-	}
-	return nil
-}
-
-func (h *selectlastHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	b, arg, ok, err := firstFieldArg(cmd, "field")
-	if err != nil {
+	if err := aggAliasClash(source, h.name, alias, agg.sql()); err != nil {
 		return err
 	}
-	if !ok {
-		return nil
-	}
-	field := arg.FieldName()
-	fieldRef, err := ResolveArg(arg, ctx.Registry)
-	if err != nil {
-		return fmt.Errorf("selectLast(): %w", err)
-	}
-	alias, err := aggregateAlias(b.Str("as", ""), "last")
-	if err != nil {
-		return fmt.Errorf("selectLast(): %w", err)
-	}
-	source := ctx.Plan.CurrentStage()
-	if field == "timestamp" {
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "max(timestamp) AS " + alias})
-	} else {
-		sqlExpr := fmt.Sprintf("argMax(%s, timestamp)", fieldRef)
-		if err := aggAliasClash(source, "selectLast", alias, sqlExpr); err != nil {
-			return err
-		}
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: sqlExpr + " AS " + alias})
-	}
+	source.Layer.Selects = append(source.Layer.Selects, aggSelect(agg, alias))
 	ctx.Plan.IsAggregated = true
 	return nil
 }
@@ -472,15 +414,11 @@ func (h *topHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("top(): %w", err)
 	}
 	source := ctx.Plan.CurrentStage()
+	var agg aggregate = aggCall{fn: "topK", params: fmt.Sprint(topN), args: fieldRef}
 	if showPercent {
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf(topPercentSQL(topN), fieldRef) + " AS " + alias,
-		})
-	} else {
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("topK(%d)(%s) AS %s", topN, fieldRef, alias),
-		})
+		agg = topShare{n: topN, v: fieldRef}
 	}
+	source.Layer.Selects = append(source.Layer.Selects, aggSelect(agg, alias))
 	ctx.Registry.SetResolveExpr(alias, alias)
 	ctx.Plan.IsAggregated = true
 	return nil
@@ -497,35 +435,11 @@ func (h *multiHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *multiHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	source := ctx.Plan.CurrentStage()
-	prevAliases := make(map[string]bool)
-	for _, sel := range source.Layer.Selects {
-		prevAliases[extractFieldAlias(sel.String())] = true
-	}
-
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
 	}
-	selectFields := selectExprStrings(source.Layer.Selects)
-	computedFields := ctx.Registry.AllComputed()
-	if err := applyAggSpecs(b.Flat("functions"), &selectFields, computedFields, ctx); err != nil {
-		return err
-	}
-	// Rebuild selects from the string slice
-	source.Layer.Selects = nil
-	for _, sf := range selectFields {
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: sf})
-	}
-	// Register new aggregation outputs so assembleGroupBySelects can identify them
-	for _, sel := range source.Layer.Selects {
-		alias := extractFieldAlias(sel.String())
-		if alias != "" && !prevAliases[alias] {
-			ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
-			ctx.Plan.aggregationOutputs[alias] = alias
-		}
-	}
-	return nil
+	return projectAggregates(ctx, ctx.Plan.CurrentStage(), b.Flat("functions"), ctx.Registry.AllComputed())
 }
 
 // madHandler handles mad(field) - median absolute deviation
@@ -569,9 +483,7 @@ func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		numericExpr := fmt.Sprintf("toFloat64(%s)", field)
 		ctx.Plan.MADWindowExpr = numericExpr
 		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations,
-			"any(_median_val) AS _median",
-			fmt.Sprintf("median(abs(%s - _median_val)) AS %s", numericExpr, madAlias))
-		ctx.Plan.outerAggFieldOrder = append(ctx.Plan.outerAggFieldOrder, "_median", madAlias)
+			selectAs("any(_median_val)", "_median"), selectAs(fmt.Sprintf("median(abs(%s - _median_val))", numericExpr), madAlias))
 		ctx.Registry.SetResolveExpr("_median", "any(_median_val)")
 		ctx.Registry.SetResolveExpr(madAlias, fmt.Sprintf("median(abs(%s - _median_val))", numericExpr))
 		ctx.Plan.aggregationOutputs["_median"] = "any(_median_val)"
@@ -582,12 +494,10 @@ func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return fmt.Errorf("mad(): %w", err)
 		}
 		numericExpr := fmt.Sprintf("toFloat64OrNull(%s)", fieldRef)
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS _mad_val", numericExpr)})
+		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: numericExpr, Alias: "_mad_val"})
 		ctx.Plan.MADWindowExpr = "_mad_val"
 		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations,
-			"any(_median_val) AS _median",
-			"median(abs(_mad_val - _median_val)) AS "+madAlias)
-		ctx.Plan.outerAggFieldOrder = append(ctx.Plan.outerAggFieldOrder, "_median", madAlias)
+			selectAs("any(_median_val)", "_median"), selectAs("median(abs(_mad_val - _median_val))", madAlias))
 		ctx.Registry.SetResolveExpr("_median", "any(_median_val)")
 		ctx.Registry.SetResolveExpr(madAlias, "median(abs(_mad_val - _median_val))")
 		ctx.Plan.aggregationOutputs["_median"] = "any(_median_val)"
@@ -604,20 +514,12 @@ func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 // exprAliasClash reports whether the stage already projects this alias from a
 // different expression, which UpsertSelect would silently replace.
 func exprAliasClash(stage *QueryStage, alias, sql string) (string, bool) {
-	want := sql + " AS " + alias
 	for _, sel := range stage.Layer.Selects {
-		s := sel.String()
-		if strings.Trim(extractFieldAlias(s), "`") != alias || s == want {
-			continue
+		// A column without an alias is carried forward from an earlier stage, not
+		// a competing expression.
+		if sel.Alias != "" && sel.Name() == alias && sel.Expr != sql {
+			return sel.Expr, true
 		}
-		// A select with no " AS " is the column carried forward from an earlier
-		// stage, not a competing expression. Slicing on the missing separator
-		// panicked the translator on query text a user controls.
-		idx := strings.LastIndex(s, " AS ")
-		if idx < 0 {
-			continue
-		}
-		return s[:idx], true
 	}
 	return "", false
 }
@@ -627,7 +529,6 @@ type groupbyHandler struct{}
 
 func (h *groupbyHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.HasGroupBy = true
-	ctx.Plan.GroupByCount++
 	// Without function= a groupby counts, producing _count. With it, the specs
 	// name their own outputs and _count exists only if one of them is a count.
 	if b, err := BindCommand(cmd); err != nil || !b.Has("function") {
@@ -658,17 +559,14 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// point: an aggregating stage's groups, or a projection of them (an assignment,
 	// a transform, a model join), whose carried columns are no group keys here.
 	cur := ctx.Plan.CurrentStage()
-	isMultiStage := len(cur.Layer.GroupBy) > 0 || (!cur.IsSource && !cur.Aggregates && len(cur.Layer.Selects) > 0)
-
-	if isMultiStage {
+	multiStage := len(cur.Layer.GroupBy) > 0 || (!cur.IsSource && !cur.Aggregates && len(cur.Layer.Selects) > 0)
+	if multiStage {
 		if err := pushAggregationStage(ctx); err != nil {
 			return fmt.Errorf("groupby (stage finalize): %w", err)
 		}
 	}
-
 	source := ctx.Plan.CurrentStage()
 	computedFields := ctx.Registry.AllComputed()
-	hasFunction := false
 
 	b, err := BindCommand(cmd)
 	if err != nil {
@@ -677,33 +575,14 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if n := b.Int("limit", 0); n > 0 {
 		source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
 	}
-
 	specs, err := groupbyFunctions(b)
 	if err != nil {
 		return err
 	}
-	if len(specs) > 0 {
-		hasFunction = true
-		prevAliases := make(map[string]bool)
-		for _, sel := range source.Layer.Selects {
-			prevAliases[extractFieldAlias(sel.String())] = true
-		}
-		selectFields := selectExprStrings(source.Layer.Selects)
-		if err := applyAggSpecs(specs, &selectFields, computedFields, ctx); err != nil {
-			return err
-		}
-		source.Layer.Selects = nil
-		for _, sf := range selectFields {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: sf})
-		}
-		for _, sel := range source.Layer.Selects {
-			alias := extractFieldAlias(sel.String())
-			if alias != "" && !prevAliases[alias] {
-				ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
-				ctx.Plan.aggregationOutputs[alias] = alias
-			}
-		}
+	if err := projectAggregates(ctx, source, specs, computedFields); err != nil {
+		return err
 	}
+	hasFunction := len(specs) > 0
 
 	// distinct= counts the distinct values of the last key within the groups of the others,
 	// as timechart's groupby(f, distinct=true) does per bucket, so that key is not grouped by.
@@ -712,116 +591,136 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if (b.Flag("distinct", false) || b.Flag("unique", false)) && len(keys) > 0 {
 		counted, keys = &keys[len(keys)-1], keys[:len(keys)-1]
 	}
-	for _, keyArg := range keys {
-		arg := keyArg.Value()
-		// A model column the previous aggregation did not output is gone: the
-		// entry was dropped by ScopeToOutputs, so ask ModelLookupOutputs directly.
-		if e := ctx.Registry.Get(arg); e == nil && isMultiStage && contains(ctx.Plan.ModelLookupOutputs, arg) {
-			return fmt.Errorf("groupby(): model column %q was not carried out of the previous aggregation; group by it there or aggregate it first", arg)
+	for _, key := range keys {
+		if err := groupByKey(ctx, source, key, computedFields, multiStage); err != nil {
+			return err
 		}
-		var fieldRef, keyAlias string
-		if keyArg.FieldName() == "" {
-			// An expression key is projected under a derived name and grouped by
-			// that alias, so the rest of the pipeline sees an ordinary column.
-			sql, err := ResolveArg(keyArg, ctx.Registry)
-			if err != nil {
-				return fmt.Errorf("groupby(): %w", err)
-			}
-			alias, err := ArgAlias(keyArg)
-			if err != nil {
-				return fmt.Errorf("groupby(): %w", err)
-			}
-			if prior, clash := exprAliasClash(source, alias, sql); clash {
-				return fmt.Errorf("groupby(): %s and %s both produce the column %s; name one with as=", arg, prior, alias)
-			}
-			source.Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", sql, alias)})
-			ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
-			ctx.Registry.SetResolveExpr(alias, alias)
-			fieldRef, keyAlias = alias, alias
-		} else {
-			safe, err := sanitizeIdentifier(arg)
-			if err != nil {
-				return fmt.Errorf("groupby(): %w", err)
-			}
-			keyAlias = safe
-			switch arg {
-			case "timestamp", normLogColumn, "log_id", "normalizer":
-				fieldRef = arg
-			default:
-				// Computed fields, and in multi-stage every field, are read by alias.
-				if computedFields[arg] || isMultiStage {
-					fieldRef = arg
-				} else {
-					fieldRef = ctx.Registry.fieldRef(arg)
-				}
-			}
-		}
-		if !contains(source.Layer.GroupBy, fieldRef) {
-			source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)
-		}
-		// The key survives the aggregation, addressable by the alias it is
-		// projected under. Recorded here, where the name the query used is still
-		// known: by classify time the plan holds only the alias or the expression
-		// depending on what else ran, which is not enough to recover the name.
-		ctx.Registry.SetGroupKeyAlias(arg, keyAlias, ctx.CmdIndex)
 	}
-
 	if counted != nil {
-		ref, err := countedKeyRef(*counted, computedFields, isMultiStage, ctx)
+		ref, err := countedKeyRef(*counted, computedFields, multiStage, ctx)
 		if err != nil {
 			return err
 		}
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("COUNT(DISTINCT %s) AS _count", groupableCast(ref)),
+			Expr: fmt.Sprintf("COUNT(DISTINCT %s)", groupableCast(ref)), Alias: "_count",
 		})
 		ctx.Plan.IsAggregated = true
 		hasFunction = true // the distinct count is _count; no default COUNT(*) beside it
 	}
 
-	// Default aggregation: when no function= was specified, add COUNT(*)
-	// as the default aggregation function. This makes groupby(field)
-	// equivalent to groupby(field, function=count()).
+	// Without function= the groupby counts: groupby(field) is groupby(field,
+	// function=count()). _count is registered as a numeric aggregate of this stage
+	// even when an earlier stage carried one, since this COUNT(*) redefines it.
 	if !hasFunction {
-		if !contains(selectExprStrings(source.Layer.Selects), "COUNT(*) AS _count") {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS _count"})
-		}
+		source.Layer.addColumn(aggSelect(countAll, "_count"))
 		ctx.Plan.IsAggregated = true
-	}
-
-	// Register _count's kind and bare resolve expression so post-aggregation
-	// filters (HAVING _count > N) treat it as a numeric aggregate of THIS stage,
-	// not a JSON string. This must happen even in multi-stage pipelines, where
-	// ScopeToOutputs reset the carried _count: the new groupby produces a fresh
-	// COUNT(*) that redefines it.
-	if !hasFunction {
 		ctx.Registry.Register("_count", FieldKindAggregate, "_count", ctx.CmdIndex)
 		ctx.Registry.SetResolveExpr("_count", "_count")
 	}
 	// aggregationOutputs drives the chained-aggregation wrapper (sum/avg on a prior
 	// aggregation output). Only the first, non-multi-stage groupby seeds it so that
 	// chaining still operates on the stage SELECT rather than the wrapper path.
-	if !isMultiStage {
+	if !multiStage {
 		ctx.Plan.aggregationOutputs["_count"] = "COUNT(*)"
 	}
 	return nil
 }
 
+// keyName is the column a grouping key read from arg is output as: the field it
+// names, or the name an expression key is derived as.
+func keyName(arg Argument, ref string) string {
+	if name := arg.FieldName(); name != "" {
+		return name
+	}
+	if alias, err := ArgAlias(arg); err == nil {
+		return alias
+	}
+	return ref
+}
+
+// projectAggregates adds aggregate specs to the stage and registers each new
+// output as an aggregate, so assembleGroupBySelects can identify them.
+func projectAggregates(ctx *CommandContext, source *QueryStage, specs []Argument, computedFields map[string]bool) error {
+	before := len(source.Layer.Selects)
+	if err := applyAggSpecs(specs, &source.Layer.Selects, computedFields, ctx); err != nil {
+		return err
+	}
+	for _, sel := range source.Layer.Selects[before:] {
+		ctx.Registry.Register(sel.Name(), FieldKindAggregate, sel.Name(), ctx.CmdIndex)
+		ctx.Plan.aggregationOutputs[sel.Name()] = sel.Name()
+	}
+	return nil
+}
+
+// groupByKey groups the stage by one key, a field or an expression, and records
+// the alias it is addressable by after the aggregation.
+func groupByKey(ctx *CommandContext, source *QueryStage, key Argument, computedFields map[string]bool, multiStage bool) error {
+	arg := key.Value()
+	// A model column the previous aggregation did not output is gone: the entry
+	// was dropped by ScopeToOutputs, so ask the lookup's outputs directly.
+	if e := ctx.Registry.Get(arg); e == nil && multiStage && contains(ctx.Plan.lookup.Outputs, arg) {
+		return fmt.Errorf("groupby(): model column %q was not carried out of the previous aggregation; group by it there or aggregate it first", arg)
+	}
+	var fieldRef, keyAlias string
+	if key.FieldName() == "" {
+		// An expression key is projected under a derived name and grouped by that
+		// alias, so the rest of the pipeline sees an ordinary column.
+		sql, err := ResolveArg(key, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("groupby(): %w", err)
+		}
+		alias, err := ArgAlias(key)
+		if err != nil {
+			return fmt.Errorf("groupby(): %w", err)
+		}
+		if prior, clash := exprAliasClash(source, alias, sql); clash {
+			return fmt.Errorf("groupby(): %s and %s both produce the column %s; name one with as=", arg, prior, alias)
+		}
+		source.Layer.UpsertSelect(SelectExpr{Expr: sql, Alias: alias})
+		ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
+		ctx.Registry.SetResolveExpr(alias, alias)
+		fieldRef, keyAlias = alias, alias
+	} else {
+		safe, err := sanitizeIdentifier(arg)
+		if err != nil {
+			return fmt.Errorf("groupby(): %w", err)
+		}
+		keyAlias = safe
+		switch {
+		case arg == "timestamp" || arg == normLogColumn || arg == "log_id" || arg == "normalizer":
+			fieldRef = arg
+		case computedFields[arg] || multiStage:
+			// Computed fields, and in multi-stage every field, are read by alias.
+			fieldRef = arg
+		default:
+			fieldRef = ctx.Registry.fieldRef(arg)
+		}
+	}
+	source.Layer.groupBy(fieldRef, unquoteIdent(keyAlias))
+	// The key survives the aggregation, addressable by the alias it is projected
+	// under. Recorded here, where the name the query used is still known: by
+	// classify time the plan holds only the alias or the expression depending on
+	// what else ran, which is not enough to recover the name.
+	ctx.Registry.SetGroupKeyAlias(arg, keyAlias, ctx.CmdIndex)
+	return nil
+}
+
 func init() {
 	registerAggregatingCommand(&countHandler{}, "count")
-	registerAggregatingCommand(&simpleAggHandler{name: "sum", format: "sum(%s)"}, "sum")
-	registerAggregatingCommand(&simpleAggHandler{name: "avg", format: "avg(%s)"}, "avg")
-	registerAggregatingCommand(&simpleAggHandler{name: "max", format: "max(%s)"}, "max")
-	registerAggregatingCommand(&simpleAggHandler{name: "min", format: "min(%s)"}, "min")
-	registerAggregatingCommand(&simpleAggHandler{name: "median", format: "median(%s)"}, "median")
-	registerAggregatingCommand(&simpleAggHandler{name: "percentile", format: "quantiles(0.5, 0.75, 0.99)(%s)"}, "percentile")
-	registerAggregatingCommand(&simpleAggHandler{name: "stddev", format: "stddevPop(%s)"}, "stddev", "stdDev")
-	registerAggregatingCommand(&simpleAggHandler{name: "skewness", format: "skewPop(%s)"}, "skewness", "skew")
-	registerAggregatingCommand(&simpleAggHandler{name: "kurtosis", format: "kurtPop(%s)"}, "kurtosis", "kurt")
+	registerAggregatingCommand(&simpleAggHandler{name: "sum"}, "sum")
+	registerAggregatingCommand(&simpleAggHandler{name: "avg"}, "avg")
+	registerAggregatingCommand(&simpleAggHandler{name: "max"}, "max")
+	registerAggregatingCommand(&simpleAggHandler{name: "min"}, "min")
+	registerAggregatingCommand(&simpleAggHandler{name: "median"}, "median")
+	registerAggregatingCommand(&simpleAggHandler{name: "percentile"}, "percentile")
+	registerAggregatingCommand(&simpleAggHandler{name: "stddev"}, "stddev", "stdDev")
+	registerAggregatingCommand(&simpleAggHandler{name: "skewness"}, "skewness", "skew")
+	registerAggregatingCommand(&simpleAggHandler{name: "kurtosis"}, "kurtosis", "kurt")
 	registerAggregatingCommand(&frequencyHandler{}, "frequency")
 	registerAggregatingCommand(&iqrHandler{}, "iqr")
 	registerAggregatingCommand(&headtailHandler{}, "headtail")
-	registerAggregatingCommand(&selectfirstHandler{}, "selectfirst")
-	registerAggregatingCommand(&selectlastHandler{}, "selectlast")
+	registerAggregatingCommand(&selectEdgeHandler{name: "selectFirst", out: "first"}, "selectfirst")
+	registerAggregatingCommand(&selectEdgeHandler{name: "selectLast", out: "last"}, "selectlast")
 	registerAggregatingCommand(&topHandler{}, "top")
 	registerAggregatingCommand(&multiHandler{}, "multi")
 	registerAggregatingCommand(&madHandler{}, "mad")
@@ -860,7 +759,7 @@ func init() {
 
 // applyAggSpecs renders aggregate specs into a stage's SELECT list, expanding a
 // multi(...) wrapper into its members.
-func applyAggSpecs(args []Argument, selectFields *[]string, computedFields map[string]bool, ctx *CommandContext) error {
+func applyAggSpecs(args []Argument, selects *[]SelectExpr, computedFields map[string]bool, ctx *CommandContext) error {
 	for _, a := range args {
 		agg, ok := asAggSpec(a)
 		if !ok {
@@ -879,7 +778,7 @@ func applyAggSpecs(args []Argument, selectFields *[]string, computedFields map[s
 			}
 		}
 		for _, spec := range specs {
-			ok, err := processAggSpec(spec, selectFields, computedFields, ctx.Registry)
+			ok, err := processAggSpec(spec, selects, computedFields, ctx.Registry)
 			if err != nil {
 				return err
 			}
@@ -901,10 +800,8 @@ func applyAggSpecs(args []Argument, selectFields *[]string, computedFields map[s
 // next stage re-resolved it as a JSON path the stage does not have.
 func stageOutputAliases(stage *QueryStage) map[string]bool {
 	out := make(map[string]bool)
-	for _, sel := range stage.Layer.Selects {
-		if alias := strings.Trim(extractFieldAlias(sel.String()), "`"); alias != "" {
-			out[alias] = true
-		}
+	for _, name := range columnNames(stage.Layer.Selects) {
+		out[name] = true
 	}
 	return out
 }

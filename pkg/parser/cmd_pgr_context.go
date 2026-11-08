@@ -70,9 +70,6 @@ func pgrContextArgNames() string {
 }
 
 func (h *pgrContextHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if ctx.AsCondition {
-		return fmt.Errorf("pgrContext() adds columns: filter on them after it, as in pgrContext(commandline) | pgr_commandline=~\"-enc\"")
-	}
 	cols, _, err := pgrContextArgs(cmd)
 	if err != nil {
 		return err
@@ -82,7 +79,7 @@ func (h *pgrContextHandler) Declare(cmd CommandNode, ctx *CommandContext) error 
 		names[i] = c.name
 		ctx.Registry.Register(c.name, FieldKindJoined, c.name, ctx.CmdIndex)
 	}
-	ctx.Plan.ModelLookupOutputs = names
+	ctx.Plan.lookup.Outputs = names
 	return nil
 }
 
@@ -102,13 +99,13 @@ func (h *pgrContextHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 	for _, c := range cols {
 		ks.fields = append(ks.fields, c.name)
 	}
-	ctx.Plan.ModelLookupFields = ks.fields
-	ctx.Plan.modelKeys = ks
-	ctx.Plan.ModelLookupCmd = ctx.CmdIndex
-	ctx.Plan.ModelLookupStrict = strict
+	ctx.Plan.lookup.Fields = ks.fields
+	ctx.Plan.lookup.keys = ks
+	ctx.Plan.lookup.Cmd = ctx.CmdIndex
+	ctx.Plan.lookup.Strict = strict
 	keyExprs := []string{modelLookupFieldRef(pgrFilterField, ctx.Registry)}
-	if ctx.Plan.ModelLookupAtScan {
-		ctx.Plan.ModelLookupKeyExprs = keyExprs
+	if ctx.Plan.lookup.AtScan {
+		ctx.Plan.lookup.KeyExprs = keyExprs
 		return nil
 	}
 	return joinModelAfterAggregation(ctx, ks.keyFields, keyExprs)
@@ -153,16 +150,16 @@ const pgrContextName = "pgrContext"
 
 // claimLookup takes the plan's one lookup join for the named command.
 func claimLookup(plan *QueryPlan, name string) error {
-	if plan.IsJoin {
+	if plan.join != nil {
 		return fmt.Errorf("%s() cannot be combined with join()", name)
 	}
 	if plan.hasModelLookup() {
-		if plan.lookupName == name {
+		if plan.lookup.name == name {
 			return fmt.Errorf("%s() cannot be used more than once", name)
 		}
-		return fmt.Errorf("%s() cannot be combined with %s() in one query", name, plan.lookupName)
+		return fmt.Errorf("%s() cannot be combined with %s() in one query", name, plan.lookup.name)
 	}
-	plan.lookupName = name
+	plan.lookup.name = name
 	return nil
 }
 

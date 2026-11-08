@@ -327,17 +327,19 @@ func TestTLSHColumnsSurviveTable(t *testing.T) {
 	}
 }
 
-// The empty-result and negated forms project constants, and those must survive
-// table() the same way rather than falling back to a phantom JSON field.
+// The empty-result form projects constants, and a negated filter keeps only rows
+// whose distance is the no-match -1. Both must survive table() rather than
+// falling back to a phantom JSON field.
 func TestTLSHConstantColumnsSurviveTable(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		query string
 		opts  QueryOptions
+		want  string
 	}{
-		{"no matches", `* | tlsh(field=tlsh, dict="d") | table(timestamp, tlsh_distance)`, tlshOpts(nil)},
+		{"no matches", `* | tlsh(field=tlsh, dict="d") | table(timestamp, tlsh_distance)`, tlshOpts(nil), "toInt32(-1)"},
 		{"negated", `* | !tlsh(field=tlsh, dict="d") | table(timestamp, tlsh_distance)`,
-			tlshOpts([]TLSHMatch{{Digest: tlshTestDigestA, Distance: 1, Needle: "n"}})},
+			tlshOpts([]TLSHMatch{{Digest: tlshTestDigestA, Distance: 1, Needle: "n"}}), "[1], -1) AS tlsh_distance"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sql, err := translateTLSH(t, c.query, c.opts)
@@ -347,8 +349,8 @@ func TestTLSHConstantColumnsSurviveTable(t *testing.T) {
 			if strings.Contains(sql, "fields.`tlsh_distance`") {
 				t.Errorf("distance column resolved as a raw log field:\n%s", sql)
 			}
-			if !strings.Contains(sql, "toInt32(-1)") {
-				t.Errorf("expected the constant distance projection:\n%s", sql)
+			if !strings.Contains(sql, c.want) {
+				t.Errorf("expected %s in the distance projection:\n%s", c.want, sql)
 			}
 		})
 	}

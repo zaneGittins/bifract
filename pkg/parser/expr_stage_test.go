@@ -38,7 +38,7 @@ func TestExprFirstStageLeavesCompileAsFilters(t *testing.T) {
 // Leaves split out of an expression-led stage keep AND binding tighter than OR.
 func TestExprFirstStageKeepsPrecedence(t *testing.T) {
 	sql := positionSQL(t, `* | lower(x)="y" OR a=1 AND b=2`)
-	want := "((lower(fields.`x`::String) = 'y') OR fields.`a`::String = '1' AND fields.`b`::String = '2')"
+	want := "((lower(fields.`x`::String) = 'y') OR (fields.`a`::String = '1' AND fields.`b`::String = '2'))"
 	if !strings.Contains(sql, want) {
 		t.Errorf("want %q in: %s", want, sql)
 	}

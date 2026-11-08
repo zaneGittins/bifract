@@ -1467,7 +1467,7 @@ func TestGroupByAfterAPostAggregationProjection(t *testing.T) {
 		`* | groupby(user) | modelLookup(model="fs", key=[user]) | groupby(is_new)`,
 	} {
 		sql := translateML(t, q)
-		if !regexp.MustCompile(`(?s)SELECT (x|is_new) AS (x|is_new), COUNT\(\*\) AS _count FROM \(SELECT user, _count, .*\) GROUP BY (x|is_new) LIMIT 1000\)$`).MatchString(sql) {
+		if !regexp.MustCompile(`(?s)SELECT (x|is_new), COUNT\(\*\) AS _count FROM \(SELECT user, _count, .*\) GROUP BY (x|is_new) LIMIT 1000\)$`).MatchString(sql) {
 			t.Errorf("%s: expected the second groupby to count the projected rows, got:\n%s", q, sql)
 		}
 	}
@@ -1583,9 +1583,11 @@ func TestModelLookup_ConditionBindsWhereItsFieldsExist(t *testing.T) {
 	if !strings.Contains(sql, "HAVING NOT (ifNull(toString(c), '') IN (SELECT _mlk_src.entity_key") {
 		t.Errorf("expected the aggregate key tested in HAVING:\n%s", sql)
 	}
+	// A filter on model columns alone is a property of the key, so the strict join
+	// applies it to the model side, as it does a comparison on the column.
 	sql = translateML(t, `* | modelLookup(model="beacon", key=[a, b, c]) | NOT in(beacon_score, values=["1"])`)
-	if b := belowJoin(t, sql); strings.Contains(b, "beacon_score") {
-		t.Errorf("a condition on a model column must run on the joined rows:\n%s", sql)
+	if strings.Contains(sql, "fields.`beacon_score`") || !strings.Contains(sql, ") WHERE beacon_score NOT IN ('1')) AS _mlookup") {
+		t.Errorf("a condition on a model column must read the model's column, on the model side:\n%s", sql)
 	}
 	pipeline, err := ParseQuery(`* | groupby(host) | NOT modelLookup(model="fs", key=[user])`)
 	if err == nil {

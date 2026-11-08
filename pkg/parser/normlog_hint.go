@@ -29,7 +29,7 @@ const (
 //
 // A field filter is hinted by the runs norm_log must contain wherever it matches
 // (see hintRuns), every run required.
-func normLogHint(cond HavingCondition, mode SourceMode, onNormLog bool) string {
+func normLogHint(cond Condition, mode SourceMode, onNormLog bool) string {
 	if cond.ValueField != "" {
 		return ""
 	}

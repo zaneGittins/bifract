@@ -173,7 +173,7 @@ func TestNormLogHintsKeepEveryRowAgainstClickHouse(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+dbName) })
 
 	// The production logs DDL, with small granules so a hint has blocks to skip.
-	const head, tail = "CREATE TABLE IF NOT EXISTS logs (", "SETTINGS index_granularity = 8192;"
+	const head, tail = "CREATE TABLE IF NOT EXISTS logs (", "SETTINGS index_granularity = 8192"
 	from := strings.Index(db.ClickHouseSQL, head)
 	to := strings.Index(db.ClickHouseSQL[max(from, 0):], tail)
 	if from < 0 || to < 0 {

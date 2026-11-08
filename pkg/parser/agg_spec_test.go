@@ -11,7 +11,7 @@ func TestEveryAggregateNameRenders(t *testing.T) {
 		if name == "multi" {
 			continue // a wrapper, expanded by applyAggSpecs
 		}
-		var selects []string
+		var selects []SelectExpr
 		args := []Argument{{Kind: ArgExpr, Expr: &ExprNode{Kind: ExprField, Value: "bytes"}}}
 		if name == "corr" || name == "rankcorr" {
 			args = append(args, Argument{Kind: ArgExpr, Expr: &ExprNode{Kind: ExprField, Value: "latency"}})

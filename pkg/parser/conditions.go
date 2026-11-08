@@ -1,19 +1,13 @@
 package parser
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
 )
 
-type condGroup struct {
-	sql   string
-	logic string
-}
-
-// classifyConditions routes HavingConditions into pending buckets based on
+// classifyConditions routes filters into pending buckets based on
 // FieldKind. Runs AFTER all Declare() calls so the registry has field metadata
 // for classification. SQL generation is deferred to materializeConditions
 // (after Execute) so that PerRow handlers have set their real expressions.
@@ -29,27 +23,19 @@ type condGroup struct {
 // fields are produced after GROUP BY and therefore require HAVING. Assignment and PerRow
 // fields are both per-row scalars computed before aggregation; they differ only in whether
 // the value needs numeric coercion, not in SQL placement.
-func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, plan *QueryPlan) error {
+func classifyConditions(conditions []Condition, registry *FieldRegistry, plan *QueryPlan) error {
 	if len(conditions) == 0 {
 		return nil
 	}
 
 	willHaveAggregation := plan.IsAggregated || plan.HasGroupBy
 
-	for i, cond := range conditions {
-		// Only an assignment separates a first-stage group's parts, so they are
-		// AND-ed and each resolves at its own position.
-		if cond.IsCompound && !cond.Negate && cond.CmdIndex == 0 && spansAssignment(cond) {
-			if err := classifyConditions(cond.Children, registry, plan); err != nil {
-				return err
-			}
-			continue
-		}
-		registry := plan.conditionRegistry(cond, registry)
+	for _, cond := range conditions {
+		registry := plan.registryAt(cond.at, registry)
 		// Compound nodes: inspect all leaf fields to determine the highest-priority
 		// target. A compound normally stays a unit, since its children are connected
 		// by AND/OR and the operators bind them together.
-		if cond.IsCompound {
+		if cond.IsCompound() {
 			// The exception is a pure-AND compound whose conjuncts belong to
 			// different stages: AND distributes, so split it and bind each
 			// conjunct where its fields exist.
@@ -85,9 +71,6 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 			if err != nil {
 				return err
 			}
-			if err := checkDisjunctionStages(conditions, i, priority, registry, plan, willHaveAggregation); err != nil {
-				return err
-			}
 			cond.PredicateSQL = compiled
 			switch priority {
 			case 2:
@@ -104,7 +87,7 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 			return err
 		}
 
-		var target *[]HavingCondition
+		var target *[]Condition
 		switch leafPriority(cond, registry, plan, willHaveAggregation) {
 		case 2:
 			target = &plan.pendingHavingConditions
@@ -121,76 +104,20 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 	return nil
 }
 
-// spansAssignment reports whether a compound's parts sit on both sides of an
-// assignment.
-func spansAssignment(c HavingCondition) bool {
-	for _, child := range c.Children {
-		if child.AssignIndex != c.AssignIndex || spansAssignment(child) {
-			return true
-		}
-	}
-	return false
-}
-
-// checkDisjunctionStages rejects an expression OR-ed with a neighbour that binds
-// to a different pipeline stage. Each condition is materialised into the clause
-// its stage owns, so an OR split across WHERE and HAVING is evaluated as AND and
-// silently returns fewer rows than asked for.
-func checkDisjunctionStages(conditions []HavingCondition, i, priority int, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) error {
-	neighbour := func(j int) (HavingCondition, bool) {
-		if j < 0 || j >= len(conditions) {
-			return HavingCondition{}, false
-		}
-		return conditions[j], true
-	}
-	// Logic sits on the condition to the LEFT of the operator.
-	if prev, ok := neighbour(i - 1); ok && strings.EqualFold(prev.Logic, "OR") {
-		if p := stagePriority(prev, registry, plan, willHaveAggregation); p != priority {
-			return disjunctionStageError(conditions[i], prev)
-		}
-	}
-	if strings.EqualFold(conditions[i].Logic, "OR") {
-		if next, ok := neighbour(i + 1); ok {
-			if p := stagePriority(next, registry, plan, willHaveAggregation); p != priority {
-				return disjunctionStageError(conditions[i], next)
-			}
-		}
-	}
-	return nil
-}
-
-func stagePriority(c HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
+func stagePriority(c Condition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
 	if c.Expr != nil {
 		return exprPriority(c.Expr, registry, plan, willHaveAggregation)
 	}
-	if c.IsCompound {
+	if c.IsCompound() {
 		return subtreePriority(c, registry, plan, willHaveAggregation)
 	}
 	return leafPriority(c, registry, plan, willHaveAggregation)
 }
 
-func disjunctionStageError(a, b HavingCondition) error {
-	return fmt.Errorf("cannot OR %s with %s: they are evaluated at different stages of the pipeline (one before the aggregation, one after), so the result would not be a disjunction. Filter them separately, or move the aggregation",
-		describeCondition(a), describeCondition(b))
-}
-
-func describeCondition(c HavingCondition) string {
-	if c.Expr != nil {
-		return c.Expr.String()
-	}
-	if c.Command != nil {
-		return c.Command.Name + "()"
-	}
-	if c.Field != "" {
-		return c.Field
-	}
-	return "that condition"
-}
-
 // compileNestedExprLeaves fills in PredicateSQL for every expression leaf beneath
 // a compound, at the stage the compound as a whole binds to.
-func compileNestedExprLeaves(cond *HavingCondition, priority int, registry *FieldRegistry, plan *QueryPlan) error {
-	if cond.IsCompound {
+func compileNestedExprLeaves(cond *Condition, priority int, registry *FieldRegistry, plan *QueryPlan) error {
+	if cond.IsCompound() {
 		for i := range cond.Children {
 			if err := compileNestedExprLeaves(&cond.Children[i], priority, registry, plan); err != nil {
 				return err
@@ -221,9 +148,9 @@ func compileNestedExprLeaves(cond *HavingCondition, priority int, registry *Fiel
 // classifyExprCondition compiles an expression filter and reports the stage it
 // binds to. One bound above the scan (a window or join() output) reads its source
 // leaves through the deferredScope export.
-func classifyExprCondition(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) (string, int, error) {
+func classifyExprCondition(cond Condition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) (string, int, error) {
 	priority := exprPriority(cond.Expr, registry, plan, willHaveAggregation)
-	if plan.afterRowKeeping(cond.CmdIndex) {
+	if plan.afterRowKeeping(cond.at.Cmd) {
 		priority = max(priority, 1)
 	}
 	// A match operator makes the expression the left operand of a comparison
@@ -237,7 +164,7 @@ func classifyExprCondition(cond HavingCondition, registry *FieldRegistry, plan *
 	// exportDeferredColumns, so the aliases allocated here are projected.
 	// Under the scan-level model join a post-join filter reads the joined rows
 	// directly; only a window output still sits above the scan.
-	if priority == 1 && !(plan.ModelLookupAtScan && !hasWindowField(cond.Expr, registry)) {
+	if priority == 1 && !(plan.lookup.AtScan && !hasWindowField(cond.Expr, registry)) {
 		sql, err := exprConditionSQLDeferred(cond.Expr, registry, plan.deferredScope(), cond.Negate)
 		return sql, priority, err
 	}
@@ -248,13 +175,13 @@ func classifyExprCondition(cond HavingCondition, registry *FieldRegistry, plan *
 // validateCompoundOperandStages checks every leaf of a compound that binds as one
 // unit. The compound's stage is the highest its leaves need, so a leaf is judged
 // against that rather than against its own.
-func validateCompoundOperandStages(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) error {
+func validateCompoundOperandStages(cond Condition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) error {
 	if subtreePriority(cond, registry, plan, willHaveAggregation) != 2 {
 		return nil
 	}
-	var walk func(HavingCondition) error
-	walk = func(c HavingCondition) error {
-		if c.IsCompound {
+	var walk func(Condition) error
+	walk = func(c Condition) error {
+		if c.IsCompound() {
 			for _, child := range c.Children {
 				if err := walk(child); err != nil {
 					return err
@@ -271,7 +198,7 @@ func validateCompoundOperandStages(cond HavingCondition, registry *FieldRegistry
 // aggregation boundary. A comparison against an aggregate binds to HAVING, where
 // a per-row field no longer exists: ClickHouse rejects it with code 215, naming
 // the column but not the reason.
-func validateOperandStages(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) error {
+func validateOperandStages(cond Condition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) error {
 	if cond.ValueField == "" || !willHaveAggregation {
 		return nil
 	}
@@ -331,17 +258,17 @@ func isGroupKey(registry *FieldRegistry, field string) bool {
 // leafPriority returns the stage bucket a single (non-compound) condition needs:
 // 0=WHERE, 1=DeferredWhere, 2=HAVING. Both operands count: `a > field(_count)`
 // can only be evaluated where the later-produced side exists.
-func leafPriority(c HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
+func leafPriority(c Condition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
 	p := fieldsPriority(c, registry, plan, willHaveAggregation)
 	// After a window score a filter keeps scored rows: it never narrows the baseline.
-	if plan.afterRowKeeping(c.CmdIndex) {
+	if plan.afterRowKeeping(c.at.Cmd) {
 		p = max(p, 1)
 	}
 	return p
 }
 
 // fieldsPriority is the stage the fields a leaf reads need.
-func fieldsPriority(c HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
+func fieldsPriority(c Condition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
 	if c.Command != nil {
 		// A condition command binds where the fields it reads exist.
 		p := 0
@@ -370,7 +297,7 @@ func fieldPriority(field string, registry *FieldRegistry, plan *QueryPlan, willH
 	}
 	switch entry.ClassifyKind() {
 	case FieldKindWindow:
-		if plan.IsProcessTree {
+		if plan.isProcessTree() {
 			return 2
 		}
 		return 1
@@ -389,8 +316,8 @@ func fieldPriority(field string, registry *FieldRegistry, plan *QueryPlan, willH
 }
 
 // subtreePriority returns the highest leafPriority within a condition subtree.
-func subtreePriority(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
-	if !cond.IsCompound {
+func subtreePriority(cond Condition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
+	if !cond.IsCompound() {
 		return stagePriority(cond, registry, plan, willHaveAggregation)
 	}
 	highest := 0
@@ -408,14 +335,9 @@ func subtreePriority(cond HavingCondition, registry *FieldRegistry, plan *QueryP
 // prune and where it resolves at all under a join() or window wrap. Distribution
 // over AND is safe; a negated node or an OR connector is not, and a compound that
 // needs no split is left intact so its SQL is unchanged.
-func splitMixedAndCompound(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) []HavingCondition {
-	if !cond.IsCompound || cond.Negate || len(cond.Children) < 2 {
+func splitMixedAndCompound(cond Condition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) []Condition {
+	if cond.Op != CondAnd || cond.Negate {
 		return nil
-	}
-	for _, c := range cond.Children[:len(cond.Children)-1] {
-		if c.Logic != "" && c.Logic != "AND" {
-			return nil
-		}
 	}
 	stages := map[int]bool{}
 	for _, c := range cond.Children {
@@ -424,17 +346,12 @@ func splitMixedAndCompound(cond HavingCondition, registry *FieldRegistry, plan *
 	if len(stages) < 2 {
 		return nil
 	}
-	parts := make([]HavingCondition, len(cond.Children))
-	copy(parts, cond.Children)
-	for i := range parts {
-		parts[i].Logic = "" // each conjunct now stands alone in its bucket
-	}
-	return parts
+	return slices.Clone(cond.Children)
 }
 
-// classifyCompoundTarget inspects all leaf fields in a compound HavingCondition
+// classifyCompoundTarget inspects all leaf fields in a compound Condition
 // and returns the highest-priority target bucket. Priority: HAVING > DeferredWhere > WHERE.
-func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) *[]HavingCondition {
+func classifyCompoundTarget(cond Condition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) *[]Condition {
 	maxPriority := subtreePriority(cond, registry, plan, willHaveAggregation)
 
 	// A HAVING target only works if every leaf field is available at the groupby
@@ -459,12 +376,12 @@ func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan 
 // compoundFitsHavingStage reports whether every leaf field of a compound is
 // available at the HAVING (groupby) stage, i.e. none is first produced by a
 // projection stage deeper than it.
-func compoundFitsHavingStage(cond HavingCondition, plan *QueryPlan) bool {
+func compoundFitsHavingStage(cond Condition, plan *QueryPlan) bool {
 	hs := plan.havingStageIndex()
 	fits := true
-	var walk func(c HavingCondition)
-	walk = func(c HavingCondition) {
-		if c.IsCompound {
+	var walk func(c Condition)
+	walk = func(c Condition) {
+		if c.IsCompound() {
 			for _, child := range c.Children {
 				walk(child)
 			}
@@ -493,8 +410,7 @@ func compoundFitsHavingStage(cond HavingCondition, plan *QueryPlan) bool {
 func fieldFirstStage(field string, plan *QueryPlan) int {
 	for i := 0; i < len(plan.Stages); i++ {
 		for _, sel := range plan.Stages[i].Layer.Selects {
-			s := sel.String()
-			if strings.Trim(extractFieldAlias(s), "`") == field && s != field {
+			if sel.Alias != "" && sel.Name() == field {
 				return i
 			}
 		}
@@ -504,19 +420,38 @@ func fieldFirstStage(field string, plan *QueryPlan) int {
 
 // materializeAtPositions ANDs conds, each run written at one position resolved
 // against the registry there.
-func materializeAtPositions(conds []HavingCondition, registry *FieldRegistry, plan *QueryPlan, atScan bool) string {
+func materializeAtPositions(conds []Condition, registry *FieldRegistry, plan *QueryPlan, atScan bool) string {
 	var clauses []string
 	for i := 0; i < len(conds); {
 		j := i + 1
-		for j < len(conds) && conds[j].CmdIndex == conds[i].CmdIndex && conds[j].AssignIndex == conds[i].AssignIndex {
+		for j < len(conds) && conds[j].at == conds[i].at {
 			j++
 		}
-		if clause := materializeCondGroup(conds[i:j], plan.conditionRegistry(conds[i], registry), nil, atScan); clause != "" {
+		if clause := materializeCondGroup(conds[i:j], plan.registryAt(conds[i].at, registry), nil, atScan); clause != "" {
 			clauses = append(clauses, clause)
 		}
 		i = j
 	}
 	return andJoin(clauses)
+}
+
+// scanConjuncts compiles the filters before the first command as separate scan
+// WHERE entries, each AND split into its operands, so whatever reads the scan's
+// filters (pgr candidate narrowing, the model key prefilter) sees every conjunct.
+func scanConjuncts(conds []Condition, registry *FieldRegistry, plan *QueryPlan) []string {
+	var out []string
+	for _, c := range conds {
+		parts := []Condition{c}
+		if c.Op == CondAnd && !c.Negate {
+			parts = c.Children
+		}
+		for _, part := range parts {
+			if sql := materializeCondGroup([]Condition{part}, plan.registryAt(c.at, registry), nil, true); sql != "" {
+				out = append(out, sql)
+			}
+		}
+	}
+	return out
 }
 
 // materializeConditions generates SQL from the classified pending conditions
@@ -529,7 +464,7 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	// an aggregate one is a WHERE above the cap rather than the group's HAVING.
 	having := plan.pendingHavingConditions[:0]
 	for _, c := range plan.pendingHavingConditions {
-		if plan.capStageAt(c.CmdIndex) > plan.havingStageIndexAt(c.CmdIndex) {
+		if plan.capStageAt(c.at.Cmd) > plan.havingStageIndexAt(c.at.Cmd) {
 			plan.pendingWhereConditions = append(plan.pendingWhereConditions, c)
 		} else {
 			having = append(having, c)
@@ -543,13 +478,13 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	// assignment) binds to that stage. Without this, such a filter lands in the
 	// innermost source WHERE where the column does not exist, producing a
 	// ClickHouse "unknown identifier" (or, for a carried aggregate, error 184).
-	byStage := make(map[int][]HavingCondition)
+	byStage := make(map[int][]Condition)
 	var stageOrder []int
 	// Conditions before the first command filter the raw scan, ahead of anything a
 	// command adds to it.
-	var firstStage []HavingCondition
+	var firstStage []Condition
 	for _, cond := range plan.pendingWhereConditions {
-		if cond.CmdIndex == 0 && len(plan.firstStageAt) > 0 {
+		if cond.at.Cmd == 0 {
 			firstStage = append(firstStage, cond)
 			continue
 		}
@@ -559,19 +494,17 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 		}
 		byStage[idx] = append(byStage[idx], cond)
 	}
-	if clause := materializeAtPositions(firstStage, registry, plan, true); clause != "" {
-		source := plan.SourceStage()
-		source.Layer.Where = slices.Insert(source.Layer.Where, min(plan.baseWhereLen, len(source.Layer.Where)), clause)
-	}
+	source := plan.SourceStage()
+	source.Layer.Where = slices.Insert(source.Layer.Where, min(plan.baseWhereLen, len(source.Layer.Where)), scanConjuncts(firstStage, registry, plan)...)
 	for _, idx := range stageOrder {
 		layer := &plan.Stages[idx].Layer
 		// Filters after a row cap apply to the rows it kept, so each lands with
 		// the cap before it.
 		dests := []*[]string{&layer.Where}
-		groups := map[*[]string][]HavingCondition{}
+		groups := map[*[]string][]Condition{}
 		for _, cond := range byStage[idx] {
 			dst := &layer.Where
-			if after := layer.capAfter(cond.CmdIndex); after != nil {
+			if after := layer.capAfter(cond.at.Cmd); after != nil {
 				dst = after
 			}
 			if _, seen := groups[dst]; !seen && dst != &layer.Where {
@@ -586,10 +519,10 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 		}
 	}
 	// HAVING binds to the aggregation stage in effect where the filter is written.
-	havingByStage := make(map[int][]HavingCondition)
+	havingByStage := make(map[int][]Condition)
 	var havingOrder []int
 	for _, cond := range plan.pendingHavingConditions {
-		idx := plan.havingStageIndexAt(cond.CmdIndex)
+		idx := plan.havingStageIndexAt(cond.at.Cmd)
 		if _, seen := havingByStage[idx]; !seen {
 			havingOrder = append(havingOrder, idx)
 		}
@@ -603,11 +536,11 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	// Deferred conditions land above the source scan, so any source expression they
 	// reference must be exported there under a hidden alias (see deferredScope).
 	deferred := plan.pendingDeferredConditions
-	if plan.ModelLookupAtScan {
+	if plan.lookup.AtScan {
 		// Scan-level model join: a condition reading the join filters the joined
 		// rows, where both model columns and scan fields resolve directly. Only
 		// window-field conditions still need the outermost deferred layer.
-		var outer, postJoin []HavingCondition
+		var outer, postJoin []Condition
 		for _, c := range deferred {
 			if condTouchesWindowField(c, registry) {
 				outer = append(outer, c)
@@ -630,77 +563,57 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 // the scan then reads only rows the join keeps, instead of every log in the window.
 // A row cap between the lookup and the filter selects rows first, so a filter after
 // one stays on the joined rows.
-func materializePostJoin(conds []HavingCondition, registry *FieldRegistry, plan *QueryPlan) {
-	isModelColumn := func(c string) bool { return slices.Contains(plan.ModelLookupFields, c) }
+func materializePostJoin(conds []Condition, registry *FieldRegistry, plan *QueryPlan) {
+	isModelColumn := func(c string) bool { return slices.Contains(plan.lookup.Fields, c) }
 	capBetween := func(at int) bool {
 		return slices.ContainsFunc(plan.SourceStage().Layer.Caps, func(c RowCap) bool {
-			return c.At > plan.ModelLookupCmd && c.At < at
+			return c.At > plan.lookup.Cmd && c.At < at
 		})
 	}
 	for i := 0; i < len(conds); {
 		j := i + 1
-		for j < len(conds) && conds[j].CmdIndex == conds[i].CmdIndex && conds[j].AssignIndex == conds[i].AssignIndex {
+		for j < len(conds) && conds[j].at == conds[i].at {
 			j++
 		}
-		run, reg, at := conds[i:j], plan.conditionRegistry(conds[i], registry), conds[i].CmdIndex
+		run, reg, at := conds[i:j], plan.registryAt(conds[i].at, registry), conds[i].at.Cmd
 		i = j
-		// The run's connectors bind with SQL precedence, so it splits into
-		// conjuncts only when every one of them is AND.
-		units := [][]HavingCondition{run}
-		if allAnd(run) {
-			units = units[:0]
-			for k := range run {
-				units = append(units, run[k:k+1])
-			}
-		}
-		for _, u := range units {
-			clause := materializeCondGroup(u, reg, nil, false)
+		for _, c := range run {
+			clause := materializeCondGroup([]Condition{c}, reg, nil, false)
 			switch {
 			case clause == "":
-			case plan.ModelLookupStrict && !capBetween(at) && readsOnly(clause, isModelColumn):
-				plan.ModelLookupWhere = append(plan.ModelLookupWhere, clause)
-				if requiresNew(u, reg) {
-					plan.modelKeys.scoreOnlyNew()
+			case plan.lookup.Strict && !capBetween(at) && readsOnly(clause, isModelColumn):
+				plan.lookup.Where = append(plan.lookup.Where, clause)
+				if requiresNew(c, reg) {
+					plan.lookup.keys.scoreOnlyNew()
 				}
 			default:
-				plan.PostJoinWhere = append(plan.PostJoinWhere, postJoinFilter{At: at, SQL: clause})
+				plan.lookup.PostJoinWhere = append(plan.lookup.PostJoinWhere, postJoinFilter{At: at, SQL: clause})
 			}
 		}
 	}
 }
 
-// requiresNew reports whether the AND-ed conditions hold only where the model's
-// is_new is '1'.
-func requiresNew(conds []HavingCondition, reg *FieldRegistry) bool {
-	if !allAnd(conds) {
+// requiresNew reports whether the condition holds only where the model's is_new
+// is '1'.
+func requiresNew(c Condition, reg *FieldRegistry) bool {
+	switch {
+	case c.Op == CondAnd:
+		return !c.Negate && slices.ContainsFunc(c.Children, func(child Condition) bool { return requiresNew(child, reg) })
+	case c.Op == CondOr:
 		return false
 	}
-	for _, c := range conds {
-		if c.IsCompound {
-			if !c.Negate && requiresNew(c.Children, reg) {
-				return true
-			}
-			continue
-		}
-		// Rendered, so an is_new reassigned after the lookup is not mistaken for it.
-		if c.Field == "is_new" {
-			if sql := materializeCondGroup([]HavingCondition{c}, reg, nil, false); sql == "is_new = '1'" || sql == "is_new != '0'" {
-				return true
-			}
-		}
+	// Rendered, so an is_new reassigned after the lookup is not mistaken for it.
+	if c.Field != "is_new" {
+		return false
 	}
-	return false
-}
-
-// allAnd reports whether every connector between the conditions is AND.
-func allAnd(conds []HavingCondition) bool {
-	return len(conds) == 0 || !slices.ContainsFunc(conds[:len(conds)-1], func(c HavingCondition) bool { return strings.EqualFold(c.Logic, "OR") })
+	sql := materializeCondGroup([]Condition{c}, reg, nil, false)
+	return sql == "is_new = '1'" || sql == "is_new != '0'"
 }
 
 // condTouchesWindowField reports whether any leaf of the condition references a
 // window-layer output (z-score/outlier), which exists only above the window wrap.
-func condTouchesWindowField(cond HavingCondition, registry *FieldRegistry) bool {
-	if cond.IsCompound {
+func condTouchesWindowField(cond Condition, registry *FieldRegistry) bool {
+	if cond.IsCompound() {
 		for _, child := range cond.Children {
 			if condTouchesWindowField(child, registry) {
 				return true
@@ -717,11 +630,11 @@ func condTouchesWindowField(cond HavingCondition, registry *FieldRegistry) bool 
 // compound stays a unit bound to the deepest stage any leaf requires. Fields not
 // materialized by a post-aggregation projection stage (base log fields, JSON
 // sub-columns, pre-aggregation scalars) bind to the source stage (index 0).
-func whereBindingStageIndex(cond HavingCondition, plan *QueryPlan) int {
-	maxIdx := max(0, plan.capStageAt(cond.CmdIndex))
-	var walk func(c HavingCondition)
-	walk = func(c HavingCondition) {
-		if c.IsCompound {
+func whereBindingStageIndex(cond Condition, plan *QueryPlan) int {
+	maxIdx := max(0, plan.capStageAt(cond.at.Cmd))
+	var walk func(c Condition)
+	walk = func(c Condition) {
+		if c.IsCompound() {
 			for _, child := range c.Children {
 				walk(child)
 			}
@@ -732,8 +645,8 @@ func whereBindingStageIndex(cond HavingCondition, plan *QueryPlan) int {
 		if c.Command != nil {
 			for _, f := range conditionCommandFields(*c.Command) {
 				maxIdx = max(maxIdx, fieldFirstStage(f, plan))
-				if plan.rewrittenAfterAggregation(f, c.CmdIndex) {
-					maxIdx = max(maxIdx, plan.stageAfterCmd[c.CmdIndex-1])
+				if plan.rewrittenAfterAggregation(f, c.at.Cmd) {
+					maxIdx = max(maxIdx, plan.stageAfterCmd[c.at.Cmd-1])
 				}
 			}
 			return
@@ -742,7 +655,7 @@ func whereBindingStageIndex(cond HavingCondition, plan *QueryPlan) int {
 	}
 	walk(cond)
 	// A filter reads the rows at its position, never a stage a later command adds.
-	if at, ok := plan.stageAt[[2]int{cond.CmdIndex, cond.AssignIndex}]; ok {
+	if at, ok := plan.stageAt[cond.at]; ok {
 		maxIdx = min(maxIdx, at)
 	}
 	return maxIdx
@@ -753,51 +666,67 @@ func whereBindingStageIndex(cond HavingCondition, plan *QueryPlan) int {
 // no projection stage produces it.
 func fieldOwningStage(field string, plan *QueryPlan) int {
 	for i := len(plan.Stages) - 1; i >= 1; i-- {
-		for _, sel := range plan.Stages[i].Layer.Selects {
-			if strings.Trim(extractFieldAlias(sel.String()), "`") == field {
-				return i
-			}
+		if plan.Stages[i].Layer.columnIndex(field) >= 0 {
+			return i
 		}
 	}
 	return 0
 }
 
-// materializeCondGroup builds SQL for a group of conditions, recursing into
-// compound nodes, and joins them with their connectors.
+// materializeCondGroup ANDs the conditions, each compiled against registry.
 // atScan marks conditions bound to the logs scan's own WHERE, the only place a
 // norm_log index hint may go.
-func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry, scope *deferredScope, atScan bool) string {
-	if len(conditions) == 0 {
+func materializeCondGroup(conditions []Condition, registry *FieldRegistry, scope *deferredScope, atScan bool) string {
+	var parts []string
+	for _, c := range conditions {
+		if sql := renderCondition(c, registry, scope, atScan); sql != "" {
+			parts = append(parts, sql)
+		}
+	}
+	clause := strings.Join(parts, " AND ")
+	if len(parts) > 1 && strings.Contains(clause, " OR ") {
+		clause = "(" + clause + ")"
+	}
+	return clause
+}
+
+// renderCondition compiles one condition. An AND or OR is bracketed as a unit,
+// and so is each AND or OR inside it.
+func renderCondition(c Condition, registry *FieldRegistry, scope *deferredScope, atScan bool) string {
+	if !c.IsCompound() {
+		if c.PredicateSQL != "" {
+			return c.PredicateSQL
+		}
+		return buildConditionSQL(c, registry, scope, atScan)
+	}
+	sep := " AND "
+	if c.Op == CondOr {
+		sep = " OR "
+	}
+	var parts []string
+	for _, child := range c.Children {
+		sql := renderCondition(child, registry, scope, atScan)
+		if sql == "" {
+			continue
+		}
+		// A test whose SQL is itself a disjunction must not re-associate with the
+		// conjuncts beside it.
+		if c.Op == CondAnd && !child.IsCompound() && hasTopLevelOR(sql) {
+			sql = "(" + sql + ")"
+		}
+		parts = append(parts, sql)
+	}
+	if len(parts) == 0 {
 		return ""
 	}
-
-	// Build each condition into a condGroup (sql + logic connector).
-	var groups []condGroup
-	for _, cond := range conditions {
-		var condSQL string
-		if cond.IsCompound {
-			inner := materializeCondGroup(cond.Children, registry, scope, atScan)
-			if inner == "" {
-				continue
-			}
-			if !isParenthesized(inner) {
-				inner = "(" + inner + ")"
-			}
-			condSQL = inner
-			if cond.Negate {
-				condSQL = "NOT " + inner
-			}
-		} else if cond.PredicateSQL != "" {
-			condSQL = cond.PredicateSQL
-		} else {
-			condSQL = buildConditionSQL(cond, registry, scope, atScan)
-			if condSQL == "" {
-				continue
-			}
-		}
-		groups = append(groups, condGroup{sql: condSQL, logic: cond.Logic})
+	inner := strings.Join(parts, sep)
+	if !isParenthesized(inner) {
+		inner = "(" + inner + ")"
 	}
-	return joinCondGroups(groups)
+	if c.Negate {
+		return "NOT " + inner
+	}
+	return inner
 }
 
 // isParenthesized reports whether a clause is one bracketed unit: its opening
@@ -830,33 +759,10 @@ func isParenthesized(clause string) bool {
 	return false
 }
 
-// joinCondGroups joins condition groups with their logic operators.
-func joinCondGroups(groups []condGroup) string {
-	if len(groups) == 0 {
-		return ""
-	}
-	var result strings.Builder
-	for i, g := range groups {
-		if i > 0 {
-			if groups[i-1].logic != "" {
-				result.WriteString(" " + groups[i-1].logic + " ")
-			} else {
-				result.WriteString(" AND ")
-			}
-		}
-		result.WriteString(g.sql)
-	}
-	clause := result.String()
-	if len(groups) > 1 && strings.Contains(clause, " OR ") {
-		clause = "(" + clause + ")"
-	}
-	return clause
-}
-
-// buildConditionSQL builds the SQL for a single HavingCondition using the registry,
+// buildConditionSQL builds the SQL for a single Condition using the registry,
 // with a norm_log index hint when it filters a stored field or norm_log itself on
 // the logs scan.
-func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferredScope, atScan bool) string {
+func buildConditionSQL(cond Condition, registry *FieldRegistry, scope *deferredScope, atScan bool) string {
 	fieldRef, isJSONField := resolveConditionField(cond, registry)
 	sql := conditionSQL(cond, registry, scope, fieldRef, isJSONField)
 	onNormLog := fieldRef == normLogColumn
@@ -871,7 +777,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 
 // resolveConditionField returns the reference a condition's field compiles to, and
 // whether that is a stored JSON path rather than a column or computed field.
-func resolveConditionField(cond HavingCondition, registry *FieldRegistry) (fieldRef string, isJSONField bool) {
+func resolveConditionField(cond Condition, registry *FieldRegistry) (fieldRef string, isJSONField bool) {
 	entry := registry.Get(cond.Field)
 	if entry != nil {
 		switch entry.Kind {
@@ -909,116 +815,124 @@ func resolveConditionField(cond HavingCondition, registry *FieldRegistry) (field
 	return fieldRef, isJSONField
 }
 
-// conditionSQL compiles a single HavingCondition, its field already resolved.
-func conditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferredScope, fieldRef string, isJSONField bool) string {
-	switch cond.Operator {
-	case ">", "<", ">=", "<=":
-		if cond.Negate {
-			cond.Negate = false
-			if sql := conditionSQL(cond, registry, scope, fieldRef, isJSONField); sql != "" {
-				return "NOT (" + sql + ")"
-			}
-			return ""
+// conditionSQL compiles a single Condition, its field already resolved.
+func conditionSQL(cond Condition, registry *FieldRegistry, scope *deferredScope, fieldRef string, isJSONField bool) string {
+	if cond.Negate && isOrdering(cond.Operator) {
+		// An ordering is negated whole: a non-number fails both x < n and x >= n.
+		cond.Negate = false
+		if sql := conditionSQL(cond, registry, scope, fieldRef, isJSONField); sql != "" {
+			return "NOT (" + sql + ")"
 		}
+		return ""
 	}
 	entry := registry.Get(cond.Field)
-
 	// At a deferred layer a source expression must be read from its exported hidden
 	// column; bare column names pass through untouched.
 	fieldRef = scope.ref(fieldRef, cond.Field)
-
-	// field(name) on the right-hand side: compare against another field.
-	if cond.ValueField != "" {
+	mode := sourceModeOf(registry)
+	switch {
+	case cond.ValueField != "":
+		// field(name) on the right-hand side: compare against another field.
 		rhs := resolveValueField(cond.ValueField, registry)
 		rhs.ref = scope.ref(rhs.ref, cond.ValueField)
 		// A bare count/sum/avg has no registry entry but resolves to the numeric
-		// _count/_sum/_avg alias, which textToNumber rejects (code 43). Same
-		// carve-out the literal comparison path makes below.
-		computed := registry.bareAggregate(cond.Field) ||
-			(entry != nil && entry.Kind != FieldKindBase && entry.Kind != FieldKindJSON)
-		lhs := lhsOperand(cond.Field, fieldRef, isJSONField, computed)
-		return buildFieldComparisonSQL(lhs, rhs, cond.Operator)
+		// _count/_sum/_avg alias, which textToNumber rejects (code 43).
+		computed := registry.bareAggregate(cond.Field) || (entry != nil && entry.Kind != FieldKindBase && entry.Kind != FieldKindJSON)
+		return buildFieldComparisonSQL(lhsOperand(cond.Field, fieldRef, isJSONField, computed), rhs, cond.Operator)
+	case cond.Value == "*" && (cond.Operator == "=" || cond.Operator == "!="):
+		// * means presence only as the value of = and !=; under =~, =^ and =$ it is a term.
+		return presenceSQL(fieldRef, cond.Operator == "=", isJSONField)
+	case cond.IsRegex:
+		return buildRegexMatchSQL(fieldRef, cond.Value, cond.LiteralTerm, cond.Operator == "!=", mode)
+	case cond.Operator == "=~":
+		return buildContainsAnySQL(fieldRef, conditionValues(cond), cond.Negate, mode)
+	case cond.Operator == "=^":
+		return buildStartsWithAnySQL(fieldRef, conditionValues(cond), cond.Negate, mode)
+	case cond.Operator == "=$":
+		return buildEndsWithAnySQL(fieldRef, conditionValues(cond), cond.Negate, mode)
+	case cond.Operator == "=" || cond.Operator == "!=":
+		return equalitySQL(cond, registry, fieldRef, isJSONField)
+	case isOrdering(cond.Operator):
+		return orderingSQL(cond, registry, entry, fieldRef)
 	}
+	return ""
+}
 
-	// * means presence only as the value of = and !=; under =~, =^ and =$ it is a term.
-	if cond.Value == "*" && (cond.Operator == "=" || cond.Operator == "!=") {
-		if cond.Operator == "!=" {
-			if isJSONField {
-				return fmt.Sprintf("(%s IS NULL OR %s = '')", fieldRef, fieldRef)
-			}
-			return fmt.Sprintf("%s = ''", fieldRef)
-		}
+// isOrdering reports whether op is a numeric comparison.
+func isOrdering(op string) bool {
+	return op == ">" || op == "<" || op == ">=" || op == "<="
+}
+
+// presenceSQL tests whether a field is present and not empty, or the opposite.
+func presenceSQL(fieldRef string, present, isJSONField bool) string {
+	switch {
+	case present:
 		return fmt.Sprintf("%s != ''", fieldRef)
+	case isJSONField:
+		return fmt.Sprintf("(%s IS NULL OR %s = '')", fieldRef, fieldRef)
 	}
+	return fmt.Sprintf("%s = ''", fieldRef)
+}
 
-	if cond.IsRegex {
-		negate := cond.Operator == "!="
-		return buildRegexMatchSQL(fieldRef, cond.Value, cond.LiteralTerm, negate, sourceModeOf(registry))
-	}
-
-	if cond.Operator == "=~" || cond.Operator == "=^" || cond.Operator == "=$" {
+// equalitySQL compiles = and !=, against one value or a list. Equality is
+// answered by the field's column alone, never a raw_log token prefilter: the
+// value may be normalized and absent from raw_log.
+func equalitySQL(cond Condition, registry *FieldRegistry, fieldRef string, isJSONField bool) string {
+	negate := cond.Operator == "!="
+	iceberg := registry.sourceMode == SourceIceberg && isJSONField
+	if len(cond.Values) > 1 {
+		// Negation is folded into the operator by negateCondition (= <-> !=).
 		values := conditionValues(cond)
-		switch cond.Operator {
-		case "=~":
-			return buildContainsAnySQL(fieldRef, values, cond.Negate, sourceModeOf(registry))
-		case "=^":
-			return buildStartsWithAnySQL(fieldRef, values, cond.Negate, sourceModeOf(registry))
-		case "=$":
-			return buildEndsWithAnySQL(fieldRef, values, cond.Negate, sourceModeOf(registry))
-		}
-	}
-
-	if (cond.Operator == "=" || cond.Operator == "!=") && len(cond.Values) > 1 {
-		// Comma-separated equality list -> IN / NOT IN. Negation is folded into
-		// the operator by negateHavingCondition (= <-> !=), matching single value.
-		negate := cond.Operator == "!="
-		values := conditionValues(cond)
-		if registry.sourceMode == SourceIceberg && isJSONField {
+		if iceberg {
 			return buildIcebergEqualityListSQL(cond.Field, values, negate, registry.icePromoted)
 		}
 		return buildEqualityListSQL(fieldRef, values, negate, isJSONField)
 	}
-
-	switch cond.Operator {
-	case "=":
-		// Equality is answered by the field's column/sub-column alone; no raw_log token
-		// pre-filter (the value may be normalized and absent from raw_log -> false negatives).
-		if registry.sourceMode == SourceIceberg && isJSONField {
-			// MAP correctness + promoted `_ice_` column pruning (icebergEqualityPredicate).
-			return icebergEqualityPredicate(cond.Field, cond.Value, registry.icePromoted)
-		}
-		return fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
-	case "!=":
-		if isJSONField {
-			return fmt.Sprintf("(%s IS NULL OR %s != '%s')", fieldRef, fieldRef, escapeString(cond.Value))
-		}
+	switch {
+	case negate && isJSONField:
+		return fmt.Sprintf("(%s IS NULL OR %s != '%s')", fieldRef, fieldRef, escapeString(cond.Value))
+	case negate:
 		return fmt.Sprintf("%s != '%s'", fieldRef, escapeString(cond.Value))
-	case ">", "<", ">=", "<=":
-		if err := validateNumeric(cond.Value); err != nil {
-			return fmt.Sprintf("%s %s '%s'", fieldRef, cond.Operator, escapeString(cond.Value))
-		}
-		// Text is read with textToNumber. A number needs no coercion; wrapping one
-		// is rejected by the server (illegal type UInt64).
-		isPerRow := entry != nil && entry.Kind == FieldKindPerRow && !entry.Numeric
-		// Bare aggregate names (count/sum/avg with no registry entry) resolve to the
-		// numeric _count/_sum/_avg aliases and must not be coerced.
-		isAggFallback := entry == nil && registry.bareAggregate(cond.Field)
-		isComputed := isAggFallback || (entry != nil && (entry.Numeric || entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow || entry.Kind == FieldKindJoined))
-		if isPerRow {
-			return fmt.Sprintf("%s %s %s", textToNumber(fieldRef), cond.Operator, cond.Value)
-		}
-		if isComputed {
-			return fmt.Sprintf("%s %s %s", fieldRef, cond.Operator, cond.Value)
-		}
-		return fmt.Sprintf("%s %s %s", textToNumber(fieldRef), cond.Operator, cond.Value)
+	case iceberg:
+		// MAP correctness + promoted `_ice_` column pruning (icebergEqualityPredicate).
+		return icebergEqualityPredicate(cond.Field, cond.Value, registry.icePromoted)
 	}
-	return ""
+	return fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
+}
+
+// orderingSQL compiles a numeric comparison. Text is read with textToNumber; a
+// value that is already a number needs no coercion, and wrapping one is rejected
+// by the server (illegal type UInt64).
+func orderingSQL(cond Condition, registry *FieldRegistry, entry *FieldEntry, fieldRef string) string {
+	if err := validateNumeric(cond.Value); err != nil {
+		return fmt.Sprintf("%s %s '%s'", fieldRef, cond.Operator, escapeString(cond.Value))
+	}
+	if !isNumericOperand(cond.Field, registry, entry) {
+		fieldRef = textToNumber(fieldRef)
+	}
+	return fmt.Sprintf("%s %s %s", fieldRef, cond.Operator, cond.Value)
+}
+
+// isNumericOperand reports whether a field already compiles to a number: a bare
+// aggregate name (count/sum/avg with no registry entry, read as _count/_sum/_avg),
+// an aggregate, assignment, window or join output, or a numeric expression.
+func isNumericOperand(field string, registry *FieldRegistry, entry *FieldEntry) bool {
+	if entry == nil {
+		return registry.bareAggregate(field)
+	}
+	switch entry.Kind {
+	case FieldKindPerRow:
+		return entry.Numeric
+	case FieldKindAggregate, FieldKindAssignment, FieldKindWindow, FieldKindJoined:
+		return true
+	}
+	return entry.Numeric
 }
 
 // conditionValues returns the values a condition compares against, as conditionSQL
 // reads them: a contains/prefix/suffix list or its single value, an equality list
 // of two or more, or else the single value.
-func conditionValues(cond HavingCondition) []string {
+func conditionValues(cond Condition) []string {
 	switch cond.Operator {
 	case "=~", "=^", "=$":
 		if len(cond.Values) == 0 && cond.Value != "" {
@@ -1036,7 +950,10 @@ func conditionValues(cond HavingCondition) []string {
 // step) into one predicate against registry. Such a sub-pipeline is evaluated row
 // by row, so every column it references is in scope and nothing is routed to a
 // later stage.
-func conditionsPredicate(conds []HavingCondition, registry *FieldRegistry, opts QueryOptions) (string, error) {
+func conditionsPredicate(conds []Condition, registry *FieldRegistry, opts QueryOptions) (string, error) {
+	// Compiled into a copy: the conditions belong to the parsed pipeline, which is
+	// compiled again against other registries.
+	conds = cloneConditions(conds)
 	if err := resolveCommandConditions(conds, registry, nil, opts); err != nil {
 		return "", err
 	}
@@ -1048,26 +965,28 @@ func conditionsPredicate(conds []HavingCondition, registry *FieldRegistry, opts 
 	return materializeCondGroup(conds, registry, nil, false), nil
 }
 
-// SplitFirstStage separates the conditions written before a pipeline's first
+// SplitFirstStage separates the filters written before a pipeline's first
 // command from those after one.
-func SplitFirstStage(conds []HavingCondition) (first, later []HavingCondition) {
-	for _, c := range conds {
-		if c.CmdIndex == 0 {
-			first = append(first, c)
-		} else {
-			later = append(later, c)
+func SplitFirstStage(pipeline *PipelineNode) (first, later []Condition) {
+	pipeline.forEachStep(func(st Step, at position) {
+		switch {
+		case st.Filter == nil:
+		case at.Cmd == 0:
+			first = append(first, *st.Filter)
+		default:
+			later = append(later, *st.Filter)
 		}
-	}
+	})
 	return first, later
 }
 
-// negateHavingCondition flips the operator on a HavingCondition to apply NOT.
+// negateCondition flips the operator on a Condition to apply NOT.
 // For compound nodes, toggles the Negate flag.
 // For regex/string conditions (IsRegex=true), "=" and "~" become "!=" (which
 // triggers NOT in buildRegexMatchSQL). For comparison operators, the relational
 // sense is inverted (e.g. ">" becomes "<=").
-func negateHavingCondition(h *HavingCondition) {
-	if h.IsCompound {
+func negateCondition(h *Condition) {
+	if h.IsCompound() {
 		h.Negate = !h.Negate
 		return
 	}
@@ -1099,7 +1018,7 @@ func negateHavingCondition(h *HavingCondition) {
 
 // cloneConditions deep-copies a condition tree, so compiling one never writes
 // into another.
-func cloneConditions(conds []HavingCondition) []HavingCondition {
+func cloneConditions(conds []Condition) []Condition {
 	out := slices.Clone(conds)
 	for i := range out {
 		out[i].Children = cloneConditions(out[i].Children)
@@ -1111,9 +1030,9 @@ func cloneConditions(conds []HavingCondition) []HavingCondition {
 // against the registry at its position (plan.conditionRegistry when a plan is
 // given). It runs before classification so the rest of the pipeline treats them
 // as ordinary leaves.
-func resolveCommandConditions(conditions []HavingCondition, registry *FieldRegistry, plan *QueryPlan, opts QueryOptions) error {
+func resolveCommandConditions(conditions []Condition, registry *FieldRegistry, plan *QueryPlan, opts QueryOptions) error {
 	for i := range conditions {
-		if conditions[i].IsCompound {
+		if conditions[i].IsCompound() {
 			if err := resolveCommandConditions(conditions[i].Children, registry, plan, opts); err != nil {
 				return err
 			}
@@ -1122,15 +1041,17 @@ func resolveCommandConditions(conditions []HavingCondition, registry *FieldRegis
 		if conditions[i].Command == nil {
 			continue
 		}
-		reg := registry
-		if plan != nil {
-			reg = plan.conditionRegistry(conditions[i], registry)
-			reg = withPostSourceColumns(conditions[i], reg, plan)
-			if plan.afterRowKeeping(conditions[i].CmdIndex) {
-				reg = withDeferredColumns(*conditions[i].Command, reg, plan)
+		ctx := &CommandContext{Registry: registry, Plan: plan, Opts: opts, CmdIndex: conditions[i].at.Cmd}
+		if plan == nil {
+			ctx.Plan = NewQueryPlan()
+		} else {
+			ctx.Registry = plan.registryAt(conditions[i].at, registry)
+			ctx.Registry = withPostSourceColumns(conditions[i], ctx.Registry, plan)
+			if plan.afterRowKeeping(conditions[i].at.Cmd) {
+				ctx.Registry = withDeferredColumns(*conditions[i].Command, ctx.Registry, plan)
 			}
 		}
-		sql, err := negatedCommandPredicate(*conditions[i].Command, reg, opts)
+		sql, err := negatedCommandPredicate(*conditions[i].Command, ctx)
 		if err != nil {
 			return err
 		}
@@ -1141,9 +1062,9 @@ func resolveCommandConditions(conditions []HavingCondition, registry *FieldRegis
 
 // withPostSourceColumns resolves the fields a stage after the scan computes, or that
 // a filter after a cap reads, to their bare columns: all a later stage can read.
-func withPostSourceColumns(c HavingCondition, registry *FieldRegistry, plan *QueryPlan) *FieldRegistry {
+func withPostSourceColumns(c Condition, registry *FieldRegistry, plan *QueryPlan) *FieldRegistry {
 	for _, f := range conditionCommandFields(*c.Command) {
-		if fieldFirstStage(f, plan) > 0 || plan.rewrittenAfterAggregation(f, c.CmdIndex) || plan.capStageAt(c.CmdIndex) >= 0 {
+		if fieldFirstStage(f, plan) > 0 || plan.rewrittenAfterAggregation(f, c.at.Cmd) || plan.capStageAt(c.at.Cmd) >= 0 {
 			registry = registry.Clone()
 			registry.Register(f, FieldKindPerRow, f, -1)
 			registry.SetResolveExpr(f, f)
@@ -1164,24 +1085,27 @@ func withDeferredColumns(cmd CommandNode, registry *FieldRegistry, plan *QueryPl
 	return registry
 }
 
-// negatedCommandPredicate builds a condition function's predicate with Negate
-// cleared and negates it here, the one place negation is applied, so a handler
-// that also honours Negate cannot negate twice.
-func negatedCommandPredicate(cmd CommandNode, registry *FieldRegistry, opts QueryOptions) (string, error) {
-	negate := cmd.Negate
-	cmd.Negate = false
-	sql, err := CommandPredicate(cmd, registry, opts)
-	if err != nil {
-		var nc notConditionError
-		switch {
-		case negate && errors.As(err, &nc):
+// negatedCommandPredicate compiles a condition command, applying NOT in one place:
+// the handler's own negative form when it has one, NOT around it otherwise.
+func negatedCommandPredicate(cmd CommandNode, ctx *CommandContext) (string, error) {
+	h, ok := getCommandHandler(cmd.Name).(predicateHandler)
+	if !ok {
+		if cmd.Negate {
 			return "", fmt.Errorf("NOT cannot apply to %s(): it is not a filter", commandDisplayName(cmd.Name))
-		case negate:
-			return "", fmt.Errorf("NOT %s(): %w", commandDisplayName(cmd.Name), err)
 		}
-		return "", err
+		return "", notConditionError(fmt.Sprintf("%s() is not a filter, so it cannot be combined with AND or OR: put it in a stage of its own", commandDisplayName(cmd.Name)))
 	}
+	negate := cmd.Negate && !commandAppliesNegate(cmd.Name)
 	if negate {
+		cmd.Negate = false
+	}
+	sql, err := h.predicate(cmd, ctx)
+	switch {
+	case err != nil && negate:
+		return "", fmt.Errorf("NOT %s(): %w", commandDisplayName(cmd.Name), err)
+	case err != nil:
+		return "", err
+	case negate:
 		return "NOT (" + sql + ")", nil
 	}
 	return sql, nil
@@ -1272,21 +1196,22 @@ var statsCommands = map[string]bool{
 // before it did not return. Such a name resolves as a log field and is pushed into
 // the scan, so it would change what was counted instead of filtering the output.
 func validatePostAggregationFields(pipeline *PipelineNode, registry *FieldRegistry, plan *QueryPlan) error {
-	var check func(c HavingCondition) error
-	check = func(c HavingCondition) error {
-		if c.IsCompound {
+	commands := pipeline.Commands()
+	var check func(c Condition, pos position) error
+	check = func(c Condition, pos position) error {
+		if c.IsCompound() {
 			for _, child := range c.Children {
-				if err := check(child); err != nil {
+				if err := check(child, pos); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
-		at := lastAggregatingCommandIndex(pipeline.Commands, c.CmdIndex)
+		at := lastAggregatingCommandIndex(commands, pos.Cmd)
 		if at < 0 {
 			return nil
 		}
-		agg := canonicalCommandName(pipeline.Commands[at].Name)
+		agg := canonicalCommandName(commands[at].Name)
 		if !outputIsClosed(agg) {
 			return nil
 		}
@@ -1297,7 +1222,7 @@ func validatePostAggregationFields(pipeline *PipelineNode, registry *FieldRegist
 			return fmt.Errorf("%s() reads log rows, so move it before %s()", commandDisplayName(c.Command.Name), agg)
 		}
 		for _, name := range conditionReads(c) {
-			if availableAfterAggregation(name, c, at, pipeline, registry, plan) {
+			if availableAfterAggregation(name, pos, at, pipeline, registry, plan) {
 				continue
 			}
 			if name == normLogColumn {
@@ -1308,33 +1233,39 @@ func validatePostAggregationFields(pipeline *PipelineNode, registry *FieldRegist
 		}
 		return nil
 	}
-	for _, cond := range pipeline.HavingConditions {
-		if err := check(cond); err != nil {
-			return err
+	var err error
+	pipeline.forEachStep(func(st Step, pos position) {
+		if err != nil {
+			return
 		}
+		switch {
+		case st.Filter != nil:
+			err = check(*st.Filter, pos)
+		case st.Command != nil:
+			// A command after the aggregation reads its output the same way. One that
+			// aggregates again on the same stage, as groupby(user) | sum(bytes) does,
+			// reads the rows being grouped instead.
+			err = checkCommandAfterAggregation(*st.Command, pos, commands, pipeline, registry, plan)
+		}
+	})
+	return err
+}
+
+// checkCommandAfterAggregation rejects a command reading a field the aggregation
+// before it did not return.
+func checkCommandAfterAggregation(cmd CommandNode, pos position, commands []CommandNode, pipeline *PipelineNode, registry *FieldRegistry, plan *QueryPlan) error {
+	if IsAggregatingCommand(cmd.Name) {
+		return nil
 	}
-	// A command after the aggregation reads its output the same way. One that
-	// aggregates again on the same stage, as groupby(user) | sum(bytes) does, reads
-	// the rows being grouped instead.
-	assigns := 0
-	for i, cmd := range pipeline.Commands {
-		for assigns < len(pipeline.Assignments) && pipeline.Assignments[assigns].CmdIndex <= i {
-			assigns++
-		}
-		if IsAggregatingCommand(cmd.Name) {
-			continue
-		}
-		at := lastAggregatingCommandIndex(pipeline.Commands, i)
-		if at < 0 || !outputIsClosed(pipeline.Commands[at].Name) {
-			continue
-		}
-		pos := HavingCondition{CmdIndex: i, AssignIndex: assigns}
-		for _, name := range commandFieldReads(cmd) {
-			if !availableAfterAggregation(name, pos, at, pipeline, registry, plan) {
-				return fmt.Errorf("%s(): %s does not exist after %s(): use a grouping key or an aggregate output (%s), or move %s() before the aggregation",
-					commandDisplayName(cmd.Name), name, canonicalCommandName(pipeline.Commands[at].Name),
-					strings.Join(visibleOutputs(plan.outputsAfter[at]), ", "), commandDisplayName(cmd.Name))
-			}
+	at := lastAggregatingCommandIndex(commands, pos.Cmd)
+	if at < 0 || !outputIsClosed(commands[at].Name) {
+		return nil
+	}
+	for _, name := range commandFieldReads(cmd) {
+		if !availableAfterAggregation(name, pos, at, pipeline, registry, plan) {
+			return fmt.Errorf("%s(): %s does not exist after %s(): use a grouping key or an aggregate output (%s), or move %s() before the aggregation",
+				commandDisplayName(cmd.Name), name, canonicalCommandName(commands[at].Name),
+				strings.Join(visibleOutputs(plan.outputsAfter[at]), ", "), commandDisplayName(cmd.Name))
 		}
 	}
 	return nil
@@ -1379,7 +1310,7 @@ func lastAggregatingCommandIndex(commands []CommandNode, n int) int {
 }
 
 // conditionReads names every field a leaf condition reads.
-func conditionReads(c HavingCondition) []string {
+func conditionReads(c Condition) []string {
 	var names []string
 	if c.Command != nil {
 		names = conditionCommandFields(*c.Command)
@@ -1396,26 +1327,27 @@ func conditionReads(c HavingCondition) []string {
 	return names
 }
 
-// availableAfterAggregation reports whether name exists where c is written: the
-// aggregation at index at returned it, or the pipeline computed it since. A stage
-// keeps the row-level columns selected before its GROUP BY, and those do not survive.
-func availableAfterAggregation(name string, c HavingCondition, at int, pipeline *PipelineNode, registry *FieldRegistry, plan *QueryPlan) bool {
+// availableAfterAggregation reports whether name exists at pos: the aggregation
+// at index at returned it, or the pipeline computed it since. A stage keeps the
+// row-level columns selected before its GROUP BY, and those do not survive.
+func availableAfterAggregation(name string, pos position, at int, pipeline *PipelineNode, registry *FieldRegistry, plan *QueryPlan) bool {
 	outputs := plan.outputsAfter[at]
-	if alias, ok := plan.conditionRegistry(c, registry).GroupKeyAlias(name); ok && slices.Contains(outputs, alias) {
+	if alias, ok := plan.registryAt(pos, registry).GroupKeyAlias(name); ok && slices.Contains(outputs, alias) {
 		return true
 	}
-	if plan.declaredBetween(name, at, c.CmdIndex) {
+	if plan.declaredBetween(name, at, pos.Cmd) {
 		return true
 	}
-	for _, a := range pipeline.Assignments[:min(c.AssignIndex, len(pipeline.Assignments))] {
-		if a.Field == name && a.CmdIndex > at {
-			return true
+	assignedSince := false
+	pipeline.forEachStep(func(st Step, stepAt position) {
+		if st.Assign != nil && st.Assign.Field == name && stepAt.Assign < pos.Assign && stepAt.Cmd > at {
+			assignedSince = true
 		}
-	}
-	if isBareAggregate(name) {
+	})
+	if assignedSince || isBareAggregate(name) {
 		return true
 	}
-	return slices.Contains(outputs, name) && !plan.declaredBetween(name, 0, firstAggregatingCommandIndex(pipeline.Commands))
+	return slices.Contains(outputs, name) && !plan.declaredBetween(name, 0, firstAggregatingCommandIndex(pipeline.Commands()))
 }
 
 // visibleOutputs is the column list an error shows, without chain()'s hidden ones.

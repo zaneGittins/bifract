@@ -83,7 +83,7 @@ func (h *mitreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	tagExpr := fmt.Sprintf("arrayJoin(arrayDistinct(extractAll(lower(toString(%s)), '%s')))", tagRef, pattern)
 
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: tagExpr, Alias: mitreTagAlias})
-	source.Layer.GroupBy = append(source.Layer.GroupBy, mitreTagAlias)
+	source.Layer.groupBy(mitreTagAlias, mitreTagAlias)
 
 	if byField != "" {
 		alias, err := sanitizeIdentifier(byField)
@@ -95,12 +95,12 @@ func (h *mitreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return err
 		}
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: byRef, Alias: alias})
-		source.Layer.GroupBy = append(source.Layer.GroupBy, byRef)
+		source.Layer.groupBy(byRef, alias)
 		ctx.Plan.ChartConfig["byField"] = byField
 	}
 
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
-	source.Layer.OrderBy = append(source.Layer.OrderBy, "_count DESC")
+	source.Layer.OrderBy = append(source.Layer.OrderBy, desc("_count"))
 	source.Layer.Limit = fmt.Sprintf("LIMIT %d", limit)
 
 	// The tag is a group key of this stage, so a downstream filter on it belongs in

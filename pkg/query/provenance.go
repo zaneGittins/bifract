@@ -888,13 +888,13 @@ func reconInt64(v interface{}) int64 {
 // resolvedSource is a source command's SQL subquery + the flat columns it exposes.
 type resolvedSource struct {
 	SQL            string
-	Columns        []string // exposed flat columns, in default projection order
-	NumericColumns []string // subset of Columns already numeric (no string-coercion on compare)
-	Focus          string   // optional node identifier the viz should center/highlight (pgr start)
-	Limit          int      // outer-query result-row cap this source prefers, overriding opts.MaxRows (0 = no preference)
-	OrderBy        []string // outer-query ORDER BY this source prefers, overriding the generic timestamp-DESC default
-	QuerySettings  string   // optional top-level SETTINGS clause (no leading space) the executor appends to the final query -- e.g. pgr's scan budget
-	Warnings       []string // non-fatal notices about what the source left out, e.g. pgr's truncation
+	Columns        []string           // exposed flat columns, in default projection order
+	NumericColumns []string           // subset of Columns already numeric (no string-coercion on compare)
+	Focus          string             // optional node identifier the viz should center/highlight (pgr start)
+	Limit          int                // outer-query result-row cap this source prefers, overriding opts.MaxRows (0 = no preference)
+	OrderBy        []parser.OrderTerm // outer-query ORDER BY this source prefers, overriding the generic timestamp-DESC default
+	QuerySettings  string             // optional top-level SETTINGS clause (no leading space) the executor appends to the final query -- e.g. pgr's scan budget
+	Warnings       []string           // non-fatal notices about what the source left out, e.g. pgr's truncation
 }
 
 // sourceResolver produces a resolvedSource for a source command. Resolution runs in the query

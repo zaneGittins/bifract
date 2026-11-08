@@ -166,7 +166,7 @@ func validateSourcePipeline(pipeline *parser.PipelineNode) error {
 	if name := parser.FirstPgrFilter(pipeline); name != "" {
 		return fmt.Errorf("%s() cannot be a model source: it reads the provenance tables, which change after the window is read", name)
 	}
-	for _, cmd := range pipeline.Commands {
+	for _, cmd := range pipeline.Commands() {
 		name := strings.ToLower(cmd.Name)
 		if parser.IsAggregatingCommand(name) {
 			return fmt.Errorf("%s() cannot be a model source: it collapses rows, and a model "+
@@ -222,12 +222,12 @@ func sourceProducedFields(bql string) map[string]bool {
 	if err != nil {
 		return out
 	}
-	for _, a := range pipeline.Assignments {
+	for _, a := range pipeline.Assignments() {
 		if a.Field != "" {
 			out[a.Field] = true
 		}
 	}
-	for _, cmd := range pipeline.Commands {
+	for _, cmd := range pipeline.Commands() {
 		b, err := parser.BindCommand(cmd)
 		if err != nil {
 			continue

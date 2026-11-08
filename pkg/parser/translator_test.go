@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1708,61 +1709,6 @@ func TestMeshFunction(t *testing.T) {
 			t.Error("Expected error when dst= is missing")
 		}
 	})
-}
-
-func TestQualifyColumnRefs(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		alias    string
-		expected string
-	}{
-		{
-			name:     "timestamp comparison",
-			input:    "timestamp >= '2026-01-01'",
-			alias:    "l",
-			expected: "l.timestamp >= '2026-01-01'",
-		},
-		{
-			name:     "fields reference",
-			input:    "fields.`event_id`::String = '1'",
-			alias:    "l",
-			expected: "l.fields.`event_id`::String = '1'",
-		},
-		{
-			name:     "fractal_id",
-			input:    "fractal_id = 'abc'",
-			alias:    "l",
-			expected: "l.fractal_id = 'abc'",
-		},
-		{
-			name:     "string literal preserved",
-			input:    "fields.`event`::String = 'timestamp exceeded'",
-			alias:    "l",
-			expected: "l.fields.`event`::String = 'timestamp exceeded'",
-		},
-		{
-			name:     "match function",
-			input:    "match(fields.`image`::String, '(?i)powershell')",
-			alias:    "l",
-			expected: "match(l.fields.`image`::String, '(?i)powershell')",
-		},
-		{
-			name:     "compound condition",
-			input:    "(fields.`a`::String = '1' AND fields.`b`::String = '2')",
-			alias:    "l",
-			expected: "(l.fields.`a`::String = '1' AND l.fields.`b`::String = '2')",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := qualifyColumnRefs(tt.input, tt.alias)
-			if result != tt.expected {
-				t.Errorf("qualifyColumnRefs(%q, %q) = %q, want %q", tt.input, tt.alias, result, tt.expected)
-			}
-		})
-	}
 }
 
 func TestLenFunction(t *testing.T) {
@@ -5256,7 +5202,7 @@ func TestCaseGeneralCommands(t *testing.T) {
 		}
 	})
 	t.Run("command via := is a clear error", func(t *testing.T) {
-		_, err := TranslateToSQL(mustParse(t, `* | case { level=error | c:=count(); * | x:="y"; }`), opts)
+		_, err := ParseQuery(`* | case { level=error | c:=count(); * | x:="y"; }`)
 		if err == nil || !strings.Contains(err.Error(), "bare pipe") {
 			t.Errorf("expected := command error, got err=%v", err)
 		}
@@ -5555,36 +5501,19 @@ func TestRangeDependentRows(t *testing.T) {
 	}
 }
 
-// A command may write its alias into the expression rather than the Alias field,
-// so the projection list has to read both spellings and must not mangle an
-// expression that contains the separator itself.
-func TestSourceProjectionsReadBothAliasSpellings(t *testing.T) {
-	cases := map[string][]SourceProjection{
-		"x AS y":                 {{Alias: "y", Expr: "x"}},
-		"timestamp":              nil,
-		"CAST(a AS String) AS b": {{Alias: "b", Expr: "CAST(a AS String)"}},
-		"lower(fields.`i`) AS i": {{Alias: "i", Expr: "lower(fields.`i`)"}},
-	}
-	for sel, want := range cases {
-		p := NewQueryPlan()
-		p.SourceStage().Layer.Selects = []SelectExpr{{Expr: sel}}
-		got := p.sourceProjections()
-		if len(got) != len(want) {
-			t.Errorf("%q: got %v, want %v", sel, got, want)
-			continue
-		}
-		for i := range got {
-			if got[i] != want[i] {
-				t.Errorf("%q: got %+v, want %+v", sel, got[i], want[i])
-			}
-		}
-	}
-	// The explicit-Alias spelling, which UpsertSelect also produces.
+// The scan's projections are its aliased columns, the expression kept whole even
+// when it contains AS itself; a bare column is a passthrough.
+func TestSourceProjectionsListAliasedColumns(t *testing.T) {
 	p := NewQueryPlan()
-	p.SourceStage().Layer.Selects = []SelectExpr{{Expr: "dictGet(x)", Alias: "tool"}}
+	p.SourceStage().Layer.Selects = []SelectExpr{
+		{Expr: "timestamp"},
+		selectAs("CAST(a AS String)", "b"),
+		selectAs("dictGet(x)", "tool"),
+	}
 	got := p.sourceProjections()
-	if len(got) != 1 || got[0].Alias != "tool" || got[0].Expr != "dictGet(x)" {
-		t.Errorf("explicit alias not read: %+v", got)
+	want := []SourceProjection{{Alias: "b", Expr: "CAST(a AS String)"}, {Alias: "tool", Expr: "dictGet(x)"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
 

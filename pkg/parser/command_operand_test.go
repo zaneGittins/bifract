@@ -95,7 +95,7 @@ func TestNegatedConditionFunctionAfterACondition(t *testing.T) {
 		if err != nil {
 			t.Fatalf("translate %s: %v", q, err)
 		}
-		if !strings.Contains(res.SQL, "NOT (") {
+		if !strings.Contains(res.SQL, "NOT (") && !strings.Contains(res.SQL, "NOT IN") {
 			t.Errorf("%s: negation lost: %s", q, res.SQL)
 		}
 	}

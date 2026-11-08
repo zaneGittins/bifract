@@ -16,10 +16,9 @@ func TestCaseFieldNamesRejectSQL(t *testing.T) {
 		`* | case { a=1 | r := "1" ; * | r := "2" } | count()`,
 	} {
 		pipeline, err := ParseQuery(q)
-		if err != nil {
-			t.Fatalf("parse %q: %v", q, err)
+		if err == nil {
+			_, err = TranslateToSQLWithOrder(pipeline, serverOpts())
 		}
-		_, err = TranslateToSQLWithOrder(pipeline, serverOpts())
 		if strings.Contains(q, "| count()") {
 			if err != nil {
 				t.Fatalf("%q: valid case must translate: %v", q, err)
@@ -32,28 +31,23 @@ func TestCaseFieldNamesRejectSQL(t *testing.T) {
 	}
 }
 
-// TestJoinBlockKeepsSource verifies the join subquery is the text as written,
-// not tokens re-joined with spaces, which dropped quotes and regex flags.
+// TestJoinBlockKeepsSource verifies the join subquery is parsed from the tokens
+// as written, so quotes and regex flags survive into its SQL.
 func TestJoinBlockKeepsSource(t *testing.T) {
-	for _, q := range []string{
-		`* | join(user) { message="a b" | groupby(user) }`,
-		`* | join(user) { image=/powershell/i | groupby(user) }`,
+	for q, want := range map[string]string{
+		`* | join(user) { message="a b" | groupby(user) }`:       "= 'a b'",
+		`* | join(user) { image=/powershell/i | groupby(user) }`: "'(?i)powershell'",
 	} {
 		pipeline, err := ParseQuery(q)
 		if err != nil {
 			t.Fatalf("parse %q: %v", q, err)
 		}
-		var block string
-		for _, c := range pipeline.Commands {
-			if c.Name == "join" {
-				block = c.Block
-			}
-		}
-		if !strings.Contains(q, "{ "+block+" }") {
-			t.Fatalf("%q: block = %q, want the source between the braces", q, block)
-		}
-		if _, err := TranslateToSQLWithOrder(pipeline, serverOpts()); err != nil {
+		sql, err := TranslateToSQL(pipeline, serverOpts())
+		if err != nil {
 			t.Fatalf("translate %q: %v", q, err)
+		}
+		if !strings.Contains(sql, want) {
+			t.Errorf("%q: want %s in the subquery:\n%s", q, want, sql)
 		}
 	}
 }

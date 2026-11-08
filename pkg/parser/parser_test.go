@@ -375,26 +375,26 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "A AND NOT (B OR C)",
 			query:     `event_id=1 AND NOT (user="admin" OR user="root")`,
-			wantWhere: "(fields.`event_id`::String = '1' AND NOT (fields.`user`::String = 'admin' OR fields.`user`::String = 'root'))",
+			wantWhere: "fields.`event_id`::String = '1' AND NOT (fields.`user`::String = 'admin' OR fields.`user`::String = 'root')",
 		},
 		{
 			name:      "A AND NOT (B AND C)",
 			query:     `event_id=1 AND NOT (user="admin" AND image=/cmd/i)`,
-			wantWhere: "(fields.`event_id`::String = '1' AND NOT (fields.`user`::String = 'admin' AND match(fields.`image`::String, '(?i)cmd')))",
+			wantWhere: "fields.`event_id`::String = '1' AND NOT (fields.`user`::String = 'admin' AND match(fields.`image`::String, '(?i)cmd'))",
 		},
 
 		// --- Multiple NOT groups ---
 		{
 			name:      "NOT (A OR B) AND NOT (C OR D)",
 			query:     `NOT (user="admin" OR user="root") AND NOT (image=/cmd/i OR image=/powershell/i)`,
-			wantWhere: "(NOT (fields.`user`::String = 'admin' OR fields.`user`::String = 'root') AND NOT (match(fields.`image`::String, '(?i)cmd') OR match(fields.`image`::String, '(?i)powershell')))",
+			wantWhere: "NOT (fields.`user`::String = 'admin' OR fields.`user`::String = 'root') AND NOT (match(fields.`image`::String, '(?i)cmd') OR match(fields.`image`::String, '(?i)powershell'))",
 		},
 
 		// --- Groups without NOT ---
 		{
 			name:      "(A OR B) AND (C OR D) preserves both groups",
 			query:     `(a=1 OR a=2) AND (b=3 OR b=4)`,
-			wantWhere: "((fields.`a`::String = '1' OR fields.`a`::String = '2') AND (fields.`b`::String = '3' OR fields.`b`::String = '4'))",
+			wantWhere: "(fields.`a`::String = '1' OR fields.`a`::String = '2') AND (fields.`b`::String = '3' OR fields.`b`::String = '4')",
 		},
 		{
 			name:      "OR between groups: (A AND B) OR (C AND D)",
@@ -411,12 +411,12 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "(A OR B) OR C OR (D OR E)",
 			query:     `(a=1 OR a=2) OR b=3 OR (c=4 OR c=5)`,
-			wantWhere: "((fields.`a`::String = '1' OR fields.`a`::String = '2') OR fields.`b`::String = '3' OR (fields.`c`::String = '4' OR fields.`c`::String = '5'))",
+			wantWhere: "(fields.`a`::String = '1' OR fields.`a`::String = '2' OR fields.`b`::String = '3' OR fields.`c`::String = '4' OR fields.`c`::String = '5')",
 		},
 		{
 			name:      "(A OR B) AND NOT (C OR D) AND E",
 			query:     `(event_id=1 OR event_id=3) AND NOT (user="admin" OR user="system") AND image=/powershell/i`,
-			wantWhere: "((fields.`event_id`::String = '1' OR fields.`event_id`::String = '3') AND NOT (fields.`user`::String = 'admin' OR fields.`user`::String = 'system') AND match(fields.`image`::String, '(?i)powershell'))",
+			wantWhere: "(fields.`event_id`::String = '1' OR fields.`event_id`::String = '3') AND NOT (fields.`user`::String = 'admin' OR fields.`user`::String = 'system') AND match(fields.`image`::String, '(?i)powershell')",
 		},
 
 		// --- Double negation ---
@@ -428,7 +428,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT (A) AND NOT B (paren vs bare)",
 			query:     `NOT (a=1) AND NOT b=2`,
-			wantWhere: "((fields.`a`::String IS NULL OR fields.`a`::String != '1') AND (fields.`b`::String IS NULL OR fields.`b`::String != '2'))",
+			wantWhere: "(fields.`a`::String IS NULL OR fields.`a`::String != '1') AND (fields.`b`::String IS NULL OR fields.`b`::String != '2')",
 		},
 
 		// --- Double/triple-wrapped parens ---
@@ -440,7 +440,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT with double-wrapped parens NOT ((A OR B OR C))",
 			query:     `field=x AND NOT ((a=1 OR b=2 OR c=3))`,
-			wantWhere: "(fields.`field`::String = 'x' AND NOT (fields.`a`::String = '1' OR fields.`b`::String = '2' OR fields.`c`::String = '3'))",
+			wantWhere: "fields.`field`::String = 'x' AND NOT (fields.`a`::String = '1' OR fields.`b`::String = '2' OR fields.`c`::String = '3')",
 		},
 
 		// --- Operators inside NOT groups ---
@@ -478,7 +478,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 				w := extractWhere(sql)
 				return strings.Contains(w, "match(fields.`image`::String, '(?i)powershell') OR match(fields.`image`::String, '(?i)pwsh')") &&
 					strings.Contains(w, "match(fields.`commandline`::String, '(?i)Invoke-WebRequest') OR match(fields.`commandline`::String, '(?i)wget')") &&
-					strings.Contains(w, "NOT (fields.`user`::String = 'SYSTEM')")
+					strings.Contains(w, "(fields.`user`::String IS NULL OR fields.`user`::String != 'SYSTEM')")
 			},
 		},
 		{
@@ -872,7 +872,7 @@ func TestFieldAssignment(t *testing.T) {
 			}
 
 			// Check assignments were parsed correctly
-			if len(pipeline.Assignments) == 0 {
+			if len(pipeline.Assignments()) == 0 {
 				t.Errorf("Expected assignments to be parsed, but got none")
 				return
 			}

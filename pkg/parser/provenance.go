@@ -174,7 +174,7 @@ type ProvenanceParams struct {
 // ProvenanceOrderBy is the outer-query ORDER BY resolvePgrSource attaches alongside Limit: spawn
 // edges first, then by anomaly. Matches the ordering pass-2's own SQL already applies internally,
 // so if Limit ever truncates, it drops low-signal leaves before process structure.
-var ProvenanceOrderBy = []string{"(event_type = 'spawn') DESC", "anomaly_score DESC"}
+var ProvenanceOrderBy = []OrderTerm{{Expr: "(event_type = 'spawn')", Desc: true}, {Expr: "anomaly_score", Desc: true}}
 
 // ProvenanceColumns is pgr()'s output shape, shared by the scoring SQL, the reconnection bridge
 // rows and the query layer's re-emission so they cannot drift. The explanation columns say why an edge

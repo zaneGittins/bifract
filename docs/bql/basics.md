@@ -110,7 +110,7 @@ let &officey := lower(parent_image) =~ "winword.exe","excel.exe";
 | `let &user := "CORP\\rpatel";` | `user=&user`, `in(user, &user)` |
 | `let &enc := /-enc(odedcommand)?\s/;` | `commandline=&enc` |
 
-A misspelled `&name` is an error, never a field lookup. A binding may use one declared before it, not itself or a later one.
+A misspelled `&name` is an error, never a field lookup. A binding may use one declared before it, not itself or a later one. Bindings also work inside `chain()`, `case` and `join()` blocks.
 
 ### Result sets
 

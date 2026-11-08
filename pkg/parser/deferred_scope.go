@@ -79,7 +79,7 @@ func (s *deferredScope) projections() []SelectExpr {
 	}
 	out := make([]SelectExpr, len(s.names))
 	for i, name := range s.names {
-		out[i] = SelectExpr{Expr: s.exprs[i] + " AS " + name}
+		out[i] = SelectExpr{Expr: s.exprs[i], Alias: name}
 	}
 	return out
 }

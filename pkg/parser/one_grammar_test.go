@@ -188,22 +188,22 @@ func TestAdjacentOperandBindsLikeAnd(t *testing.T) {
 	}
 }
 
-// Grouping a stage's operands keeps every one at the position it was written.
-func TestGroupedOperandsKeepTheirPosition(t *testing.T) {
+// A stage's operands form one filter step at the position they are written, with
+// AND binding tighter than OR.
+func TestStageOperandsFormOneFilterStep(t *testing.T) {
 	pl, err := ParseQuery(`* | head(1) | a="1" OR b="2" NOT c="3" OR d="4"`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var walk func(c HavingCondition)
-	walk = func(c HavingCondition) {
-		if c.CmdIndex != 1 {
-			t.Errorf("%s at command %d, want 1", describeCondition(c), c.CmdIndex)
-		}
-		for _, child := range c.Children {
-			walk(child)
-		}
+	if len(pl.Steps) != 2 || pl.Steps[0].Command == nil || pl.Steps[1].Filter == nil {
+		t.Fatalf("steps = %+v, want head() then one filter", pl.Steps)
 	}
-	for _, c := range pl.HavingConditions {
-		walk(c)
+	f := *pl.Steps[1].Filter
+	if f.Op != CondOr || len(f.Children) != 3 {
+		t.Fatalf("filter = %+v, want an OR of three", f)
+	}
+	mid := f.Children[1]
+	if mid.Op != CondAnd || len(mid.Children) != 2 || mid.Children[0].Field != "b" || mid.Children[1].Operator != "!=" {
+		t.Errorf("middle operand = %+v, want b AND NOT c", mid)
 	}
 }

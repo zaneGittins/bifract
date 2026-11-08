@@ -26,20 +26,20 @@ func TestColumnRefs(t *testing.T) {
 // as one let an ordering on it into a scan where it does not exist.
 func TestOrderingReadsOnlyScan(t *testing.T) {
 	for _, c := range []struct {
-		order   []string
+		order   []OrderTerm
 		limitBy string
 		want    bool
 	}{
-		{[]string{"timestamp DESC", "log_id DESC"}, "", true},
-		{[]string{"fields.`image`::String ASC"}, "", true},
-		{[]string{"lower(fields.`a`::String) asc NULLS LAST"}, "", true},
-		{[]string{"first_seen ASC"}, "", false},
-		{[]string{"_len DESC"}, "", false},
-		{[]string{"hour ASC"}, "", false},
-		{[]string{"first DESC"}, "", false},
-		{[]string{"timestamp DESC"}, "LIMIT 1 BY day", false},
-		{[]string{"timestamp DESC"}, "LIMIT 1 BY fields.`user`::String", true},
-		{[]string{"timestamp - INTERVAL 1 HOUR DESC"}, "", true},
+		{[]OrderTerm{{Expr: "timestamp", Desc: true}, {Expr: "log_id", Desc: true}}, "", true},
+		{[]OrderTerm{{Expr: "fields.`image`::String"}}, "", true},
+		{[]OrderTerm{{Expr: "lower(fields.`a`::String)"}}, "", true},
+		{[]OrderTerm{{Expr: "first_seen"}}, "", false},
+		{[]OrderTerm{{Expr: "_len", Desc: true}}, "", false},
+		{[]OrderTerm{{Expr: "hour"}}, "", false},
+		{[]OrderTerm{{Expr: "first", Desc: true}}, "", false},
+		{[]OrderTerm{{Expr: "timestamp", Desc: true}}, "LIMIT 1 BY day", false},
+		{[]OrderTerm{{Expr: "timestamp", Desc: true}}, "LIMIT 1 BY fields.`user`::String", true},
+		{[]OrderTerm{{Expr: "timestamp - INTERVAL 1 HOUR", Desc: true}}, "", true},
 	} {
 		if got := orderingReadsOnlyScan(c.order, c.limitBy); got != c.want {
 			t.Errorf("orderingReadsOnlyScan(%q, %q) = %v, want %v", c.order, c.limitBy, got, c.want)

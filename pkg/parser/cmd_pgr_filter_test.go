@@ -151,6 +151,10 @@ func TestPgrCandidatesAreNarrowedByOtherFilters(t *testing.T) {
 		`user=bob | pgrHasAncestor("a.exe", depth=1)`,
 		`pgrHasAncestor("a.exe", depth=1) | pgrHasAncestor("b.exe", depth=1) | user=bob`,
 		`user=bob | pgrHasDescendant("a.exe")`,
+		// An operand that is a conjunct of its own is narrowed as a command is.
+		`user=bob pgrHasAncestor("a.exe", depth=1)`,
+		`user=bob AND pgrHasAncestor("a.exe", depth=1)`,
+		`(user=bob AND pgrHasAncestor("a.exe", depth=1))`,
 	} {
 		if sql := mustTranslate(t, q, pgrOpts()); !pgrNarrowedBy(sql, bob) {
 			t.Errorf("%s: every candidate scan should be narrowed by the plain filter only:\n%s", q, sql)

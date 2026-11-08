@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -86,9 +87,9 @@ var aggSpecNames = map[string]bool{
 	"mad": true, "multi": true, "corr": true, "rankcorr": true,
 }
 
-// processAggSpec renders one aggregate spec into selectFields. ok is false when
-// the name is not an aggregate; err reports a recognised name used wrongly.
-func processAggSpec(spec *AggSpec, selectFields *[]string, computedFields map[string]bool, registry *FieldRegistry) (ok bool, err error) {
+// processAggSpec renders one aggregate spec into selects. ok is false when the
+// name is not an aggregate; err reports a recognised name used wrongly.
+func processAggSpec(spec *AggSpec, selects *[]SelectExpr, computedFields map[string]bool, registry *FieldRegistry) (ok bool, err error) {
 	if spec == nil {
 		return false, nil
 	}
@@ -96,134 +97,165 @@ func processAggSpec(spec *AggSpec, selectFields *[]string, computedFields map[st
 	if !aggSpecNames[name] {
 		return false, nil
 	}
-	o := readAggOptions(spec)
-
-	emit := func(alias, sql string) error {
-		want := sql + " AS " + alias
-		for _, sel := range *selectFields {
-			if strings.Trim(extractFieldAlias(sel), "`") != alias || sel == want {
-				continue
-			}
-			if idx := strings.LastIndex(sel, " AS "); idx >= 0 {
-				return fmt.Errorf("%s(): %s and %s both produce the column %s; name one with as=",
-					name, sel[:idx], sql, alias)
-			}
-		}
-		*selectFields = append(*selectFields, want)
-		computedFields[alias] = true
-		return nil
-	}
-	// ref and num are the operand's plain and numeric renderings, resolved lazily
-	// so count() needs no operand at all. ResolveArg casts a raw JSON ref to
-	// ::String, which these grouping contexts need for a Dynamic-stored path.
-	ref := func() (string, error) { return ResolveArg(o.operand, registry) }
-	num := func() (string, error) { return aggOperandNumeric(o.operand, registry) }
-
-	render := func(agg, format string, resolve func() (string, error)) (bool, error) {
-		alias, err := aggregateAlias(o.alias, agg)
-		if err != nil {
-			return false, fmt.Errorf("%s(): %w", name, err)
-		}
-		sql, err := resolve()
-		if err != nil {
-			return false, fmt.Errorf("%s(): %w", name, err)
-		}
-		return true, emit(alias, fmt.Sprintf(format, sql))
-	}
-	// timestamped covers the aggregates that read the event time directly when
-	// their operand is the timestamp column.
-	timestamped := func(agg, tsSQL, format string, resolve func() (string, error)) (bool, error) {
-		if o.operand.FieldName() == "timestamp" {
-			return render(agg, "%s", func() (string, error) { return tsSQL, nil })
-		}
-		return render(agg, format, resolve)
-	}
-
+	r := &aggRenderer{name: name, opts: readAggOptions(spec), registry: registry, selects: selects, computed: computedFields}
 	switch name {
 	case "corr", "rankcorr":
-		xa, ya, ok := correlationOperands(spec.Args)
-		if !ok {
-			return false, fmt.Errorf("%s() needs two numeric fields, e.g. %s(orig_bytes, resp_bytes)", name, name)
-		}
-		alias, err := aggregateAlias(o.alias, name)
-		if err != nil {
-			return false, fmt.Errorf("%s(): %w", name, err)
-		}
-		x, err := aggOperandNumeric(xa, registry)
-		if err != nil {
-			return false, fmt.Errorf("%s(): %w", name, err)
-		}
-		y, err := aggOperandNumeric(ya, registry)
-		if err != nil {
-			return false, fmt.Errorf("%s(): %w", name, err)
-		}
-		return true, emit(alias, correlationSQL(name, x, y))
+		err = r.correlation(spec.Args)
 	case "count":
-		switch {
-		case o.hasField && o.distinct:
-			return render("count", "uniqExact(%s)", ref)
-		case o.hasField:
-			return render("count", "count(%s)", ref)
-		default:
-			return render("count", "%s", func() (string, error) { return "COUNT(*)", nil })
-		}
-	case "avg":
-		return render("avg", "avg(%s)", num)
-	case "sum":
-		return render("sum", "sum(%s)", num)
-	case "max":
-		return timestamped("max", "max(timestamp)", "max(%s)", num)
-	case "min":
-		return timestamped("min", "min(timestamp)", "min(%s)", num)
-	case "percentile":
-		return render("percentile", "quantiles(0.5, 0.75, 0.99)(%s)", num)
-	case "stddev":
-		return render("stddev", "stddevPop(%s)", num)
-	case "skewness", "skew":
-		return render("skewness", "skewPop(%s)", num)
-	case "kurtosis", "kurt":
-		return render("kurtosis", "kurtPop(%s)", num)
-	case "median":
-		return render("median", "median(%s)", num)
-	case "mad":
-		return render("mad", "arrayReduce('median', arrayMap(x -> abs(x - arrayReduce('median', groupArray(%[1]s))), groupArray(%[1]s)))", num)
-	case "iqr":
-		cast, err := num()
-		if err != nil {
-			return false, fmt.Errorf("iqr(): %w", err)
-		}
-		// iqr() projects three columns, so as= names the range and the quartiles
-		// take their own fixed names.
-		alias, err := aggregateAlias(o.alias, "iqr")
-		if err != nil {
-			return false, fmt.Errorf("iqr(): %w", err)
-		}
-		for _, e := range []struct{ alias, sql string }{
-			{"_q1", fmt.Sprintf("quantile(0.25)(%s)", cast)},
-			{"_q3", fmt.Sprintf("quantile(0.75)(%s)", cast)},
-			{alias, fmt.Sprintf("quantile(0.75)(%s) - quantile(0.25)(%s)", cast, cast)},
-		} {
-			if err := emit(e.alias, e.sql); err != nil {
-				return false, err
-			}
-		}
-		return true, nil
+		err = r.count()
+	case "max", "min":
+		err = r.of(name, true, aggCall{fn: name, args: "timestamp"}, r.single)
 	case "selectfirst":
-		return timestamped("first", "min(timestamp)", "argMin(%s, timestamp)", ref)
+		err = r.of("first", false, aggCall{fn: "min", args: "timestamp"}, r.single)
 	case "selectlast":
-		return timestamped("last", "max(timestamp)", "argMax(%s, timestamp)", ref)
+		err = r.of("last", false, aggCall{fn: "max", args: "timestamp"}, r.single)
 	case "collect":
-		if o.operand.FieldName() == "timestamp" {
-			return render("collect", "groupArray(%s)", func() (string, error) { return "toString(timestamp)", nil })
-		}
-		return render("collect", "groupArray(%s)", ref)
+		err = r.of("collect", false, aggCall{fn: "groupArray", args: "toString(timestamp)"}, r.single)
 	case "top":
-		if o.percent {
-			return render("top", topPercentSQL(10), ref)
-		}
-		return render("top", "topK(10)(%s)", ref)
+		err = r.of("top", false, nil, r.top)
+	case "iqr":
+		err = r.iqr()
+	default:
+		err = r.of(canonicalAggregate(name), true, nil, r.single)
 	}
-	return false, nil
+	return err == nil, err
+}
+
+// aggRenderer renders one aggregate spec into a select list.
+type aggRenderer struct {
+	name     string
+	opts     aggOptions
+	registry *FieldRegistry
+	selects  *[]SelectExpr
+	computed map[string]bool
+}
+
+// emit adds the aggregate's column under alias, refusing a different column of
+// the same name.
+func (r *aggRenderer) emit(alias string, a aggregate) error {
+	sql := a.sql()
+	for _, sel := range *r.selects {
+		// A column carried from an earlier stage has no alias of its own and does
+		// not compete.
+		if sel.Name() == alias && sel.Alias != "" && (sel.Expr != sql || sel.Alias != alias) {
+			return fmt.Errorf("%s(): %s and %s both produce the column %s; name one with as=", r.name, sel.Expr, sql, alias)
+		}
+	}
+	if !slices.ContainsFunc(*r.selects, func(sel SelectExpr) bool { return sel.Expr == sql && sel.Alias == alias }) {
+		*r.selects = append(*r.selects, aggSelect(a, alias))
+	}
+	r.computed[alias] = true
+	return nil
+}
+
+func (r *aggRenderer) fail(err error) error { return fmt.Errorf("%s(): %w", r.name, err) }
+
+// operand renders the operand, as a number when numeric. ResolveArg casts a raw
+// JSON ref to ::String, which these grouping contexts need for a Dynamic-stored
+// path.
+func (r *aggRenderer) operand(numeric bool) (string, error) {
+	if numeric {
+		return aggOperandNumeric(r.opts.operand, r.registry)
+	}
+	return ResolveArg(r.opts.operand, r.registry)
+}
+
+// of emits the aggregate build makes of the operand under agg's column name, or
+// ofTime when the operand is the event time and ofTime is set.
+func (r *aggRenderer) of(agg string, numeric bool, ofTime aggregate, build func(v string) aggregate) error {
+	out, err := aggregateAlias(r.opts.alias, agg)
+	if err != nil {
+		return r.fail(err)
+	}
+	if ofTime != nil && r.opts.operand.FieldName() == "timestamp" {
+		return r.emit(out, ofTime)
+	}
+	v, err := r.operand(numeric)
+	if err != nil {
+		return r.fail(err)
+	}
+	return r.emit(out, build(v))
+}
+
+func (r *aggRenderer) single(v string) aggregate {
+	a, _ := operandAggregate(r.name, v)
+	return a
+}
+
+func (r *aggRenderer) top(v string) aggregate {
+	if r.opts.percent {
+		return topShare{n: 10, v: v}
+	}
+	return aggCall{fn: "topK", params: "10", args: v}
+}
+
+// count is COUNT(*), or with a field the rows where it is set, or its distinct
+// values.
+func (r *aggRenderer) count() error {
+	if !r.opts.hasField {
+		out, err := aggregateAlias(r.opts.alias, "count")
+		if err != nil {
+			return r.fail(err)
+		}
+		return r.emit(out, countAll)
+	}
+	fn := "count"
+	if r.opts.distinct {
+		fn = "uniqExact"
+	}
+	return r.of("count", false, nil, func(v string) aggregate { return aggCall{fn: fn, args: v} })
+}
+
+// correlation is corr() or rankcorr() of two numeric operands.
+func (r *aggRenderer) correlation(args []Argument) error {
+	xa, ya, ok := correlationOperands(args)
+	if !ok {
+		return fmt.Errorf("%s() needs two numeric fields, e.g. %s(orig_bytes, resp_bytes)", r.name, r.name)
+	}
+	out, err := aggregateAlias(r.opts.alias, r.name)
+	if err != nil {
+		return r.fail(err)
+	}
+	x, err := aggOperandNumeric(xa, r.registry)
+	if err != nil {
+		return r.fail(err)
+	}
+	y, err := aggOperandNumeric(ya, r.registry)
+	if err != nil {
+		return r.fail(err)
+	}
+	return r.emit(out, corrAgg{rank: r.name == "rankcorr", x: x, y: y})
+}
+
+// iqr projects three columns, so as= names the range and the quartiles take
+// their own fixed names.
+func (r *aggRenderer) iqr() error {
+	out, err := aggregateAlias(r.opts.alias, "iqr")
+	if err != nil {
+		return r.fail(err)
+	}
+	v, err := r.operand(true)
+	if err != nil {
+		return r.fail(err)
+	}
+	q1, q3 := aggCall{fn: "quantile", params: "0.25", args: v}, aggCall{fn: "quantile", params: "0.75", args: v}
+	for _, col := range []SelectExpr{aggSelect(q1, "_q1"), aggSelect(q3, "_q3"), aggSelect(aggDiff{a: q3, b: q1}, out)} {
+		if err := r.emit(col.Alias, col.agg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// canonicalAggregate is the name an aggregate's output column is named after.
+func canonicalAggregate(name string) string {
+	switch name {
+	case "skew":
+		return "skewness"
+	case "kurt":
+		return "kurtosis"
+	}
+	return name
 }
 
 // asAggSpec reads an argument as an aggregate specification. A bare call in a
@@ -243,14 +275,6 @@ func asAggSpec(a Argument) (*AggSpec, bool) {
 		return spec, true
 	}
 	return nil, false
-}
-
-// topPercentSQL renders top(percent=true): the n most frequent values with the
-// share of rows each accounts for. approx_top_k returns (value, count, error)
-// triples; topKWeightedWithCount, which this used to call, exists in no
-// ClickHouse release.
-func topPercentSQL(n int) string {
-	return fmt.Sprintf("arrayMap(x -> (x.1, round(x.2 * 100 / count(*), 2)), approx_top_k(%d)(%%s))", n)
 }
 
 // aggAliasClash rejects a second aggregate that would project a column an
