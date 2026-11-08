@@ -160,7 +160,7 @@ func TestHealthSummarySQL(t *testing.T) {
 	today := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
 	fid := "f'1"
 
-	fs := healthSummarySQL(ModelTypeFirstSeen, ModelDefinition{}, "model_a", "", fid, "", today)
+	fs := healthSummarySQL(ModelTypeFirstSeen, ModelDefinition{}, "model_a", "", fid, "", time.Time{}, today)
 	for _, want := range []string{
 		"min(first_recorded) AS recorded_at", // findings follow what the alert fires on
 		"GROUP BY entity_key",                // unmerged parts would count an entity once per cycle
@@ -176,8 +176,8 @@ func TestHealthSummarySQL(t *testing.T) {
 		t.Errorf("first_seen series has %d days, want %d", strings.Count(fs, "countIf(toDate(recorded_at) = "), findingsDays)
 	}
 
-	rar := healthSummarySQL(ModelTypeRarity, ModelDefinition{}, "model_r", "", "f", "", today)
-	for _, want := range []string{"min(arrayMin(finalizeAggregation(days))) AS fd", "GROUP BY partition_val, value_val", "countIf(fd = "} {
+	rar := healthSummarySQL(ModelTypeRarity, ModelDefinition{}, "model_r", "", "f", "", time.Time{}, today)
+	for _, want := range []string{"finalizeAggregation(days) AS _d", "min(arrayMin(_d)) AS fd", "GROUP BY partition_val, value_val", "countIf(fd = "} {
 		if !strings.Contains(rar, want) {
 			t.Errorf("rarity summary missing %q", want)
 		}
@@ -187,19 +187,19 @@ func TestHealthSummarySQL(t *testing.T) {
 		t.Errorf("rarity summary without thresholds counts findings:\n%s", rar)
 	}
 	// With thresholds the count is the Findings tab's own rule.
-	rarAlert := healthSummarySQL(ModelTypeRarity, ModelDefinition{Alert: &AlertConfig{CoverageThreshold: 0.9, PercentThreshold: 10}}, "model_r", "", "f", "", today)
+	rarAlert := healthSummarySQL(ModelTypeRarity, ModelDefinition{Alert: &AlertConfig{CoverageThreshold: 0.9, PercentThreshold: 10}}, "model_r", "", "f", "", time.Time{}, today)
 	if want := findingsRuleFor(ModelTypeRarity, ModelDefinition{Alert: &AlertConfig{CoverageThreshold: 0.9, PercentThreshold: 10}}).Where; !strings.Contains(rarAlert, "WHERE "+want+"), 0)) AS flagged") {
 		t.Errorf("rarity count does not use the findings rule %q:\n%s", want, rarAlert)
 	}
 
-	vol := healthSummarySQL(ModelTypeVolumeBaseline, ModelDefinition{TimeBucket: "hour", Alert: &AlertConfig{ZThreshold: 4}}, "model_v", "", "f", "", today)
+	vol := healthSummarySQL(ModelTypeVolumeBaseline, ModelDefinition{TimeBucket: "hour", Alert: &AlertConfig{ZThreshold: 4}}, "model_v", "", "f", "", time.Time{}, today)
 	for _, want := range []string{"WHERE z_score > 4), 0)) AS flagged", "max(bucket)", "toStartOfHour(now('UTC'))"} {
 		if !strings.Contains(vol, want) {
 			t.Errorf("volume summary missing %q", want)
 		}
 	}
 
-	net := healthSummarySQL(ModelTypeBeacon, ModelDefinition{}, "model_b", "model_state_b", "f", "", today)
+	net := healthSummarySQL(ModelTypeBeacon, ModelDefinition{}, "model_b", "model_state_b", "f", "", time.Time{}, today)
 	for _, want := range []string{"WHERE final_score > 0.8), 0)) AS flagged", "`model_b` FINAL", "max(last_ts)", "FROM `model_state_b`",
 		"max(scored_at))) FROM `model_b` WHERE fractal_id = 'f'), 0)) AS scored"} {
 		if !strings.Contains(net, want) {
@@ -208,7 +208,7 @@ func TestHealthSummarySQL(t *testing.T) {
 	}
 
 	// None of the summaries read raw logs.
-	for _, q := range []string{fs, rar, vol, net, healthSummarySQL(ModelTypeTLSH, ModelDefinition{}, "model_t", "", "f", "", today)} {
+	for _, q := range []string{fs, rar, vol, net, healthSummarySQL(ModelTypeTLSH, ModelDefinition{}, "model_t", "", "f", "", time.Time{}, today)} {
 		if strings.Contains(q, "`logs`") || strings.Contains(q, " logs ") || strings.Contains(q, "logs_distributed") {
 			t.Errorf("summary reads the log table:\n%s", q)
 		}

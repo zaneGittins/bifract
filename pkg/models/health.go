@@ -78,12 +78,22 @@ type stateSummary struct {
 // the listing, anchored at today (a UTC date). table is the model's read table
 // and stateTable a network model's rolling-state read table. Every column is
 // computed from the model's own aggregate tables, never from raw logs. volumeAsOf
-// is what a volume model scores as of (see volumeAsOf).
-func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, fractalID, volumeAsOf string, today time.Time) string {
+// is what a volume model scores as of (see volumeAsOf). oldest and newest skip
+// days the model cannot have recorded (see recordedDay); from is its recordStart.
+func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, fractalID, volumeAsOf string, from, today time.Time) string {
 	fidEsc := storage.EscCHStr(fractalID)
 	fid := fidScope(fidEsc)
 	qt := "`" + table + "`"
 	epoch := func(expr string) string { return "toUInt64(toUnixTimestamp(" + expr + "))" }
+	recorded := func(d string) string { return recordedDay(d, from) }
+	// kept is a day array's recorded days. An empty one's min and max are the epoch.
+	kept := func(days string) string { return "arrayFilter(d -> " + recorded("d") + ", " + days + ")" }
+	// keyBounds reads one first and last time per key, which cannot drop just a
+	// stray day: a stray first time leaves the key out, a future last time is now.
+	keyBounds := func() (string, string) {
+		return epoch("minIf(first_seen, " + recorded("toDate(first_seen, 'UTC')") + ")"),
+			epoch("maxIf(least(last_seen, now64(3, 'UTC')), " + recordedSince("toDate(last_seen, 'UTC')", from) + ")")
+	}
 	// flagged counts the Findings tab's rows: the same rule over the same scored
 	// rows, so the listing and the tab cannot disagree.
 	rule := findingsRuleFor(mt, def)
@@ -104,40 +114,47 @@ func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, frac
 	switch mt {
 	case ModelTypeFirstSeen:
 		// An entity counts on the day the model recorded it, as its alert fires.
+		agg := parser.FirstSeenAgg{Source: qt, Scope: fid, KeyCol: "entity_key", HistoryDays: hist, Recorded: true}
+		oldest, newest := keyBounds()
+		if hist > 0 {
+			// A row per key and day, so a stray day drops without its key's real ones.
+			agg.Bound = recorded(parser.HistoryDayColumn)
+			oldest = epoch("minIf(bound_first, bound_first > toDateTime64(0, 3, 'UTC'))")
+			newest = epoch("max(bound_last)")
+		}
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
 FROM (%s
-)`, epoch("min(first_seen)"), epoch("max(last_seen)"), findingsSeriesSQL("toDate(recorded_at)", today),
-			flaggedHere(), firstSeenAgg(qt, fid, "entity_key", hist, true, false))
+)`, oldest, newest, findingsSeriesSQL("toDate(recorded_at)", today), flaggedHere(), parser.FirstSeenAggSQL(agg))
 	case ModelTypeRarity:
 		if hist > 0 {
 			// A windowed pair counts on the day it came back.
 			return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
-FROM (%s)`, epoch("toDateTime(min(days[1]), 'UTC')"), epoch("toDateTime(max(days[-1]), 'UTC')"), findingsSeriesSQL("since", today),
-				flaggedHere(), buildRarityScoredSQL(qt, fidEsc, hist))
+FROM (%s)`, epoch("toDateTime(minIf(arrayMin(_k), notEmpty(_k)), 'UTC')"), epoch("toDateTime(max(arrayMax(_k)), 'UTC')"), findingsSeriesSQL("since", today),
+				flaggedHere(), "SELECT *, "+kept("days")+" AS _k FROM ("+buildRarityScoredSQL(qt, fidEsc, hist)+")")
 		}
 		// A finding is a (partition, value) pair whose earliest day is that day.
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
 FROM (
-    SELECT min(arrayMin(finalizeAggregation(days))) AS fd, max(arrayMax(finalizeAggregation(days))) AS ld
-    FROM %s WHERE %s
+    SELECT min(arrayMin(_d)) AS fd, minIf(arrayMin(_k), notEmpty(_k)) AS kf, max(arrayMax(_k)) AS kl
+    FROM (SELECT partition_val, value_val, finalizeAggregation(days) AS _d, %s AS _k FROM %s WHERE %s)
     GROUP BY partition_val, value_val
-)`, epoch("toDateTime(min(fd), 'UTC')"), epoch("toDateTime(max(ld), 'UTC')"), findingsSeriesSQL("fd", today),
-			flagged(buildRarityScoredSQL(qt, fidEsc, 0)), qt, fid)
+)`, epoch("toDateTime(minIf(kf, kf > toDate(0)), 'UTC')"), epoch("toDateTime(max(kl), 'UTC')"), findingsSeriesSQL("fd", today),
+			flagged(buildRarityScoredSQL(qt, fidEsc, 0)), kept("_d"), qt, fid)
 	case ModelTypeVolumeBaseline:
 		// A finding is an entity whose latest complete bucket scores above the
 		// alert's z threshold right now; there is no per-day history of scores.
 		scored := parser.VolumeScoredSQLAt(qt, fid, def.TimeBucket, def.MinSample, "", volumeAsOf, false)
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest%s
-FROM %s WHERE %s`, epoch("toDateTime(min(bucket), 'UTC')"), epoch("toDateTime(max(bucket), 'UTC')"),
-			flagged(scored), qt, fid)
+FROM %s WHERE %s AND %s`, epoch("toDateTime(min(bucket), 'UTC')"), epoch("toDateTime(max(bucket), 'UTC')"),
+			flagged(scored), qt, fid, recorded("toDate(bucket, 'UTC')"))
 	case ModelTypeBeacon, ModelTypeLongConnection:
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest%s,
     toUInt64(ifNull((SELECT %s FROM %s WHERE %s), 0)) AS scored
 FROM %s WHERE %s`, epoch("min(hour)"), epoch("max(last_ts)"),
-			flagged(fmt.Sprintf("SELECT * FROM %s FINAL WHERE %s", qt, fid)), epoch("max(scored_at)"), qt, fid, "`"+stateTable+"`", fid)
+			flagged(fmt.Sprintf("SELECT * FROM %s FINAL WHERE %s", qt, fid)), epoch("max(scored_at)"), qt, fid, "`"+stateTable+"`", fid+" AND "+recorded("toDate(hour, 'UTC')"))
 	case ModelTypeTLSH:
-		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest FROM %s WHERE %s`,
-			epoch("min(first_seen)"), epoch("max(last_seen)"), qt, fid)
+		oldest, newest := keyBounds()
+		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest FROM %s WHERE %s`, oldest, newest, qt, fid)
 	}
 	return ""
 }
@@ -205,6 +222,34 @@ func staleAfter(mt ModelType, def ModelDefinition) time.Duration {
 		return 3 * time.Hour
 	}
 	return 48 * time.Hour
+}
+
+// recordStart is the earlier of a model's creation and its backfill's start, or
+// zero for a dataset or network model, whose logs and score ranges can date from
+// any time. linkedFirstSeen is stricter, as it needs the backfill complete.
+func recordStart(m *Model) time.Time {
+	if m.DatasetEnd != nil || m.ModelType.IsScheduled() {
+		return time.Time{}
+	}
+	t := m.CreatedAt
+	if m.BackfillFrom != nil && m.BackfillFrom.Before(t) {
+		t = *m.BackfillFrom
+	}
+	return t.UTC()
+}
+
+// recordedDay keeps a Date expression d to days the model can hold: from its
+// record start (see recordedSince) through today (UTC).
+func recordedDay(d string, from time.Time) string {
+	return recordedSince(d, from) + " AND " + d + " <= toDate(now(), 'UTC')"
+}
+
+// recordedSince keeps d from the record start, or after the epoch without one.
+func recordedSince(d string, from time.Time) string {
+	if from.IsZero() {
+		return d + " > toDate(0)"
+	}
+	return d + " >= toDate('" + from.UTC().Format("2006-01-02") + "')"
 }
 
 // historySpan is how much history lies between oldest and newest in days: the
@@ -532,7 +577,7 @@ func (m *Manager) readStateSummary(ctx context.Context, mo *Model, now time.Time
 	if mo.ModelType.IsScheduled() {
 		stateTable = m.networkStateReadTable(mo.ID)
 	}
-	q := healthSummarySQL(mo.ModelType, mo.Definition, m.readTableName(mo), stateTable, mo.FractalID, volumeAsOf(mo), now)
+	q := healthSummarySQL(mo.ModelType, mo.Definition, m.readTableName(mo), stateTable, mo.FractalID, volumeAsOf(mo), recordStart(mo), now)
 	if q == "" {
 		return nil, fmt.Errorf("no summary for model type %s", mo.ModelType)
 	}

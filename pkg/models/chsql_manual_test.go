@@ -290,7 +290,7 @@ func TestCHNetHealthSummary(t *testing.T) {
 	d.netState(ModelDefinition{}, 1)
 	d.exec(BuildNetResultsTableDDL("r"))
 	for _, mt := range []ModelType{ModelTypeBeacon, ModelTypeLongConnection} {
-		rows := d.rows(healthSummarySQL(mt, ModelDefinition{}, "r", "s", "f1", "", time.Now()))
+		rows := d.rows(healthSummarySQL(mt, ModelDefinition{}, "r", "s", "f1", "", time.Time{}, time.Now()))
 		if len(rows) != 1 {
 			t.Fatalf("%s: %v", mt, rows)
 		}
@@ -300,6 +300,67 @@ func TestCHNetHealthSummary(t *testing.T) {
 		if got := getUint64(rows[0], "newest"); got != uint64(first.Add(119*time.Minute).Unix()) {
 			t.Errorf("%s: newest %v, want the last connection", mt, time.Unix(int64(got), 0).UTC())
 		}
+	}
+}
+
+// The health summary's history ignores days a model cannot have recorded: the
+// epoch, the future, and days before its record start 15 days back, including one
+// inside a 31-day window. Real days are 0 to 9 back.
+func TestCHHealthSummarySkipsStrays(t *testing.T) {
+	const day = "toDate(now(), 'UTC') - n"
+	const ts = "toDateTime64(" + day + ", 3, 'UTC')"
+	const pairs = `SELECT 'a' AS v, toInt64(number) AS n FROM numbers(10)
+    UNION ALL SELECT 'a', 20 UNION ALL SELECT 'a', 200 UNION ALL SELECT 'a', -20 UNION ALL SELECT 'a', toInt64(today() - toDate(0))
+    UNION ALL SELECT 'early', 20 UNION ALL SELECT 'old', 2500 UNION ALL SELECT 'future', -20`
+	// first_seen keeps one min and max per key: "b" first appears as a stray.
+	const spans = `SELECT 'a' AS v, 9 AS lo, 0 AS hi UNION ALL SELECT 'b', 200, 3
+    UNION ALL SELECT 'early', 20, 20 UNION ALL SELECT 'old', 2500, 2500 UNION ALL SELECT 'future', -20, -20`
+	// The only recent key's last time is in the future, so it counts as now.
+	const skewed = `SELECT 'a' AS v, 9 AS lo, 5 AS hi UNION ALL SELECT 'skew', 3, -1`
+	// Times of day, not midnights: a 15:00 first time and a 00:01 last time.
+	const timed = "toDateTime64(toDate(now(), 'UTC') - n, 3, 'UTC') + toIntervalMinute(m)"
+	seenRows := func(lo, hi string) string {
+		return "SELECT 'f1', v, toDateTime64(toDate(now(), 'UTC') - " + lo + ", 3, 'UTC'), toDateTime64(toDate(now(), 'UTC') - " + hi + ", 3, 'UTC'), 1"
+	}
+	cases := []struct {
+		name   string
+		mt     ModelType
+		def    ModelDefinition
+		insert string
+		span   int
+	}{
+		{"rarity", ModelTypeRarity, ModelDefinition{ValueKey: "v"}, `INSERT INTO t (fractal_id, partition_val, value_val, event_count, days)
+SELECT 'f1', '', v, 1, groupUniqArrayState(365)(` + day + `) FROM (` + pairs + `) GROUP BY v`, 10},
+		{"rarity windowed", ModelTypeRarity, ModelDefinition{ValueKey: "v", HistoryDays: 31}, `INSERT INTO t (fractal_id, partition_val, value_val, event_count, _day)
+SELECT 'f1', '', v, 1, ` + day + ` FROM (` + pairs + `)`, 10},
+		{"first_seen", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"v"}}, `INSERT INTO t (fractal_id, entity_key, first_seen, last_seen, event_count)
+` + seenRows("lo", "hi") + ` FROM (` + spans + `)`, 10},
+		{"first_seen future last", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"v"}}, `INSERT INTO t (fractal_id, entity_key, first_seen, last_seen, event_count)
+` + seenRows("lo", "hi") + ` FROM (` + skewed + `)`, 10},
+		{"first_seen windowed", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"v"}, HistoryDays: 31}, `INSERT INTO t (fractal_id, entity_key, first_seen, last_seen, event_count, _day)
+SELECT 'f1', v, ` + ts + `, ` + ts + `, 1, ` + day + ` FROM (` + pairs + `)`, 10},
+		{"first_seen windowed times", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"v"}, HistoryDays: 31}, `INSERT INTO t (fractal_id, entity_key, first_seen, last_seen, event_count, _day)
+SELECT 'f1', 'a', ` + timed + `, ` + timed + `, 1, ` + day + ` FROM (SELECT 9 AS n, 900 AS m UNION ALL SELECT 0, 1)`, 9},
+		{"tlsh", ModelTypeTLSH, ModelDefinition{KeyFields: []string{"tlsh"}}, `INSERT INTO t (fractal_id, digest, first_seen, last_seen, event_count)
+` + seenRows("lo", "hi") + ` FROM (` + spans + `)`, 10},
+		{"volume", ModelTypeVolumeBaseline, ModelDefinition{KeyFields: []string{"u"}, TimeBucket: "day"}, `INSERT INTO t (fractal_id, entity_val, bucket, event_count)
+SELECT 'f1', v, ` + day + `, 1 FROM (` + pairs + `)`, 9},
+	}
+	from := time.Now().UTC().AddDate(0, 0, -15)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := newCHDB(t)
+			ddl, err := GenerateDDL(c.def, c.mt, "t")
+			if err != nil {
+				t.Fatal(err)
+			}
+			d.exec(ddl, c.insert)
+			rows := d.rows(healthSummarySQL(c.mt, c.def, "t", "", "f1", "", from, time.Now()))
+			sum := parseStateSummary(c.mt, rows)
+			if got := historySpan(sum.oldest, sum.newest, c.mt); got != c.span {
+				t.Errorf("history %d (%v to %v), want %d", got, sum.oldest, sum.newest, c.span)
+			}
+		})
 	}
 }
 
@@ -880,17 +941,21 @@ func TestCHReadinessCounts(t *testing.T) {
     UNION ALL SELECT 'g', 22 UNION ALL SELECT 'g', 4
     UNION ALL SELECT 'm', 25 UNION ALL SELECT 'm', 14
     UNION ALL SELECT 'z', 0`
-	// Strays never count: dates in the future and the epoch.
-	const stray = ` UNION ALL SELECT 'future', -20 UNION ALL SELECT 'a', -20 UNION ALL SELECT 'epoch', toInt64(today() - toDate(0))`
+	// Strays never count: dates in the future, at the epoch, and before the
+	// model's record start 30 days back, one of them inside the window.
+	const stray = ` UNION ALL SELECT 'future', -20 UNION ALL SELECT 'a', -20 UNION ALL SELECT 'epoch', toInt64(today() - toDate(0))
+    UNION ALL SELECT 'a', 31 UNION ALL SELECT 'a', 200 UNION ALL SELECT 'ancient', 2500`
+	from := time.Now().UTC().AddDate(0, 0, -30)
 	const windowOnly = ` UNION ALL SELECT 'old', 40
     UNION ALL SELECT 'back', 35 UNION ALL SELECT 'back', 12
     UNION ALL SELECT 'ret', 45 UNION ALL SELECT 'ret', 8`
-	// 31, so n = 29 stays inside the window if the test crosses UTC midnight.
-	windowed := ModelDefinition{PartitionKey: "h", ValueKey: "v", HistoryDays: 31}
+	// 33, so n = 29 and the stray at 31 stay inside the window if the test
+	// crosses UTC midnight.
+	windowed := ModelDefinition{PartitionKey: "h", ValueKey: "v", HistoryDays: 33}
 	allTime := ModelDefinition{PartitionKey: "h", ValueKey: "v"}
 	ungrouped := ModelDefinition{ValueKey: "v"}
 	seen := ModelDefinition{KeyFields: []string{"v"}}
-	seenWindowed := ModelDefinition{KeyFields: []string{"v"}, HistoryDays: 31}
+	seenWindowed := ModelDefinition{KeyFields: []string{"v"}, HistoryDays: 33}
 	const day = "toDate(now(), 'UTC') - n"
 	rarityAll := `INSERT INTO t (fractal_id, partition_val, value_val, event_count, days)
 SELECT 'f1', 'h', v, 1, groupUniqArrayState(365)(` + day + `) FROM (` + keys + stray + `) GROUP BY v`
@@ -919,7 +984,7 @@ SELECT 'f1', v, now64(3), now64(3), 1, ` + day + ` FROM (` + keys + windowOnly +
 				t.Fatal(err)
 			}
 			d.exec(ddl, c.insert)
-			rows := d.rows(readinessSummarySQL(c.mt, c.def, "`t`", "f1"))
+			rows := d.rows(readinessSummarySQL(c.mt, c.def, "`t`", "f1", from))
 			first, last := stateTime(rows[0]["oldest"]), stateTime(rows[0]["newest"])
 			if got := historySpan(first, last, c.mt); got != 30 {
 				t.Errorf("span %d, want 30", got)
@@ -931,13 +996,13 @@ SELECT 'f1', v, now64(3), now64(3), 1, ` + day + ` FROM (` + keys + windowOnly +
 			if !ok {
 				t.Fatal("no split")
 			}
-			r := d.rows(selfCheckSQL(c.mt, c.def, "`t`", "f1", s))[0]
+			r := d.rows(selfCheckSQL(c.mt, c.def, "`t`", "f1", from, s))[0]
 			if f, a := getUint64(r, "forecast"), getUint64(r, "actual"); f != c.fore || a != c.actl {
 				t.Errorf("forecast %d actual %d, want %d and %d", f, a, c.fore, c.actl)
 			}
 			// The end is exclusive: "z", on the last day, drops out with it.
 			s.end = s.end.AddDate(0, 0, -1)
-			r = d.rows(selfCheckSQL(c.mt, c.def, "`t`", "f1", s))[0]
+			r = d.rows(selfCheckSQL(c.mt, c.def, "`t`", "f1", from, s))[0]
 			if a := getUint64(r, "actual"); a != c.actl-1 {
 				t.Errorf("actual %d with an earlier end, want %d", a, c.actl-1)
 			}
@@ -960,7 +1025,7 @@ SELECT 'f1', h, v, 1, groupUniqArrayState(365)(toDate(now(), 'UTC') - n) FROM (
     UNION ALL SELECT 'noisy', concat('v', toString(number)), number FROM numbers(10)
     UNION ALL SELECT 'young', 'a', number FROM numbers(2)
 ) GROUP BY h, v`)
-	g := parseReadinessGroups(d.rows(readinessSummarySQL(ModelTypeRarity, def, "`t`", "f1"))[0], 5)
+	g := parseReadinessGroups(d.rows(readinessSummarySQL(ModelTypeRarity, def, "`t`", "f1", time.Time{}))[0], 5)
 	if g == nil || g.Total != 3 || g.Ready != 2 || g.AboveCoverage == nil || *g.AboveCoverage != 2 {
 		t.Fatalf("groups: %+v", g)
 	}

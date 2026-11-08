@@ -1009,7 +1009,7 @@ func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID string
 	return m.runPage(ctx, "rarity", baseQuery, where, order, q.Limit, q.Offset)
 }
 
-// firstSeenAgg is every models-side read of a first_seen or tlsh table; see
+// firstSeenAgg is a models-side read of a first_seen or tlsh table; see
 // parser.FirstSeenAggSQL.
 func firstSeenAgg(source, scope, keyCol string, historyDays int, recorded, days bool) string {
 	return parser.FirstSeenAggSQL(parser.FirstSeenAgg{
