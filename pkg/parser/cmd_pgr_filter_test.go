@@ -350,8 +350,7 @@ func TestFirstPgrFilter(t *testing.T) {
 		`user=x`:                    "",
 		`pgrHasAncestor("a")`:       "pgrHasAncestor",
 		`user=x OR PGRHASNETWORK()`: "pgrHasNetwork",
-		`let &s := pgrHasAncestor("a") | groupby(user); user=x | in(user, &s)`: "pgrHasAncestor",
-		`user=x | groupby(process_guid) | pgrContext(commandline)`:             "pgrContext",
+		`user=x | groupby(process_guid) | pgrContext(commandline)`: "pgrContext",
 	} {
 		pl, err := ParseQuery(q)
 		if err != nil {

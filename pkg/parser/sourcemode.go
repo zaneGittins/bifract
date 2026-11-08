@@ -136,16 +136,12 @@ func icebergSupportedFeatures(pipeline *PipelineNode) error {
 	if len(pipeline.Assignments) > 0 {
 		return fmt.Errorf("field assignments (:=) are not supported in archive search yet")
 	}
-	var unsupported string
-	ForEachCommand(pipeline, func(cmd CommandNode) {
-		if unsupported == "" && !icebergAllowedCommands[strings.ToLower(cmd.Name)] {
-			unsupported = cmd.Name
+	return validateCommands(pipeline, func(cmd CommandNode) error {
+		if !icebergAllowedCommands[strings.ToLower(cmd.Name)] {
+			return fmt.Errorf("command %q is not supported in archive search yet (supported: field filters, free-text/regex search, stats aggregations, groupby, sort, dedup, head/tail/limit, timechart, table)", cmd.Name)
 		}
+		return nil
 	})
-	if unsupported != "" {
-		return fmt.Errorf("command %q is not supported in archive search yet (supported: field filters, free-text/regex search, stats aggregations, groupby, sort, dedup, head/tail/limit, timechart, table)", unsupported)
-	}
-	return nil
 }
 
 // icebergPromotionQueryEnabled gates use of the `_ice_` promoted columns in

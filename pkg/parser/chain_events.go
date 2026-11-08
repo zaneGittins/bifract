@@ -160,19 +160,44 @@ func BuildChainEventsSQL(meta *ChainMeta, entities []string, anchors [][]int64, 
 
 // ForEachCommand visits every command in a pipeline, including condition
 // functions used as boolean operands and the commands inside a chain() step, a
-// case branch and a join() subquery. Anything looking for a command by name must
-// use this rather than scanning Commands, which holds only the standalone ones.
+// case branch, a join() subquery and a let binding. Anything looking for a command
+// by name must use this rather than scanning Commands, which holds only the
+// standalone ones.
 func ForEachCommand(pipeline *PipelineNode, fn func(CommandNode)) {
+	walkCommands(pipeline, nil, func(cmd CommandNode, _ *BindingNode) { fn(cmd) })
+}
+
+// walkCommands is ForEachCommand that also passes the let binding a command sits
+// in, nil outside one.
+func walkCommands(pipeline *PipelineNode, binding *BindingNode, fn func(CommandNode, *BindingNode)) {
 	if pipeline == nil {
 		return
 	}
+	visit := func(cmd CommandNode) { fn(cmd, binding) }
 	for _, cmd := range pipeline.Commands {
-		fn(cmd)
+		visit(cmd)
 		for _, sub := range nestedPipelines(cmd) {
-			ForEachCommand(sub, fn)
+			walkCommands(sub, binding, fn)
 		}
 	}
-	forEachHavingCommand(pipeline.HavingConditions, fn)
+	forEachHavingCommand(pipeline.HavingConditions, visit)
+	for _, b := range pipeline.Bindings {
+		walkCommands(b.Pipe, b, fn)
+	}
+}
+
+// validateCommands runs check on every command, naming the binding a failure is in.
+func validateCommands(pipeline *PipelineNode, check func(CommandNode) error) error {
+	var err error
+	walkCommands(pipeline, nil, func(cmd CommandNode, b *BindingNode) {
+		if err != nil {
+			return
+		}
+		if err = check(cmd); err != nil && b != nil {
+			err = fmt.Errorf("%s: %w", b.Name, err)
+		}
+	})
+	return err
 }
 
 // nestedPipelines parses the pipelines a command carries in its block. One that

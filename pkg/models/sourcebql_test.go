@@ -109,9 +109,8 @@ func TestSourceBQLAcceptsRowPreservingSources(t *testing.T) {
 // else must be refused rather than silently widened.
 func TestSourceBQLRejectsSelectionAboveTheScan(t *testing.T) {
 	// A result-set binding embeds a subquery carrying the compile-time fractal and
-	// window, which the model has no way to re-scope. It passes the command walk
-	// (the aggregation is inside the binding, not in the pipeline), so only the
-	// completeness check catches it.
+	// window, which the model has no way to re-scope. The aggregation check reads
+	// only top-level commands, so only the completeness check catches it.
 	cases := map[string]string{
 		`let &hosts := * | groupby(host); * | in(host, &hosts)`: "selects rows after the scan",
 	}
@@ -124,6 +123,15 @@ func TestSourceBQLRejectsSelectionAboveTheScan(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: want an error mentioning %q, got: %v", query, want, err)
 		}
+	}
+}
+
+// The window rule covers what a binding reads, and it is the more specific reason.
+func TestSourceBQLRejectsWindowUnsafeCommandInBinding(t *testing.T) {
+	const q = `let &s := * | join(user){a=1 | groupby(user)} | groupby(user); * | in(user, &s)`
+	_, err := compileSourcePredicates(q, parser.QueryOptions{})
+	if err == nil || !strings.Contains(err.Error(), "join() cannot be a model source") {
+		t.Errorf("got: %v", err)
 	}
 }
 

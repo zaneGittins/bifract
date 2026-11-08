@@ -173,6 +173,63 @@ func TestForEachCommandFindsOperands(t *testing.T) {
 	}
 }
 
+// A let binding runs as part of the query, so a gate must see the commands inside it.
+func TestForEachCommandWalksBindings(t *testing.T) {
+	cases := map[string]string{
+		"operand":   `let &s := a="x" OR cidr(dst_ip,"10.0.0.0/8") | groupby(user); user=x | in(user, &s)`,
+		"in a join": `let &s := * | join(user){cidr(dst_ip,"10.0.0.0/8") | groupby(user)} | groupby(user); user=x | in(user, &s)`,
+		"unread":    `let &s := cidr(dst_ip,"10.0.0.0/8") | groupby(user); user=x`,
+	}
+	for name, q := range cases {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Errorf("%s: parse: %v", name, err)
+			continue
+		}
+		var found bool
+		ForEachCommand(pl, func(cmd CommandNode) {
+			found = found || cmd.Name == "cidr"
+		})
+		if !found {
+			t.Errorf("%s: cidr() not discoverable in %q", name, q)
+		}
+	}
+}
+
+// comment(), tlsh() and the pgrHas filters are resolved for the query as a whole, so
+// a binding, translated on its own, can never run one. Refused even when unread.
+func TestBindingRefusesQueryResolvedCommands(t *testing.T) {
+	for _, q := range []string{
+		`let &s := comment() | groupby(user); user=x | in(user, &s)`,
+		`let &s := comment(tags=[b]) | groupby(user); comment(tags=[a])`,
+		`let &s := tlsh(field=h, hash="T1") | groupby(user); user=x`,
+		`let &s := a=1 OR tlsh(field=h, hash="T1") | groupby(user); user=x | in(user, &s)`,
+		`let &s := * | join(user){comment() | groupby(user)} | groupby(user); user=x | in(user, &s)`,
+		`let &s := pgrHasNetwork() | groupby(user); user=x`,
+	} {
+		_, err := ParseQuery(q)
+		if err == nil || !strings.Contains(err.Error(), "cannot be used in a let binding") {
+			t.Errorf("%s: err = %v", q, err)
+		}
+	}
+}
+
+// A binding is validated whether or not it is read, and the error names it.
+func TestBindingValidationNamesTheBinding(t *testing.T) {
+	for _, q := range []string{
+		`let &s := * | head(1,2,3) | groupby(user); * | in(user, &s)`,
+		`let &s := * | head(1,2,3) | groupby(user); user=x`,
+	} {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := TranslateToSQL(pl, QueryOptions{MaxRows: 10}); err == nil || !strings.HasPrefix(err.Error(), "&s: head()") {
+			t.Errorf("%s: err = %v", q, err)
+		}
+	}
+}
+
 // comment() resolves its log ids server-side by being found in the pipeline. As an
 // operand it must still be detected, or the pre-fetch silently never happens.
 func TestCommentDetectedAsOperand(t *testing.T) {

@@ -192,6 +192,23 @@ func TestLoadTestableRuleRejectsWhatCannotRunOffline(t *testing.T) {
 	}
 }
 
+// A rule that reads a binding runs what the binding holds, so reporting no_match for
+// one that hides an unsupported command would be the same silent false negative.
+func TestCommandInBindingCannotBeTestedOffline(t *testing.T) {
+	for _, q := range []string{
+		`let &s := * | join(user){a=1 | groupby(user)} | groupby(user); user=x | in(user, &s)`,
+		`let &s := * | modelLookup(model="m", key=[user]) | groupby(user); user=x | in(user, &s)`,
+	} {
+		pipeline, err := parser.ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := checkSupported(pipeline); err == nil || !strings.Contains(err.Error(), "cannot be tested offline") {
+			t.Errorf("%s: err = %v", q, err)
+		}
+	}
+}
+
 func TestPgrFiltersCannotBeTestedOffline(t *testing.T) {
 	for _, q := range []string{`pgrHasAncestor("a.exe")`, `NOT pgrHasAncestor("a.exe")`, `user=x OR pgrHasNetwork()`} {
 		pipeline, err := parser.ParseQuery(q)

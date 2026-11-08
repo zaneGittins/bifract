@@ -187,13 +187,7 @@ func ValidateCommandArgs(cmd CommandNode) error {
 
 // validateCommandSchemas checks every command in a pipeline against its schema.
 func validateCommandSchemas(pipeline *PipelineNode) error {
-	var err error
-	ForEachCommand(pipeline, func(cmd CommandNode) {
-		if err == nil {
-			err = ValidateCommandArgs(cmd)
-		}
-	})
-	return err
+	return validateCommands(pipeline, ValidateCommandArgs)
 }
 
 // field, lit, list and friends keep the spec declarations readable.
