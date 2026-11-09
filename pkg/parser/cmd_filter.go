@@ -10,14 +10,14 @@ import (
 // inHandler handles in(field, values=[v1,v2,...])
 type inHandler struct{ rowFilter }
 
-func (h *inHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
+func (h *inHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate, error) {
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	fieldArg, ok := b.First("field")
 	if !ok {
-		return "", fmt.Errorf("in() needs a field and values, e.g. in(user, values=[\"a\"])")
+		return predicate{}, fmt.Errorf("in() needs a field and values, e.g. in(user, values=[\"a\"])")
 	}
 
 	field := fieldArg.FieldName()
@@ -25,34 +25,32 @@ func (h *inHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, err
 	switch {
 	case field == "":
 		if fieldRef, err = ResolveArg(fieldArg, ctx.Registry); err != nil {
-			return "", fmt.Errorf("in(): %w", err)
+			return predicate{}, fmt.Errorf("in(): %w", err)
 		}
 	case ctx.Registry.IsComputed(field):
 		// The expression, not the alias: an alias names the field's final value.
-		fieldRef = resolveFieldRef(field, ctx.Registry)
+		fieldRef = ctx.Registry.Resolve(field)
 	case field == "timestamp" || field == normLogColumn || field == "log_id" || field == "normalizer":
 		fieldRef = field
 	default:
-		// IN / NOT IN reject a bare Dynamic subcolumn (error 43); cast raw JSON
-		// refs to ::String for mixed-history safety (index preserved).
-		fieldRef = groupableCast(jsonFieldRef(field))
+		fieldRef = jsonFieldRef(field)
 	}
 
 	if set, ok := b.First("values"); ok && set.Kind == ArgBinding {
 		sub, err := bindingSubquerySQL(set.Binding, ctx, field)
 		if err != nil {
 			if errors.Is(err, errBindingWorkExhausted) {
-				return "", err
+				return predicate{}, err
 			}
-			return "", fmt.Errorf("in(): %w", err)
+			return predicate{}, fmt.Errorf("in(): %w", err)
 		}
-		return fmt.Sprintf("%s %s (%s)", fieldRef, ctx.Opts.subqueryIn(cmd.Negate), sub), nil
+		return atom(fmt.Sprintf("%s %s (%s)", fieldRef, ctx.Opts.subqueryIn(cmd.Negate), sub)), nil
 	}
 
 	for _, a := range b.All("values") {
 		for _, e := range a.List {
 			if e.Kind == ArgList {
-				return "", fmt.Errorf("in(): values cannot be nested lists")
+				return predicate{}, fmt.Errorf("in(): values cannot be nested lists")
 			}
 		}
 	}
@@ -62,13 +60,13 @@ func (h *inHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, err
 	}
 	// No values would add no condition, so the filter would match every event.
 	if len(values) == 0 {
-		return "", fmt.Errorf("in() needs at least one value")
+		return predicate{}, fmt.Errorf("in() needs at least one value")
 	}
 	op := "IN"
 	if cmd.Negate {
 		op = "NOT IN"
 	}
-	return fmt.Sprintf("%s %s (%s)", fieldRef, op, strings.Join(values, ", ")), nil
+	return atom(fmt.Sprintf("%s %s (%s)", fieldRef, op, strings.Join(values, ", "))), nil
 }
 
 func (h *inHandler) appliesNegate() {}
@@ -78,29 +76,29 @@ type cidrHandler struct{ rowFilter }
 
 func (h *cidrHandler) appliesNegate() {}
 
-func (h *cidrHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
+func (h *cidrHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate, error) {
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	fieldArg, hasField := b.First("field")
 	rangeArg, hasRange := b.First("range")
 	if !hasField || !hasRange {
-		return "", fmt.Errorf("cidr() needs a field and a range, e.g. cidr(src_ip, \"10.0.0.0/8\")")
+		return predicate{}, fmt.Errorf("cidr() needs a field and a range, e.g. cidr(src_ip, \"10.0.0.0/8\")")
 	}
 	cidrRange := rangeArg.Value()
 	if err := validateCIDR(cidrRange); err != nil {
-		return "", fmt.Errorf("cidr(): %w", err)
+		return predicate{}, fmt.Errorf("cidr(): %w", err)
 	}
 	fieldRef, err := ResolveArg(fieldArg, ctx.Registry)
 	if err != nil {
-		return "", fmt.Errorf("cidr(): %w", err)
+		return predicate{}, fmt.Errorf("cidr(): %w", err)
 	}
 	cidrExpr := cidrPredicateSQL(fieldRef, "'"+escapeString(cidrRange)+"'")
 	if cmd.Negate {
 		cidrExpr = "NOT " + cidrExpr
 	}
-	return cidrExpr, nil
+	return atom(cidrExpr), nil
 }
 
 // validateCIDR rejects a range ClickHouse cannot parse. isIPAddressInRange
@@ -138,18 +136,18 @@ type commentHandler struct{ rowFilter }
 
 func (h *commentHandler) readsLogRows() {}
 
-func (h *commentHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
+func (h *commentHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate, error) {
 	if !ctx.Opts.HasCommentFilter {
-		return "", fmt.Errorf("comment() requires server-side pre-processing")
+		return predicate{}, fmt.Errorf("comment() requires server-side pre-processing")
 	}
 	if len(ctx.Opts.CommentLogIDs) == 0 {
-		return "1 = 0", nil
+		return atom("1 = 0"), nil
 	}
 	quoted := make([]string, len(ctx.Opts.CommentLogIDs))
 	for i, id := range ctx.Opts.CommentLogIDs {
 		quoted[i] = fmt.Sprintf("'%s'", escapeString(id))
 	}
-	return fmt.Sprintf("log_id IN (%s)", strings.Join(quoted, ", ")), nil
+	return atom(fmt.Sprintf("log_id IN (%s)", strings.Join(quoted, ", "))), nil
 }
 
 func init() {

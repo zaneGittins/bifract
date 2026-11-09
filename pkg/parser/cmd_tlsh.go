@@ -47,13 +47,13 @@ type tlshHandler struct{ rowFilter }
 func (h *tlshHandler) appliesNegate() {}
 func (h *tlshHandler) readsLogRows()  {}
 
-func (h *tlshHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
+func (h *tlshHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate, error) {
 	p, found, err := extractTLSHFromCommand(cmd)
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	if !found {
-		return "", fmt.Errorf("tlsh() needs field= and hash= or dict=")
+		return predicate{}, fmt.Errorf("tlsh() needs field= and hash= or dict=")
 	}
 	// Reached only where a caller translates without pre-resolving the digests.
 	// Name the contexts that legitimately cannot, so the message is actionable
@@ -62,17 +62,17 @@ func (h *tlshHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, e
 	// them would filter the inner field by the outer field's digests), and archive
 	// search has no TLSH model index to resolve against.
 	if !ctx.Opts.HasTLSHFilter {
-		return "", fmt.Errorf("tlsh() cannot be resolved in this context; it is not supported inside a join() subquery or in archive search")
+		return predicate{}, fmt.Errorf("tlsh() cannot be resolved in this context; it is not supported inside a join() subquery or in archive search")
 	}
 	// The digests were resolved against the stored field, so a field computed
 	// before the filter is not what they describe.
 	if ctx.Registry.IsComputed(p.Field) {
-		return "", fmt.Errorf("tlsh(): field %q is computed by an earlier command; tlsh() can only filter a stored log field", p.Field)
+		return predicate{}, fmt.Errorf("tlsh(): field %q is computed by an earlier command; tlsh() can only filter a stored log field", p.Field)
 	}
 	// A similarity filter reads as "keep the rows whose digest looks like this".
 	// After an aggregation it would silently filter the rows before it instead.
-	if lastAggregatingCommandIndex(ctx.Plan.commands, ctx.CmdIndex) >= 0 {
-		return "", fmt.Errorf("tlsh() must come before groupby/stats: it filters log rows, not aggregated ones")
+	if lastAggregatingCommandIndex(ctx.Plan.pos.commands, ctx.CmdIndex) >= 0 {
+		return predicate{}, fmt.Errorf("tlsh() must come before groupby/stats: it filters log rows, not aggregated ones")
 	}
 	digests, _, _ := renderTLSHLiterals(ctx.Opts.TLSHMatches)
 	// No match, or nothing that fits. An empty IN list is a syntax error, so emit a
@@ -80,15 +80,15 @@ func (h *tlshHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, e
 	// and the negated form matches every row.
 	if len(digests) == 0 {
 		if cmd.Negate {
-			return "1 = 1", nil
+			return atom("1 = 1"), nil
 		}
-		return "1 = 0", nil
+		return atom("1 = 0"), nil
 	}
 	op := "IN"
 	if cmd.Negate {
 		op = "NOT IN"
 	}
-	return fmt.Sprintf("%s %s (%s)", groupableCast(jsonFieldRef(p.Field)), op, strings.Join(digests, ", ")), nil
+	return atom(fmt.Sprintf("%s %s (%s)", jsonFieldRef(p.Field), op, strings.Join(digests, ", "))), nil
 }
 
 // renderTLSHLiterals turns resolved matches into the quoted SQL literals the IN
@@ -172,7 +172,7 @@ func projectTLSHColumns(pipeline *PipelineNode, ctx *CommandContext) error {
 		projectTLSHConstants(ctx, source)
 		return nil
 	}
-	projectTLSHTransforms(ctx, source, groupableCast(jsonFieldRef(p.Field)), digests, distances, needles)
+	projectTLSHTransforms(ctx, source, jsonFieldRef(p.Field), digests, distances, needles)
 	return nil
 }
 

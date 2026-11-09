@@ -49,7 +49,7 @@ func readAggOptions(spec *AggSpec) aggOptions {
 // failed at the server with "Illegal type UInt64").
 func aggOperandNumeric(a Argument, registry *FieldRegistry) (string, error) {
 	if name := a.FieldName(); name != "" {
-		return numericCast(name, resolveFieldRef(name, registry), registry), nil
+		return numericCast(name, registry.Resolve(name), registry), nil
 	}
 	if a.Kind != ArgExpr || a.Expr == nil {
 		return "", fmt.Errorf("%s is not a value", a)

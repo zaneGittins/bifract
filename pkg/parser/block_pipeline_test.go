@@ -67,7 +67,7 @@ func TestChainStepKeepsNestedBraces(t *testing.T) {
 // parsed tree, or a later compile against another registry reuses stale SQL.
 func TestBlockFiltersCompileFreshEachTime(t *testing.T) {
 	sql := positionSQL(t, `x := lower(a) | case { lower(x)="y" OR b=1 | t:="1"; * | t:="0" }`)
-	if !strings.Contains(sql, "lower((lower(fields.`a`::String))) = 'y'") {
+	if !strings.Contains(sql, "lower(lower(fields.`a`::String)) = 'y'") {
 		t.Errorf("the branch must read the assigned x, not the raw field:\n%s", sql)
 	}
 	pl, err := ParseQuery(`* | chain(user) { lower(a)="y" OR b=1; b=2 }`)

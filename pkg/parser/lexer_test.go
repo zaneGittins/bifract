@@ -112,3 +112,46 @@ func TestFullQueryWithRegex(t *testing.T) {
 		t.Errorf("Regex value = %q, want %q", havingCond.Value, expected)
 	}
 }
+
+// A token keeps the text it was written as: a regex's Value is the compiled
+// pattern, its Text the /pattern/flags typed.
+func TestTokenKeepsItsSourceText(t *testing.T) {
+	toks, err := NewLexer(`a=/ab+c/i | "x y"`).Tokenize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []struct{ value, text string }{{"a", "a"}, {"=", "="}, {"(?i)ab+c", "/ab+c/i"}, {"|", "|"}, {"x y", `"x y"`}} {
+		if toks[i].Value != want.value || toks[i].Text != want.text {
+			t.Errorf("token %d = %q written %q, want %q written %q", i, toks[i].Value, toks[i].Text, want.value, want.text)
+		}
+	}
+}
+
+// An error quotes a regex as the user wrote it, flags included.
+func TestErrorsQuoteARegexAsWritten(t *testing.T) {
+	if got := describeToken(Token{Type: TokenRegex, Value: "(?i)abc", Text: "/abc/i"}); got != "'/abc/i'" {
+		t.Errorf("describeToken = %s, want '/abc/i'", got)
+	}
+	pl, err := ParseQuery(`* | pgrHasNetwork(/10\./i)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := BindCommand(*pl.Filters()[0].Command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if arg, _ := b.First("value"); arg.String() != `/10\./i` {
+		t.Errorf("argument renders as %s, want /10\\./i", arg.String())
+	}
+	// A regex a let binding holds renders as written where it is substituted.
+	pl, err = ParseQuery(`let &r := /10\./i; * | pgrHasNetwork(&r)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err = BindCommand(*pl.Filters()[0].Command); err != nil {
+		t.Fatal(err)
+	}
+	if arg, _ := b.First("value"); arg.String() != `/10\./i` {
+		t.Errorf("bound argument renders as %s, want /10\\./i", arg.String())
+	}
+}

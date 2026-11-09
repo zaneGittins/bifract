@@ -120,10 +120,10 @@ type Condition struct {
 	// It must type as a condition.
 	Expr *ExprNode
 
-	// PredicateSQL is the compiled form of Command or Expr, and at is where the
-	// filter is written. The planner sets both on its own copy of the condition.
-	PredicateSQL string
-	at           position
+	// compiled is the compiled form of Command or Expr, and at is where the filter
+	// is written. The planner sets both on its own copy of the condition.
+	compiled predicate
+	at       position
 }
 
 func (c Condition) Type() string { return "condition" }

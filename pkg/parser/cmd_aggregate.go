@@ -137,7 +137,8 @@ func (h *simpleAggHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		// Chained over a prior aggregation's output column, which is already a
 		// number: read it directly rather than through the string casts.
 		agg, _ := operandAggregate(h.name, fmt.Sprintf("toFloat64(%s)", field))
-		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations, aggSelect(agg, alias))
+		ctx.Plan.outer.selects = append(ctx.Plan.outer.selects, aggSelect(agg, alias))
+		ctx.Plan.outer.reads = append(ctx.Plan.outer.reads, field)
 		ctx.Plan.aggregationOutputs[alias] = agg.sql()
 	} else {
 		// max/min over the event time read the column itself: a DateTime cannot
@@ -248,8 +249,9 @@ func (h *iqrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
 		v := fmt.Sprintf("toFloat64(%s)", field)
 		q1, q3 := aggCall{fn: "quantile", params: "0.25", args: v}, aggCall{fn: "quantile", params: "0.75", args: v}
-		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations,
+		ctx.Plan.outer.selects = append(ctx.Plan.outer.selects,
 			aggSelect(q1, "_q1"), aggSelect(q3, "_q3"), aggSelect(aggDiff{a: q3, b: q1}, iqrAlias))
+		ctx.Plan.outer.reads = append(ctx.Plan.outer.reads, field)
 		ctx.Plan.aggregationOutputs["_q1"] = q1.sql()
 		ctx.Plan.aggregationOutputs["_q3"] = q3.sql()
 		ctx.Plan.aggregationOutputs[iqrAlias] = iqrAlias
@@ -481,9 +483,10 @@ func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
 		numericExpr := fmt.Sprintf("toFloat64(%s)", field)
-		ctx.Plan.MADWindowExpr = numericExpr
-		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations,
+		ctx.Plan.outer.madExpr = numericExpr
+		ctx.Plan.outer.selects = append(ctx.Plan.outer.selects,
 			selectAs("any(_median_val)", "_median"), selectAs(fmt.Sprintf("median(abs(%s - _median_val))", numericExpr), madAlias))
+		ctx.Plan.outer.reads = append(ctx.Plan.outer.reads, field, "_median_val")
 		ctx.Registry.SetResolveExpr("_median", "any(_median_val)")
 		ctx.Registry.SetResolveExpr(madAlias, fmt.Sprintf("median(abs(%s - _median_val))", numericExpr))
 		ctx.Plan.aggregationOutputs["_median"] = "any(_median_val)"
@@ -495,9 +498,10 @@ func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		numericExpr := fmt.Sprintf("toFloat64OrNull(%s)", fieldRef)
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: numericExpr, Alias: "_mad_val"})
-		ctx.Plan.MADWindowExpr = "_mad_val"
-		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations,
+		ctx.Plan.outer.madExpr = "_mad_val"
+		ctx.Plan.outer.selects = append(ctx.Plan.outer.selects,
 			selectAs("any(_median_val)", "_median"), selectAs("median(abs(_mad_val - _median_val))", madAlias))
+		ctx.Plan.outer.reads = append(ctx.Plan.outer.reads, "_mad_val", "_median_val")
 		ctx.Registry.SetResolveExpr("_median", "any(_median_val)")
 		ctx.Registry.SetResolveExpr(madAlias, "median(abs(_mad_val - _median_val))")
 		ctx.Plan.aggregationOutputs["_median"] = "any(_median_val)"
@@ -602,7 +606,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return err
 		}
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("COUNT(DISTINCT %s)", groupableCast(ref)), Alias: "_count",
+			Expr: fmt.Sprintf("COUNT(DISTINCT %s)", ref), Alias: "_count",
 		})
 		ctx.Plan.IsAggregated = true
 		hasFunction = true // the distinct count is _count; no default COUNT(*) beside it

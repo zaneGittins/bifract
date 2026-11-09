@@ -39,7 +39,7 @@ type CommandHandler interface {
 // applies NOT itself (negatingHandler) reads cmd.Negate; any other is negated
 // around its predicate, so NOT is never silently dropped.
 type predicateHandler interface {
-	predicate(cmd CommandNode, ctx *CommandContext) (string, error)
+	predicate(cmd CommandNode, ctx *CommandContext) (predicate, error)
 }
 
 // filterHandler is a command that does nothing but filter rows. It is a filter

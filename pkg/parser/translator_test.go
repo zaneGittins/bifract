@@ -4232,7 +4232,7 @@ func TestGroupByCountGroups(t *testing.T) {
 	})
 
 	t.Run("singleval works with chained outer aggregation", func(t *testing.T) {
-		// groupby + chained agg (outerAggregations path) + singleval should work
+		// groupby + chained agg (outer aggregation path) + singleval should work
 		pipeline, err := ParseQuery("* | groupby(src_ip, function=count()) | avg(_count) | singleval()")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
@@ -5122,7 +5122,7 @@ func TestCaseAllStages(t *testing.T) {
 				"countIf(multiSearchAnyCaseInsensitive(fields.`image`::String, ['powershell']))",
 				"sumIf(toFloat64OrNull(fields.`bytes`::String), multiSearchAnyCaseInsensitive(fields.`image`::String, ['powershell']))",
 				"countIf(multiSearchAnyCaseInsensitive(fields.`image`::String, ['explorer']))",
-				"countIf(NOT ((multiSearchAnyCaseInsensitive(fields.`image`::String, ['powershell'])) OR (multiSearchAnyCaseInsensitive(fields.`image`::String, ['explorer']))))",
+				"countIf(NOT (multiSearchAnyCaseInsensitive(fields.`image`::String, ['powershell']) OR multiSearchAnyCaseInsensitive(fields.`image`::String, ['explorer'])))",
 			},
 		},
 		{
@@ -5263,7 +5263,7 @@ func TestAggregationPipelineFixes(t *testing.T) {
 			t.Errorf("assignment not inlined into aggregate: %s", sql)
 		}
 		// The scaled value must appear in the WHERE, not be deferred post-aggregation.
-		if !strings.Contains(sql, "toFloat64OrNull(fields.`cpu`::String) * 100 > 0") {
+		if !strings.Contains(sql, "(toFloat64OrNull(fields.`cpu`::String) * 100) > 0") {
 			t.Errorf("assignment not applied in filter: %s", sql)
 		}
 	})
@@ -5280,7 +5280,7 @@ func TestAggregationPipelineFixes(t *testing.T) {
 
 	t.Run("chained pre-aggregation assignments fold in transitively", func(t *testing.T) {
 		sql := mustTranslate(t, `a=x | cpu := cpu * 100 | scaled := cpu * 2 | groupby(host,function=avg(scaled,as=avg_scaled))`, opts)
-		if !strings.Contains(sql, "avg(toFloat64((toFloat64OrNull(fields.`cpu`::String) * 100) * 2)) AS avg_scaled") {
+		if !strings.Contains(sql, "avg(toFloat64(((toFloat64OrNull(fields.`cpu`::String) * 100) * 2))) AS avg_scaled") {
 			t.Errorf("chained pre-agg assignment not folded: %s", sql)
 		}
 	})

@@ -55,10 +55,12 @@ type BindingNode struct {
 	Kind BindingKind
 	Expr *ExprNode  // BindingValue
 	Cond *Condition // BindingCondition
-	// Regex marks a value binding whose literal is a /pattern/. The expression
-	// grammar has no regex literal, so the statement reads it directly.
-	Regex bool
-	Pipe  *PipelineNode // BindingPipeline
+	// Regex marks a value binding whose literal is a /pattern/, and Written is
+	// the regex as typed. The expression grammar has no regex literal, so the
+	// statement reads it directly.
+	Regex   bool
+	Written string
+	Pipe    *PipelineNode // BindingPipeline
 	// SetRefs counts the places that read this binding as a set. More than one
 	// means the query materialises it once rather than pasting the subquery in
 	// at each use.
@@ -152,7 +154,7 @@ func (p *Parser) parseBindingValue(name string, nameTok Token, end int) (*Bindin
 		tok := p.current()
 		p.advance()
 		return &BindingNode{
-			Name: name, Kind: BindingValue, Regex: true,
+			Name: name, Kind: BindingValue, Regex: true, Written: tok.Text,
 			Expr: &ExprNode{Kind: ExprString, Value: tok.Value, Pos: tok.Pos},
 			Pos:  nameTok.Pos,
 		}, nil

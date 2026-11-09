@@ -170,15 +170,15 @@ const icebergPromotionQueryEnabled = true
 // A nil/empty set is the safe default: emit no `_ice_` reference at all. The
 // norm_log clause alone is always correct, so a caller that does not supply the
 // set loses pruning but never returns a wrong answer or an error.
-func icebergEqualityPredicate(field, value string, promoted map[string]bool) string {
-	mapRef := mapFieldRef(field)
+func icebergEqualityPredicate(field, value string, promoted map[string]bool) predicate {
 	esc := escapeString(value)
+	byMap := atom(fmt.Sprintf("%s = '%s'", mapFieldRef(field), esc))
 	if !icebergPromotionQueryEnabled || !promoted[field] {
-		return fmt.Sprintf("%s = '%s'", mapRef, esc)
+		return byMap
 	}
 	col, isPromoted := IcePromotedColumn(field)
 	if !isPromoted {
-		return fmt.Sprintf("%s = '%s'", mapRef, esc)
+		return byMap
 	}
-	return fmt.Sprintf("%s = '%s' AND (%s = '%s' OR %s IS NULL)", mapRef, esc, col, esc, col)
+	return andOf(byMap, orOf(atom(fmt.Sprintf("%s = '%s'", col, esc)), atom(col+" IS NULL")))
 }

@@ -153,7 +153,7 @@ func BuildChainEventsSQL(meta *ChainMeta, entities []string, anchors [][]int64, 
 	sql := fmt.Sprintf(
 		"SELECT %s AS _entity_key, toUnixTimestamp64Milli(timestamp) AS _ts_ms, log_id, %s "+
 			"FROM %s WHERE %s ORDER BY timestamp",
-		entitySelect, normLogColumn, table, andJoin(where))
+		entitySelect, normLogColumn, table, andOf(atoms(where...)...).sql)
 
 	return &ChainEventFetch{SQL: sql, Truncated: truncated}
 }

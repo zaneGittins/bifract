@@ -53,7 +53,9 @@ type Argument struct {
 	// Quoted records that the text was written in quotes. Structural, so a value
 	// that happens to look like code is never read as code.
 	Quoted bool
-	Pos    int
+	// Written is a regex as typed, /pattern/flags: Text is the compiled pattern.
+	Written string
+	Pos     int
 }
 
 // AggSpec is an aggregate specification. These are not scalar functions: they
@@ -76,7 +78,10 @@ func (a Argument) String() string {
 			body = a.Expr.String()
 		}
 	case ArgRegex:
-		body = "/" + a.Text + "/"
+		body = a.Written
+		if body == "" {
+			body = "/" + a.Text + "/"
+		}
 	case ArgLiteral:
 		if a.Quoted {
 			body = strconv.Quote(a.Text)
@@ -426,8 +431,7 @@ func (c CommandNode) FieldNames() []string {
 }
 
 // ResolveArg turns an argument in a field position into SQL: an expression is
-// compiled, a bare name resolves through the registry. This replaces the
-// resolveFieldRef/exprArgSQL pair, which had to guess from text.
+// compiled, a bare name resolves through the registry.
 func ResolveArg(a Argument, registry *FieldRegistry) (string, error) {
 	switch a.Kind {
 	case ArgExpr:
@@ -435,12 +439,12 @@ func ResolveArg(a Argument, registry *FieldRegistry) (string, error) {
 			return "", fmt.Errorf("empty expression")
 		}
 		if a.Expr.Kind == ExprField {
-			return resolveFieldRef(a.Expr.Value, registry), nil
+			return registry.Resolve(a.Expr.Value), nil
 		}
 		sql, _, err := compileExpr(a.Expr, registry)
 		return sql, err
 	case ArgLiteral, ArgRegex:
-		return resolveFieldRef(a.Text, registry), nil
+		return registry.Resolve(a.Text), nil
 	}
 	return "", fmt.Errorf("%s is not a field", a.String())
 }

@@ -257,7 +257,7 @@ type plannedQuery struct {
 // range and fractal scope: what the histogram and field statistics filter by, so
 // they count exactly the events the results show.
 func (q *plannedQuery) scanWhere() string {
-	return andJoin(q.ctx.Plan.SourceStage().Layer.Where[q.ctx.Plan.baseWhereLen:])
+	return andOf(q.ctx.Plan.SourceStage().Layer.Where[q.ctx.Plan.baseWhereLen:]...).sql
 }
 
 // planQuery runs every step of translation but the final assembly. The histogram
@@ -373,17 +373,17 @@ func (q *plannedQuery) prepare() error {
 // for the filters written there.
 func (q *plannedQuery) execute() error {
 	ctx, plan, registry := q.ctx, q.ctx.Plan, q.ctx.Registry
-	plan.positionAt = map[position]*FieldRegistry{}
-	plan.outputsAfter = map[int][]string{}
-	plan.stageAt = map[position]int{}
-	plan.declaredBy = q.declaredBy
-	plan.firstAggregation = q.firstAgg
-	plan.commands = ctx.Pipeline.Commands()
+	plan.pos.registry = map[position]*FieldRegistry{}
+	plan.pos.outputs = map[int][]string{}
+	plan.pos.stage = map[position]int{}
+	plan.pos.declared = q.declaredBy
+	plan.pos.firstAgg = q.firstAgg
+	plan.pos.commands = ctx.Pipeline.Commands()
 	capture := func(at position) {
 		view := registry.Clone()
 		view.rowLevel = at.Cmd <= q.firstAgg
-		plan.positionAt[at] = view
-		plan.stageAt[at] = len(plan.Stages) - 1
+		plan.pos.registry[at] = view
+		plan.pos.stage[at] = len(plan.Stages) - 1
 	}
 	var pos position
 	capture(pos)
@@ -438,7 +438,7 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 	if err != nil {
 		return fmt.Errorf("invalid assignment field: %w", err)
 	}
-	hasAggregation := q.firstAgg < len(ctx.Plan.commands)
+	hasAggregation := q.firstAgg < len(ctx.Plan.pos.commands)
 	// Past the aggregation every assignment is its own stage, so what ran before it
 	// keeps the value it replaces.
 	if hasAggregation && at.Cmd > q.firstAgg {
@@ -455,6 +455,9 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 	if err != nil {
 		return assignmentError(assignment.Field, err)
 	}
+	// A reference to the field is spliced beside other operators (x = 1, in(x, ...)),
+	// so the registry holds it as one operand.
+	ref := operandSQL(assignment.Expr, sqlExpr)
 	switch {
 	case !isComputedExpr(assignment.Expr):
 		// A bare field or literal has nothing to compute and is materialized
@@ -462,18 +465,25 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 		q.assignmentFields = append(q.assignmentFields, selectAs(sqlExpr, safeField))
 		registry.Register(safeField, FieldKindAssignment, safeField, -1)
 		registry.SetResolveExpr(safeField, sqlExpr)
+		if exprType == TypeText {
+			registry.setText(safeField)
+		}
 		return nil
 	case hasAggregation:
 		// Before the aggregation it is inlined, so aggregations, filters and later
 		// assignments referencing it fold in the full expression; it is never
 		// materialized as a column.
-		registry.RegisterInlineExpr(safeField, sqlExpr, -1)
+		registry.RegisterInlineExpr(safeField, ref, -1)
 	default:
 		// Without an aggregation it is computed in the outer formatter, and
 		// registered so a filter downstream folds the expression in rather than
 		// reading a column the scan does not have.
-		registry.Register(safeField, FieldKindPerRow, sqlExpr, -1)
-		registry.SetResolveExpr(safeField, sqlExpr)
+		registry.Register(safeField, FieldKindPerRow, ref, -1)
+		registry.SetResolveExpr(safeField, ref)
+	}
+	registry.setOperand(safeField)
+	if exprType == TypeText {
+		registry.setText(safeField)
 	}
 	if exprType == TypeNumber {
 		registry.SetNumeric(safeField)
@@ -523,8 +533,8 @@ func executeCommand(ctx *CommandContext, cmd CommandNode, declared []FieldEntry,
 		after := src.capAfter(i)
 		for _, w := range added {
 			switch {
-			case plan.lookup.AtScan && registry.SQLDependsOnJoin(w):
-				plan.lookup.PostJoinWhere = append(plan.lookup.PostJoinWhere, postJoinFilter{At: i + 1, SQL: w})
+			case plan.lookup.AtScan && registry.SQLDependsOnJoin(w.sql):
+				plan.lookup.PostJoinWhere = append(plan.lookup.PostJoinWhere, postJoinFilter{At: i + 1, Pred: w})
 			case after != nil:
 				*after = append(*after, w)
 			default:
@@ -540,8 +550,8 @@ func executeCommand(ctx *CommandContext, cmd CommandNode, declared []FieldEntry,
 		}
 		plan.CurrentStage().AfterCap = true
 	}
-	plan.stageAfterCmd = append(plan.stageAfterCmd, len(plan.Stages)-1)
-	plan.outputsAfter[i] = plan.outputNames(registry)
+	plan.pos.stageAfter = append(plan.pos.stageAfter, len(plan.Stages)-1)
+	plan.pos.outputs[i] = plan.outputNames(registry)
 	return nil
 }
 
@@ -853,7 +863,7 @@ func scanFilter(pipeline *PipelineNode, opts QueryOptions) (with, where string, 
 	if err != nil {
 		return "", "", err
 	}
-	return q.ctx.Plan.withClause(), andJoin(q.ctx.Plan.SourceStage().Layer.Where), nil
+	return q.ctx.Plan.withClause(), andOf(q.ctx.Plan.SourceStage().Layer.Where...).sql, nil
 }
 
 // chTimeLiteral renders a time as a ClickHouse datetime literal for comparison
@@ -890,22 +900,22 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 		return
 	}
 	source := plan.SourceStage()
-	source.Layer.Where = append(source.Layer.Where, windowConditions(opts)...)
+	source.Layer.Where = append(source.Layer.Where, atoms(windowConditions(opts)...)...)
 	if len(opts.EventTimes) > 0 {
 		lits := make([]string, len(opts.EventTimes))
 		for i, t := range opts.EventTimes {
 			lits[i] = "'" + chTimeLiteral(t) + "'"
 		}
-		source.Layer.Where = append(source.Layer.Where, "timestamp IN ("+strings.Join(lits, ", ")+")")
+		source.Layer.Where = append(source.Layer.Where, atom("timestamp IN ("+strings.Join(lits, ", ")+")"))
 	}
 
 	if opts.MaxEventLagSeconds > 0 {
 		source.Layer.Where = append(source.Layer.Where,
-			fmt.Sprintf("dateDiff('second', timestamp, ingest_timestamp) <= %d", opts.MaxEventLagSeconds))
+			atom(fmt.Sprintf("dateDiff('second', timestamp, ingest_timestamp) <= %d", opts.MaxEventLagSeconds)))
 	}
 
 	if scope := fractalScopeCond(opts, ""); scope != "" {
-		source.Layer.Where = append(source.Layer.Where, scope)
+		source.Layer.Where = append(source.Layer.Where, atom(scope))
 	}
 }
 
@@ -950,7 +960,7 @@ func (q *plannedQuery) finalize() (*TranslationResult, error) {
 	if err := plan.exportDeferredColumns(); err != nil {
 		return nil, err
 	}
-	if len(plan.outerAggregations) > 0 {
+	if len(plan.outer.selects) > 0 {
 		buildChainedAggStages(plan)
 	}
 	fieldOrder := q.wrapLayers(q.formatOutput(active, defaultTimeOrder))
@@ -960,17 +970,17 @@ func (q *plannedQuery) finalize() (*TranslationResult, error) {
 	}
 	return &TranslationResult{
 		SQL:                 sql,
-		SourceWhere:         append([]string(nil), plan.SourceStage().Layer.Where...),
+		SourceWhere:         conjuncts(plan.SourceStage().Layer.Where),
 		SourceWhereComplete: plan.sourceWhereComplete(),
 		SourceProjections:   plan.sourceProjections(),
 		FieldOrder:          fieldOrder,
 		IsAggregated:        plan.IsAggregated || len(active.Layer.GroupBy) > 0,
-		ChartType:           plan.ChartType,
-		ChartConfig:         plan.ChartConfig,
+		ChartType:           plan.chart.kind,
+		ChartConfig:         plan.chart.config,
 		DefaultTimeOrder:    defaultTimeOrder,
 		TimeScopedSubquery:  plan.join != nil || plan.hasModelLookup() || plan.usesBindingSet,
 		RowCapped:           plan.join != nil || plan.usesBindingSet,
-		RangeDependentRows:  plan.rowLimitByCommand || len(plan.WindowLayers) > 0,
+		RangeDependentRows:  plan.rowLimitByCommand || len(plan.window.layers) > 0,
 		Chain:               plan.Chain,
 	}, nil
 }
@@ -1024,7 +1034,7 @@ func (q *plannedQuery) assembleSelects(active *QueryStage) error {
 // reporting whether the order is the implicit newest-first one.
 func (q *plannedQuery) orderAndLimit(active *QueryStage) (defaultTimeOrder bool) {
 	plan, opts, layer := q.ctx.Plan, q.ctx.Opts, &active.Layer
-	if len(layer.OrderBy) == 0 && len(layer.GroupBy) == 0 && !plan.IsAggregated && !plan.ChartReadsAllRows {
+	if len(layer.OrderBy) == 0 && len(layer.GroupBy) == 0 && !plan.IsAggregated && !plan.chart.readsAllRows {
 		if len(opts.SourceOrderBy) > 0 {
 			layer.OrderBy = opts.SourceOrderBy
 		} else if active.IsSource {
@@ -1038,7 +1048,7 @@ func (q *plannedQuery) orderAndLimit(active *QueryStage) (defaultTimeOrder bool)
 	}
 	// A chained aggregate (groupby | ... | avg(x)) reads every group, so the display
 	// limit belongs on its single result row, not on its input.
-	capRows := opts.MaxRows > 0 && !plan.ChartReadsAllRows && len(plan.outerAggregations) == 0
+	capRows := opts.MaxRows > 0 && !plan.chart.readsAllRows && len(plan.outer.selects) == 0
 	if layer.Limit == "" {
 		if capRows {
 			layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
@@ -1062,10 +1072,10 @@ func (q *plannedQuery) orderAndLimit(active *QueryStage) (defaultTimeOrder bool)
 func (q *plannedQuery) formatOutput(active *QueryStage, defaultTimeOrder bool) []string {
 	plan := q.ctx.Plan
 	// A chained aggregation is not wrapped by a formatter.
-	if len(plan.outerAggregations) > 0 {
-		return columnNames(plan.outerAggregations)
+	if len(plan.outer.selects) > 0 {
+		return columnNames(plan.outer.selects)
 	}
-	plan.Formatters = buildFormatters(active.Layer.Selects, q.deferredAssignments)
+	plan.format.selects = buildFormatters(active.Layer.Selects, q.deferredAssignments)
 	fieldOrder := computeFieldOrder(active.Layer.Selects, q.deferredAssignments)
 	// Columns exported purely to make deferred expressions resolvable are stripped
 	// from the SQL result, so they must not be listed for display.
@@ -1084,16 +1094,16 @@ func (q *plannedQuery) formatOutput(active *QueryStage, defaultTimeOrder bool) [
 	// also lets each shard limit its own output before the coordinator merges.
 	// Without a LIMIT the outer sort would re-sort every row on the String alias,
 	// and a join() renders no formatter.
-	if defaultTimeOrder && active.Layer.Limit != "" && len(plan.Formatters) > 0 && plan.join == nil {
-		plan.FormatterOrderBy = active.Layer.OrderBy
-		plan.FormatterLimit = active.Layer.Limit
+	if defaultTimeOrder && active.Layer.Limit != "" && len(plan.format.selects) > 0 && plan.join == nil {
+		plan.format.orderBy = active.Layer.OrderBy
+		plan.format.limit = active.Layer.Limit
 	}
 	// table(...) shows the columns it names. Every row still carries the ones
 	// projected for its identity, content and window value, which are only
 	// displayed if named.
-	if plan.TableHasExplicitColumns {
+	if plan.table.explicit {
 		fieldOrder = slices.DeleteFunc(fieldOrder, func(f string) bool {
-			return (rowIdentityColumns[f] || f == windowValueColumn) && !slices.Contains(plan.TableColumns, f)
+			return (rowIdentityColumns[f] || f == windowValueColumn) && !slices.Contains(plan.table.columns, f)
 		})
 	}
 	return fieldOrder
@@ -1108,24 +1118,24 @@ func (q *plannedQuery) wrapLayers(fieldOrder []string) []string {
 	// shows only the joined outputs it names; the wrap still projects them all,
 	// since a deferred filter or sort may read one that is not displayed.
 	if plan.join != nil && plan.join.SubSQL != "" {
-		plan.Formatters = nil
+		plan.format.selects = nil
 		fieldOrder = appendJoinedFields(fieldOrder, joinDisplayNames(plan), plan)
 	}
-	if plan.ModifiedZScoreExpr != "" {
+	if plan.window.zScoreExpr != "" {
 		buildZScoreWindowLayers(plan)
 		fieldOrder = append(fieldOrder, "_median", "_mad", "_modified_z")
-		if plan.OutlierThreshold != "" {
+		if plan.window.outlierThreshold != "" {
 			fieldOrder = append(fieldOrder, "_is_outlier")
 		}
 	}
-	if plan.HistogramBuckets > 0 {
+	if plan.histogram.buckets > 0 {
 		buildHistogramLayers(plan, q.ctx)
 		fieldOrder = []string{"_bin_lower", "_bin_upper", "_bin_count"}
 		plan.IsAggregated = true
 	}
-	if len(plan.ChartLayers) > 0 {
-		plan.WindowLayers = append(plan.WindowLayers, plan.ChartLayers...)
-		fieldOrder = plan.ChartFieldOrder
+	if len(plan.chart.layers) > 0 {
+		plan.window.layers = append(plan.window.layers, plan.chart.layers...)
+		fieldOrder = plan.chart.fieldOrder
 		plan.IsAggregated = true
 	}
 	return fieldOrder
@@ -1147,7 +1157,7 @@ func pushAggregationStage(ctx *CommandContext) error {
 	ctx.Plan.CurrentStage().Aggregates = true
 	ctx.Plan.IsAggregated = false
 	ctx.Plan.aggregationOutputs = make(map[string]string)
-	ctx.Plan.outerAggregations = nil
+	ctx.Plan.outer.selects, ctx.Plan.outer.reads = nil, nil
 	ctx.Registry.ScopeToOutputs(prevOutputs)
 	return nil
 }
@@ -1174,7 +1184,7 @@ func pushCarryForwardStage(ctx *CommandContext) ([]string, error) {
 
 	ctx.Plan.PushStage()
 	ctx.Plan.aggregationOutputs = make(map[string]string)
-	ctx.Plan.outerAggregations = nil
+	ctx.Plan.outer.selects, ctx.Plan.outer.reads = nil, nil
 
 	outputs := make(map[string]bool, len(carried))
 	for _, c := range carried {
@@ -1241,7 +1251,7 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignments
 			source.Layer.GroupBy[i].Expr = outputRef(existing[j])
 			continue
 		}
-		expr := groupableCast(key.Expr)
+		expr := key.Expr
 		// A per-row transform or assignment registered during Execute.
 		if entry := ctx.Registry.Get(key.Expr); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
 			expr = ctx.Registry.Resolve(key.Expr)
@@ -1277,13 +1287,13 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignments
 	}
 
 	// 3. The aggregates a chained outer aggregation reads.
-	if len(ctx.Plan.outerAggregations) > 0 {
-		outer := columnNames(ctx.Plan.outerAggregations)
+	if len(ctx.Plan.outer.selects) > 0 {
+		outer := columnNames(ctx.Plan.outer.selects)
 		for _, name := range slices.Sorted(maps.Keys(ctx.Plan.aggregationOutputs)) {
 			if slices.Contains(outer, name) || added[name] {
 				continue
 			}
-			if slices.ContainsFunc(ctx.Plan.outerAggregations, func(o SelectExpr) bool { return slices.Contains(columnRefs(o.Expr), name) }) {
+			if slices.Contains(ctx.Plan.outer.reads, name) {
 				add(selectAs(ctx.Plan.aggregationOutputs[name], name))
 				hasExplicitAgg = true
 			}
@@ -1291,7 +1301,7 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignments
 	}
 
 	// 4. COUNT(*) when nothing else aggregates.
-	if !hasExplicitAgg && (!ctx.Plan.IsAggregated || len(ctx.Plan.outerAggregations) > 0) {
+	if !hasExplicitAgg && (!ctx.Plan.IsAggregated || len(ctx.Plan.outer.selects) > 0) {
 		add(aggSelect(countAll, "_count"))
 	}
 
@@ -1332,7 +1342,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 	// tableHandler (already bare); aggregate/select handlers set their own Selects.
 	if ctx.Opts.SourceSubquery != "" {
 		if !plan.IsAggregated {
-			if !(plan.HasTableCmd && plan.TableHasExplicitColumns && len(layer.Selects) > 0) {
+			if !(plan.table.present && plan.table.explicit && len(layer.Selects) > 0) {
 				layer.Selects = sourceColumnSelects(ctx.Opts.SourceColumns)
 			}
 			layer.addAssignments(assignmentFields)
@@ -1364,8 +1374,8 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		})
 	}
 	// table() without columns shows every field.
-	if plan.HasTableCmd && !plan.TableHasExplicitColumns && len(layer.Selects) > 0 &&
-		!slices.ContainsFunc(layer.Selects, func(sel SelectExpr) bool { return strings.Contains(sel.String(), "_all_fields") }) {
+	if plan.table.present && !plan.table.explicit && len(layer.Selects) > 0 &&
+		!slices.ContainsFunc(layer.Selects, func(sel SelectExpr) bool { return sel.Name() == "_all_fields" }) {
 		layer.Selects = append(layer.Selects, SelectExpr{Expr: contentColMode(ctx.Opts.SourceMode), Alias: "_all_fields"})
 	}
 	layer.addAssignments(assignmentFields)
@@ -1407,7 +1417,7 @@ func minimalProjection(ctx *CommandContext, layer *QueryLayer) bool {
 		if !isPlainFieldName(field) {
 			continue
 		}
-		layer.Selects = append(layer.Selects, selectAs(groupableCast(jsonFieldRef(field)), "`"+EscapeCHBacktickIdent(field)+"`"))
+		layer.Selects = append(layer.Selects, selectAs(jsonFieldRef(field), "`"+EscapeCHBacktickIdent(field)+"`"))
 	}
 	return true
 }
@@ -1427,18 +1437,18 @@ func ensureRowColumns(ctx *CommandContext, source *QueryStage) {
 	ensure(SelectExpr{Expr: "fractal_id"})
 	// norm_log (flat normalized fields) is the default content column. raw_log
 	// (original) is not projected; the Raw tab lazy-loads it within its retention.
-	if !plan.TableHasExplicitColumns {
+	if !plan.table.explicit {
 		ensure(SelectExpr{Expr: normLogColumn})
 	}
 	hasFields := slices.ContainsFunc(layer.Selects, func(sel SelectExpr) bool {
 		return sel.Name() == "fields" || sel.Name() == "_all_fields"
 	})
-	if !hasFields && plan.HasTableCmd && !plan.TableHasExplicitColumns {
+	if !hasFields && plan.table.present && !plan.table.explicit {
 		layer.Selects = append(layer.Selects, SelectExpr{Expr: contentColMode(ctx.Opts.SourceMode), Alias: "fields"})
 	}
 	// The scan-level model join's columns, after the log's own. An explicit table()
 	// projects the ones it names itself.
-	if plan.hasModelLookup() && plan.lookup.AtScan && !plan.TableHasExplicitColumns {
+	if plan.hasModelLookup() && plan.lookup.AtScan && !plan.table.explicit {
 		for _, f := range plan.lookup.Fields {
 			layer.project(SelectExpr{Expr: f})
 		}
@@ -1467,7 +1477,7 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 	// A model join is not a wrap: it sits in the FROM of the stage that reads its
 	// columns, so nothing needs relocating and that stage's LIMIT follows the join.
 	hasJoinWrap := plan.join != nil && plan.join.SubSQL != ""
-	if plan.ModifiedZScoreExpr == "" && !hasJoinWrap {
+	if plan.window.zScoreExpr == "" && !hasJoinWrap {
 		return
 	}
 
@@ -1482,9 +1492,9 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 		}
 	}
 
-	liftLimit := len(deferredOrder) > 0 || (hasJoinWrap && len(plan.DeferredWhere) > 0)
+	liftLimit := len(deferredOrder) > 0 || (hasJoinWrap && len(plan.deferred.where) > 0)
 	// Without a key prefilter the scan would cap rows the inner join then drops.
-	liftLimit = liftLimit || (plan.innerJoinWrap() && plan.joinPrefilter(source, ctx.Opts) == "")
+	liftLimit = liftLimit || (plan.innerJoinWrap() && plan.joinPrefilter(source, ctx.Opts).empty())
 	if liftLimit && hasJoinWrap {
 		// The ordering must follow the filter, so it moves out with the LIMIT.
 		deferredOrder = append(deferredOrder, innerOrder...)
@@ -1498,9 +1508,9 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 		// unspecified and a key the subquery repeats multiplies rows, so the joined
 		// rows are ordered and capped again.
 		for _, ob := range innerOrder {
-			plan.DeferredOrder = append(plan.DeferredOrder, scopeOrderByExpr(ob, plan.deferredScope()))
+			plan.deferred.orderBy = append(plan.deferred.orderBy, scopeOrderByExpr(ob, plan.deferredScope()))
 		}
-		plan.DeferredLimit = source.Layer.Limit
+		plan.deferred.limit = source.Layer.Limit
 		return
 	}
 	if liftLimit {
@@ -1510,8 +1520,8 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 		for i, ob := range deferredOrder {
 			deferredOrder[i] = scopeOrderByExpr(ob, plan.deferredScope())
 		}
-		plan.DeferredOrder = append(plan.DeferredOrder, deferredOrder...)
-		plan.DeferredLimit = source.Layer.Limit
+		plan.deferred.orderBy = append(plan.deferred.orderBy, deferredOrder...)
+		plan.deferred.limit = source.Layer.Limit
 		source.Layer.Limit = ""
 	}
 }
@@ -1519,11 +1529,11 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 // dropHiddenDeferredFields removes the deferred scope's exported columns from the
 // display order; they are EXCEPT-ed out of the result set.
 func dropHiddenDeferredFields(fieldOrder []string, plan *QueryPlan) []string {
-	if !plan.deferred.used() {
+	if !plan.deferred.scope.used() {
 		return fieldOrder
 	}
-	hidden := make(map[string]bool, len(plan.deferred.names))
-	for _, n := range plan.deferred.names {
+	hidden := make(map[string]bool, len(plan.deferred.scope.names))
+	for _, n := range plan.deferred.scope.names {
 		hidden[n] = true
 	}
 	out := fieldOrder[:0]
@@ -1559,8 +1569,8 @@ func scopeOrderByExpr(o OrderTerm, scope *deferredScope) OrderTerm {
 // appendJoinedFields adds a JOIN wrap's output columns to the display order,
 // narrowed to what an explicit `| table(...)` asked for.
 func appendJoinedFields(fieldOrder, outputs []string, plan *QueryPlan) []string {
-	if plan.TableHasExplicitColumns {
-		outputs = plan.TableJoinedFields
+	if plan.table.explicit {
+		outputs = plan.table.joinedFields
 	}
 	seen := make(map[string]bool, len(fieldOrder))
 	for _, f := range fieldOrder {
@@ -1586,16 +1596,16 @@ func isJoinedField(registry *FieldRegistry, name string) bool {
 // (e.g., sum/avg/etc. operating on prior aggregation outputs).
 func buildChainedAggStages(plan *QueryPlan) {
 	// If MAD window is needed, insert an intermediate stage for the median computation
-	if plan.MADWindowExpr != "" {
+	if plan.outer.madExpr != "" {
 		plan.Stages = append(plan.Stages, QueryStage{
 			Layer: QueryLayer{
-				Selects: []SelectExpr{{Expr: "*"}, selectAs(fmt.Sprintf("median(%s) OVER ()", plan.MADWindowExpr), "_median_val")},
+				Selects: []SelectExpr{{Expr: "*"}, selectAs(fmt.Sprintf("median(%s) OVER ()", plan.outer.madExpr), "_median_val")},
 			},
 		})
 	}
 
 	// Add the outer aggregation stage
-	plan.Stages = append(plan.Stages, QueryStage{Layer: QueryLayer{Selects: plan.outerAggregations}})
+	plan.Stages = append(plan.Stages, QueryStage{Layer: QueryLayer{Selects: plan.outer.selects}})
 }
 
 // buildZScoreWindowLayers creates window layers for modified z-score computation:
@@ -1603,15 +1613,15 @@ func buildChainedAggStages(plan *QueryPlan) {
 // Layer 2: median(abs(expr - _median)) OVER () AS _mad
 // Layer 3: z-score calculation + optional outlier flag
 func buildZScoreWindowLayers(plan *QueryPlan) {
-	expr := plan.ModifiedZScoreExpr
+	expr := plan.window.zScoreExpr
 	all := SelectExpr{Expr: "*"}
 	// The median, then the median absolute deviation from it, then the modified
 	// z-score and, with a threshold, whether the row is an outlier.
 	scored := []SelectExpr{all, selectAs(fmt.Sprintf("if(_mad = 0, 0, round(0.6745 * (%s - _median) / _mad, 4))", expr), "_modified_z")}
-	if plan.OutlierThreshold != "" {
-		scored = append(scored, selectAs(fmt.Sprintf("toString(if(abs(_modified_z) > %s, 1, 0))", plan.OutlierThreshold), "_is_outlier"))
+	if plan.window.outlierThreshold != "" {
+		scored = append(scored, selectAs(fmt.Sprintf("toString(if(abs(_modified_z) > %s, 1, 0))", plan.window.outlierThreshold), "_is_outlier"))
 	}
-	plan.WindowLayers = append(plan.WindowLayers,
+	plan.window.layers = append(plan.window.layers,
 		QueryLayer{Selects: []SelectExpr{all, selectAs(fmt.Sprintf("median(%s) OVER ()", expr), "_median")}},
 		QueryLayer{Selects: []SelectExpr{all, selectAs(fmt.Sprintf("median(abs(%s - _median)) OVER ()", expr), "_mad")}},
 		QueryLayer{Selects: scored},
@@ -1622,12 +1632,12 @@ func buildZScoreWindowLayers(plan *QueryPlan) {
 // Layer 1: compute val, min, max using window functions
 // Layer 2: bucket, aggregate, and order
 func buildHistogramLayers(plan *QueryPlan, ctx *CommandContext) {
-	valExpr := plan.HistogramValueExpr
+	valExpr := plan.histogram.valueExpr
 	if valExpr == "" {
 		valExpr = "_hist_val"
 	}
 
-	buckets := plan.HistogramBuckets
+	buckets := plan.histogram.buckets
 	// A range of zero (one row, or every value the same) put every row in bucket
 	// 0 via a division that the server rejected as inf/nan, so the degenerate
 	// case is branched on rather than divided through.
@@ -1639,7 +1649,7 @@ func buildHistogramLayers(plan *QueryPlan, ctx *CommandContext) {
 	upperExpr := fmt.Sprintf("round(_min_val + (_bucket + 1) * (_max_val - _min_val) / %d, 4)", buckets)
 
 	// Layer 1: window functions for val, min, max
-	plan.WindowLayers = append(plan.WindowLayers, QueryLayer{
+	plan.window.layers = append(plan.window.layers, QueryLayer{
 		Selects: []SelectExpr{
 			selectAs(valExpr, "_val"),
 			selectAs(fmt.Sprintf("min(%s) OVER ()", valExpr), "_min_val"),
@@ -1648,13 +1658,13 @@ func buildHistogramLayers(plan *QueryPlan, ctx *CommandContext) {
 	})
 
 	// Layer 2: bucketing with GROUP BY
-	plan.WindowLayers = append(plan.WindowLayers, QueryLayer{
+	plan.window.layers = append(plan.window.layers, QueryLayer{
 		Selects: []SelectExpr{
 			{Expr: lowerExpr, Alias: "_bin_lower"},
 			{Expr: upperExpr, Alias: "_bin_upper"},
 			{Expr: "count(*)", Alias: "_bin_count"},
 		},
-		Where:   []string{"_val IS NOT NULL"},
+		Where:   atoms("_val IS NOT NULL"),
 		GroupBy: []groupKey{{Expr: bucketExpr + " AS _bucket", Name: "_bucket"}, {Expr: "_min_val", Name: "_min_val"}, {Expr: "_max_val", Name: "_max_val"}},
 		OrderBy: []OrderTerm{asc("_bin_lower")},
 	})

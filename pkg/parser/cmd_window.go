@@ -86,7 +86,7 @@ func setWindowValue(arg Argument, ctx *CommandContext, name string) error {
 		return err
 	}
 	if measuresAggregateOutput(arg, ctx) {
-		ctx.Plan.ModifiedZScoreExpr = fmt.Sprintf("toFloat64(%s)", arg.FieldName())
+		ctx.Plan.window.zScoreExpr = fmt.Sprintf("toFloat64(%s)", arg.FieldName())
 		return nil
 	}
 	fieldRef, err := ResolveArg(arg, ctx.Registry)
@@ -95,7 +95,7 @@ func setWindowValue(arg Argument, ctx *CommandContext, name string) error {
 	}
 	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects,
 		SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s)", fieldRef), Alias: windowValueColumn})
-	ctx.Plan.ModifiedZScoreExpr = windowValueColumn
+	ctx.Plan.window.zScoreExpr = windowValueColumn
 	return nil
 }
 
@@ -128,7 +128,7 @@ func (h *madOutlierHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 	if err := validateNumeric(outlierThreshold); err != nil {
 		return fmt.Errorf("madOutlier(): invalid threshold: %w", err)
 	}
-	ctx.Plan.OutlierThreshold = outlierThreshold
+	ctx.Plan.window.outlierThreshold = outlierThreshold
 
 	if err := setWindowValue(arg, ctx, "madOutlier"); err != nil {
 		return err
@@ -177,24 +177,24 @@ func (h *histogramHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	switch {
 	case ctx.Plan.aggregationOutputs[field] != "":
 		// An aggregate's output column is already numeric.
-		ctx.Plan.HistogramValueExpr = fmt.Sprintf("toFloat64(%s)", field)
+		ctx.Plan.histogram.valueExpr = fmt.Sprintf("toFloat64(%s)", field)
 	case computedFields[field]:
 		// A computed column is projected by this stage under its own alias.
-		ctx.Plan.HistogramValueExpr = fmt.Sprintf("toFloat64OrNull(toString(%s))", field)
+		ctx.Plan.histogram.valueExpr = fmt.Sprintf("toFloat64OrNull(toString(%s))", field)
 	default:
 		// A raw log field has to be projected before the window layers can see it.
-		fieldRef := resolveFieldRef(field, ctx.Registry)
+		fieldRef := ctx.Registry.Resolve(field)
 		source.Layer.Selects = append(source.Layer.Selects,
 			SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s)", fieldRef), Alias: "_hist_val"})
 		ctx.Registry.SetResolveExpr("_hist_val", fmt.Sprintf("toFloat64OrNull(%s)", fieldRef))
-		ctx.Plan.HistogramValueExpr = "_hist_val"
+		ctx.Plan.histogram.valueExpr = "_hist_val"
 	}
 
-	ctx.Plan.HistogramBuckets = buckets
-	ctx.Plan.ChartReadsAllRows = true
-	ctx.Plan.ChartType = "histogram"
-	ctx.Plan.ChartConfig["field"] = field
-	ctx.Plan.ChartConfig["buckets"] = buckets
+	ctx.Plan.histogram.buckets = buckets
+	ctx.Plan.chart.readsAllRows = true
+	ctx.Plan.chart.kind = "histogram"
+	ctx.Plan.chart.config["field"] = field
+	ctx.Plan.chart.config["buckets"] = buckets
 	return nil
 }
 

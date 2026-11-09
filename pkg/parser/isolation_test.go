@@ -11,10 +11,9 @@ import (
 // top-level OR would leave its right disjunct outside those guards and read
 // every fractal at any time.
 //
-// Every condition producer brackets its own output, but that was an unwritten
-// invariant: adding expression filters, a new producer, re-opened the hole.
-// andJoin now enforces it at the join, and this test checks the property over
-// every shape that can produce an OR rather than trusting each producer.
+// Every predicate records its precedence where it is built, and andOf brackets
+// a disjunction. This test checks the property over every shape that can produce
+// an OR rather than trusting each producer.
 
 func isolationOpts() QueryOptions {
 	return QueryOptions{
@@ -52,6 +51,13 @@ var orShapes = []string{
 	`* | x := 1 | a="1" OR b="2"`,
 	`NOT a="1" OR b="2"`,
 	`* | !cidr(a,"10.0.0.0/8") OR b="1"`,
+	// A filter on a field assigned an OR reads the assignment as one operand.
+	`* | x := a = "1" or b = "2" | x = 1`,
+	`* | x := a = "1" or b = "2" | x != *`,
+	`* | x := a > 1 or b < 2 | x > 0`,
+	`* | x := a = "1" or b = "2" | in(x, values=["1"])`,
+	`* | x := a = "1" or b = "2" | y := c = "3" or d = "4" | x = y`,
+	`* | x := a > 1 or b < 2 | x = 1 | groupby(user)`,
 }
 
 func TestScopeGuardsCannotBeEscapedByOr(t *testing.T) {
@@ -107,15 +113,18 @@ func whereClauseOf(sql string) (string, bool) {
 	return clause, true
 }
 
-// andJoin is the enforcement point, so its own behaviour is pinned directly:
-// a producer that forgets to bracket must still not escape the guards.
-func TestAndJoinBracketsTopLevelOr(t *testing.T) {
-	guarded := andJoin([]string{"fractal_id = 'f1'", "a = '1' OR b = '2'"})
-	if hasTopLevelOR(guarded) {
-		t.Errorf("an unbracketed producer escaped the guard: %s", guarded)
+// andOf brackets a disjunction, so it cannot re-associate with the guards beside
+// it.
+func TestAndOfBracketsDisjunctions(t *testing.T) {
+	guarded := andOf(atom("fractal_id = 'f1'"), predicate{sql: "a = '1' OR b = '2'", prec: precOr}, orOf(atom("c = '3'"), atom("d = '4'")))
+	if want := "fractal_id = 'f1' AND (a = '1' OR b = '2') AND (c = '3' OR d = '4')"; guarded.sql != want {
+		t.Errorf("andOf = %s, want %s", guarded.sql, want)
 	}
-	if !strings.Contains(guarded, "fractal_id = 'f1' AND (a = '1' OR b = '2')") {
-		t.Errorf("unexpected shape: %s", guarded)
+	if got := orOf(andOf(atom("a"), atom("b")), atom("c")).sql; got != "a AND b OR c" {
+		t.Errorf("orOf = %s: AND binds tighter, so no brackets are needed", got)
+	}
+	if got := notOf(orOf(atom("a"), atom("b"))).sql; got != "NOT (a OR b)" {
+		t.Errorf("notOf = %s", got)
 	}
 }
 
@@ -162,4 +171,42 @@ func TestHasTopLevelOr(t *testing.T) {
 			t.Errorf("hasTopLevelOR(%q) = %v, want %v", c.clause, got, c.want)
 		}
 	}
+}
+
+// hasTopLevelOR reports whether the clause contains an OR outside every bracket
+// and string literal or backtick identifier. It is the oracle tests hold
+// generated predicates to; the translator itself knows each one's precedence.
+//
+// A quoted run is skipped whole, honouring backslash escapes: escapeString
+// doubles backslashes, so a Windows path ends 'C:\\' and a naive "is the
+// previous byte a backslash" test reads the closing quote as escaped.
+func hasTopLevelOR(clause string) bool {
+	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	depth := 0
+	for i := 0; i < len(clause); i++ {
+		c := clause[i]
+		if c == '\'' || c == '`' {
+			for i++; i < len(clause) && clause[i] != c; i++ {
+				if clause[i] == '\\' {
+					i++
+				}
+			}
+			if i >= len(clause) {
+				return true // unterminated: not the shape expected
+			}
+			continue
+		}
+		switch {
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth--; depth < 0 {
+				return true // unbalanced: not the shape expected
+			}
+		case depth == 0 && (c == 'O' || c == 'o') && i > 0 && space(clause[i-1]) &&
+			i+2 < len(clause) && (clause[i+1] == 'R' || clause[i+1] == 'r') && (space(clause[i+2]) || clause[i+2] == '('):
+			return true
+		}
+	}
+	return false
 }

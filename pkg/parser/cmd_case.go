@@ -66,7 +66,7 @@ type caseSel struct {
 // segEffect is the harvested effect of one branch segment after running it through
 // the real handler pipeline.
 type segEffect struct {
-	where  []string     // predicate conjuncts (filters, in/cidr/comment)
+	where  []predicate  // predicate conjuncts (filters, in/cidr/comment)
 	perRow []caseSel    // per-row transform / assignment outputs
 	aggs   []caseAggSel // aggregate outputs, scoped to the branch later
 }
@@ -103,7 +103,7 @@ func harvestSegment(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 	}
 	if w, err := conditionsPredicate(first, condReg.rowLevelClone(), opts); err != nil {
 		return eff, err
-	} else if w != "" {
+	} else if !w.empty() {
 		plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, w)
 	}
 
@@ -129,7 +129,7 @@ func harvestSegment(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 
 	if w, err := conditionsPredicate(later, reg.rowLevelClone(), opts); err != nil {
 		return eff, err
-	} else if w != "" {
+	} else if !w.empty() {
 		plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, w)
 	}
 
@@ -137,7 +137,7 @@ func harvestSegment(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 	// Backstop: reject any structural effect a handler may have produced (groupby,
 	// sort, limit, join, chain, window layers, extra stages).
 	if len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" || src.LimitBy != "" ||
-		plan.join != nil || plan.Chain != nil || len(plan.WindowLayers) > 0 ||
+		plan.join != nil || plan.Chain != nil || len(plan.window.layers) > 0 ||
 		plan.hasModelLookup() || len(plan.Stages) > 1 {
 		return eff, fmt.Errorf("structural command (groupby/sort/limit/join/chain/window) cannot be used inside a case branch")
 	}
@@ -191,7 +191,7 @@ func looksLikeCommand(text string) bool {
 // branchData holds one branch's compiled predicate and value/aggregate contributions.
 type branchData struct {
 	isDefault bool
-	preds     []string     // predicate conjuncts (AND-ed)
+	preds     []predicate  // predicate conjuncts (AND-ed)
 	vals      []caseSel    // per-row field contributions (literals + transform exprs)
 	aggs      []caseAggSel // aggregate contributions
 	bares     []string     // legacy bare-result values
@@ -240,32 +240,30 @@ func harvestBranches(block []CaseBranch, registry *FieldRegistry, opts QueryOpti
 }
 
 // defaultPredicate is the default branch's condition: NOT (p1 OR p2 OR ... OR pk).
-func defaultPredicate(branches []branchData) string {
-	var preds []string
+func defaultPredicate(branches []branchData) predicate {
+	var preds []predicate
 	for _, bd := range branches {
-		if p := andConjuncts(bd.preds); !bd.isDefault && p != "" {
-			preds = append(preds, "("+p+")")
+		if !bd.isDefault {
+			preds = append(preds, andOf(bd.preds...))
 		}
 	}
-	if len(preds) == 0 {
-		return ""
-	}
-	return "NOT (" + strings.Join(preds, " OR ") + ")"
+	return notOf(orOf(preds...))
 }
 
 // conditionalize scopes each branch's contributions to its condition: a field it
 // sets becomes a CASE arm, an aggregate its -If form.
-func conditionalize(branches []branchData, defaultPred string) compiledCase {
+func conditionalize(branches []branchData, defaultPred predicate) compiledCase {
 	var out compiledCase
 	arms := map[string][]string{}
 	defaults := map[string]string{}
 	var fields []string // in the order first set
 	aggIdx := 0
 	for _, bd := range branches {
-		pred := andConjuncts(bd.preds)
+		p := andOf(bd.preds...)
 		if bd.isDefault {
-			pred = defaultPred
+			p = defaultPred
 		}
+		pred := p.sql
 		for _, v := range bd.vals {
 			if _, seen := arms[v.field]; !seen && !slices.Contains(fields, v.field) {
 				fields = append(fields, v.field)
@@ -285,7 +283,7 @@ func conditionalize(branches []branchData, defaultPred string) compiledCase {
 				base = "agg"
 			}
 			cond := pred
-			if strings.TrimSpace(cond) == "" {
+			if cond == "" {
 				cond = "1"
 			}
 			out.aggregates = append(out.aggregates, caseAgg{alias: fmt.Sprintf("%s_%d", base, aggIdx), expr: a.agg.scoped(cond)})
@@ -313,25 +311,4 @@ func conditionalize(branches []branchData, defaultPred string) compiledCase {
 	}
 	out.assignments = append(out.assignments, defaultOnly...)
 	return out
-}
-
-// andConjuncts joins predicate conjuncts with AND, parenthesizing each.
-func andConjuncts(conjuncts []string) string {
-	var parts []string
-	for _, c := range conjuncts {
-		if strings.TrimSpace(c) != "" {
-			parts = append(parts, c)
-		}
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	if len(parts) == 1 {
-		return parts[0]
-	}
-	wrapped := make([]string, len(parts))
-	for i, p := range parts {
-		wrapped[i] = "(" + p + ")"
-	}
-	return strings.Join(wrapped, " AND ")
 }

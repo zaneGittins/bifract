@@ -18,12 +18,12 @@ const chainDoneColumn = "_chain_done"
 type tableHandler struct{}
 
 func (h *tableHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	ctx.Plan.HasTableCmd = true
+	ctx.Plan.table.present = true
 	return nil
 }
 
 func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	ctx.Plan.HasTableCmd = true
+	ctx.Plan.table.present = true
 	source := ctx.Plan.CurrentStage()
 
 	// When a prior command already aggregated (groupby, multi, stats, etc.),
@@ -52,7 +52,7 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 // With aggregates, an aggregate call (count, sum(bytes)) groups by the others;
 // without, every argument is a column name.
 func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, aggregates bool) error {
-	ctx.Plan.HasTableCmd = true
+	ctx.Plan.table.present = true
 	// modifiedzscore()/madoutlier() window layers wrap this projection and read
 	// their value column from it.
 	var windowValue []SelectExpr
@@ -66,8 +66,8 @@ func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, ag
 	var nonAggregateFields []string
 
 	for _, arg := range args {
-		ctx.Plan.TableHasExplicitColumns = true
-		ctx.Plan.TableColumns = append(ctx.Plan.TableColumns, strings.Trim(arg.Value(), "`"))
+		ctx.Plan.table.explicit = true
+		ctx.Plan.table.columns = append(ctx.Plan.table.columns, strings.Trim(arg.Value(), "`"))
 		field := arg.FieldName()
 
 		if aggregates {
@@ -105,7 +105,7 @@ func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, ag
 				nonAggregateFields = append(nonAggregateFields, field)
 				continue
 			}
-			ctx.Plan.TableJoinedFields = append(ctx.Plan.TableJoinedFields, field)
+			ctx.Plan.table.joinedFields = append(ctx.Plan.table.joinedFields, field)
 			continue
 		} else if entry := ctx.Registry.Get(field); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
 			safeAlias, err := ArgAlias(arg)
@@ -122,14 +122,14 @@ func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, ag
 			if err != nil {
 				return err
 			}
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: resolveFieldRef(field, ctx.Registry), Alias: safeAlias})
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: ctx.Registry.Resolve(field), Alias: safeAlias})
 			nonAggregateFields = append(nonAggregateFields, field)
 		} else {
 			safeAlias, err := ArgAlias(arg)
 			if err != nil {
 				return err
 			}
-			ref := groupableCast(ctx.Registry.fieldRef(field))
+			ref := ctx.Registry.fieldRef(field)
 			if field == "" {
 				if ref, err = ResolveArg(arg, ctx.Registry); err != nil {
 					return err
@@ -155,7 +155,7 @@ func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, ag
 			if field == "timestamp" {
 				source.Layer.groupBy("timestamp", field)
 			} else {
-				source.Layer.groupBy(resolveFieldRef(field, ctx.Registry), field)
+				source.Layer.groupBy(ctx.Registry.Resolve(field), field)
 			}
 		}
 	}
@@ -185,7 +185,7 @@ func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, p
 	ctx.Plan.PushStage()
 	ctx.Plan.IsAggregated = false
 	ctx.Plan.aggregationOutputs = make(map[string]string)
-	ctx.Plan.outerAggregations = nil
+	ctx.Plan.outer.selects, ctx.Plan.outer.reads = nil, nil
 	ctx.Registry.ScopeToOutputs(prevOutputs)
 
 	newStage := ctx.Plan.CurrentStage()
@@ -198,8 +198,8 @@ func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, p
 		newStage.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
 	}
 	for _, arg := range b.Flat("fields") {
-		ctx.Plan.TableHasExplicitColumns = true
-		ctx.Plan.TableColumns = append(ctx.Plan.TableColumns, strings.Trim(arg.Value(), "`"))
+		ctx.Plan.table.explicit = true
+		ctx.Plan.table.columns = append(ctx.Plan.table.columns, strings.Trim(arg.Value(), "`"))
 
 		// The bare count keyword maps to the prior stage's default _count output.
 		name := strings.Trim(arg.Value(), "`")
@@ -420,10 +420,10 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// (strict mode's key prefilter still narrows the scan itself).
 	if len(ctx.Plan.Stages) == 1 {
 		if stepsUseModel != "" {
-			ctx.Plan.lookup.PostJoinWhere = append(ctx.Plan.lookup.PostJoinWhere, postJoinFilter{At: ctx.CmdIndex, SQL: "(" + m.union + ")"})
+			ctx.Plan.lookup.PostJoinWhere = append(ctx.Plan.lookup.PostJoinWhere, postJoinFilter{At: ctx.CmdIndex, Pred: group(m.union)})
 		} else {
 			scan := &ctx.Plan.SourceStage().Layer
-			scan.Where = append(scan.Where, "("+m.union+")")
+			scan.Where = append(scan.Where, group(m.union))
 		}
 	}
 	meta := &ChainMeta{AnchorColumn: chainAnchorColumn, StepConditions: steps, StepFields: stepFields}
@@ -439,10 +439,10 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 // chainMatch is the SQL that matches a chain's steps within each entity.
 type chainMatch struct {
-	count  string // matched sequences
-	match  string // whether the entity matched
-	anchor string // the time of one event per step
-	union  string // any step's condition
+	count  string    // matched sequences
+	match  predicate // whether the entity matched
+	anchor string    // the time of one event per step
+	union  predicate // any step's condition
 }
 
 // newChainMatch builds the match over the compiled steps. Ordered mode sequences
@@ -454,12 +454,12 @@ func newChainMatch(steps []string, withinSeconds int, ordered bool) chainMatch {
 	// which misorders spawn-then-connect sequences. UInt64 millis; the aggregate
 	// rejects DateTime64 and Int64.
 	const tsExpr = "toUInt64(toUnixTimestamp64Milli(timestamp))"
-	parenSteps := make([]string, len(steps))
+	parenSteps := make([]predicate, len(steps))
 	for i, st := range steps {
 		// Each step is parenthesized so the union holds whatever shape it compiled to.
-		parenSteps[i] = "(" + st + ")"
+		parenSteps[i] = atom("(" + st + ")")
 	}
-	m := chainMatch{union: strings.Join(parenSteps, " OR ")}
+	m := chainMatch{union: orOf(parenSteps...)}
 	if !ordered {
 		counts := make([]string, len(steps))
 		presence := make([]string, len(steps))
@@ -470,7 +470,7 @@ func newChainMatch(steps []string, withinSeconds int, ordered bool) chainMatch {
 			anchors[i] = fmt.Sprintf("minIf(%s, %s)", tsExpr, cond)
 		}
 		m.count = fmt.Sprintf("least(%s)", strings.Join(counts, ", "))
-		m.match = strings.Join(presence, " AND ")
+		m.match = andOf(atoms(presence...)...)
 		m.anchor = fmt.Sprintf("[%s]", strings.Join(anchors, ", "))
 		return m
 	}
@@ -483,7 +483,7 @@ func newChainMatch(steps []string, withinSeconds int, ordered bool) chainMatch {
 		fmt.Fprintf(&pattern, "(?%d)", i+1)
 	}
 	args := fmt.Sprintf("('%s')(%s, %s)", pattern.String(), tsExpr, strings.Join(steps, ", "))
-	m.count, m.match, m.anchor = "sequenceCount"+args, "sequenceMatch"+args+" = 1", "sequenceMatchEvents"+args
+	m.count, m.match, m.anchor = "sequenceCount"+args, atom("sequenceMatch"+args+" = 1"), "sequenceMatchEvents"+args
 	return m
 }
 
@@ -493,16 +493,17 @@ func newChainMatch(steps []string, withinSeconds int, ordered bool) chainMatch {
 // belongs to.
 func groupChainEntities(ctx *CommandContext, chainFields []string, meta *ChainMeta) error {
 	source := ctx.Plan.CurrentStage()
-	ref := func(f string) string {
+	// ref is the entity's reference, and whether it is the stored field (a String).
+	ref := func(f string) (string, bool) {
 		switch e := ctx.Registry.Get(f); {
 		case f == "timestamp" || f == normLogColumn || f == "log_id" || f == "normalizer":
-			return f
+			return f, false
 		case e != nil && e.Kind == FieldKindJoined && ctx.Plan.lookup.AtScan:
 			// A model column is per-row after the scan-level join.
-			return f
+			return f, false
 		default:
 			// The value is grouped by, and a bare Dynamic subcolumn errors 44.
-			return groupableCast(jsonFieldRef(f))
+			return jsonFieldRef(f), true
 		}
 	}
 	if len(chainFields) == 1 {
@@ -511,17 +512,20 @@ func groupChainEntities(ctx *CommandContext, chainFields []string, meta *ChainMe
 		if err != nil {
 			return fmt.Errorf("chain(): invalid field name: %w", err)
 		}
-		fieldRef := ref(chainField)
+		fieldRef, text := ref(chainField)
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fieldRef, Alias: safeField})
 		source.Layer.groupBy(fieldRef, chainField)
 		ctx.Registry.SetResolveExpr(safeField, fieldRef)
+		if text {
+			ctx.Registry.setText(safeField)
+		}
 		ctx.Registry.AddGroupKeyAlias(chainField, safeField)
 		meta.EntityColumn, meta.EntityExpr = safeField, fieldRef
 		return nil
 	}
 	elems := make([]string, len(chainFields))
 	for i, f := range chainFields {
-		elems[i] = ref(f)
+		elems[i], _ = ref(f)
 		if e := ctx.Registry.Get(f); e != nil && e.Kind == FieldKindJoined && ctx.Plan.lookup.AtScan {
 			elems[i] = fmt.Sprintf("toString(%s)", f) // the identity array holds strings
 		}
@@ -555,7 +559,7 @@ func projectChainMatch(ctx *CommandContext, m chainMatch) {
 	if ctx.Opts.UseIngestTimestamp {
 		scopeTs = "ingest_timestamp"
 	}
-	doneExpr := fmt.Sprintf("maxIf(toUnixTimestamp64Milli(%s), %s)", scopeTs, m.union)
+	doneExpr := fmt.Sprintf("maxIf(toUnixTimestamp64Milli(%s), %s)", scopeTs, m.union.sql)
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: doneExpr, Alias: chainDoneColumn})
 	ctx.Registry.Register(chainDoneColumn, FieldKindAggregate, chainDoneColumn, ctx.CmdIndex)
 	ctx.Registry.SetResolveExpr(chainDoneColumn, doneExpr)
@@ -595,10 +599,10 @@ func (h *heatmapHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("heatmap() requires x= and y= parameters")
 	}
 
-	ctx.Plan.ChartType = "heatmap"
-	ctx.Plan.ChartConfig["xField"] = xField
-	ctx.Plan.ChartConfig["yField"] = yField
-	ctx.Plan.ChartConfig["limit"] = limit
+	ctx.Plan.chart.kind = "heatmap"
+	ctx.Plan.chart.config["xField"] = xField
+	ctx.Plan.chart.config["yField"] = yField
+	ctx.Plan.chart.config["limit"] = limit
 
 	source := ctx.Plan.CurrentStage()
 

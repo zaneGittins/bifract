@@ -75,7 +75,7 @@ func (p *Parser) substituteArg(a *Argument, cmdName string, whole bool) error {
 				a.Kind, a.Expr, a.List, a.Agg = ArgLiteral, nil, nil, nil
 				a.Text, a.Quoted = b.Expr.Value, b.Expr.Kind == ExprString
 				if b.Regex {
-					a.Kind, a.Quoted = ArgRegex, false
+					a.Kind, a.Quoted, a.Written = ArgRegex, false, b.Written
 				}
 				return nil
 			}
