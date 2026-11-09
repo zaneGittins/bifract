@@ -862,7 +862,7 @@ func lenientDateTime(ref string, text bool) string {
 // also break the generic row scanner, which reads String columns into a *string.
 func timeFormatExpr(field Argument, chFormat, timezone string, registry *FieldRegistry) (string, error) {
 	if field.FieldName() == "timestamp" {
-		return fmt.Sprintf("formatDateTime(timestamp, '%s', '%s')", escapeString(chFormat), escapeString(timezone)), nil
+		return fmt.Sprintf("formatDateTime(%s, '%s', '%s')", registry.Column("timestamp").sql, escapeString(chFormat), escapeString(timezone)), nil
 	}
 	ref, err := ResolveArg(field, registry)
 	if err != nil {
@@ -1148,7 +1148,7 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, p)
 			continue
 		}
-		if err := getCommandHandler(cmd.Name).Execute(cmd, ctx); err != nil {
+		if _, err := runTracked(ctx, cmd, ctx.Registry.Clone()); err != nil {
 			return nil, nil, err
 		}
 	}

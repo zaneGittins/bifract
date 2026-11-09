@@ -58,7 +58,7 @@ func (h *pgrHasAncestorHandler) predicate(cmd CommandNode, ctx *CommandContext) 
 	if err != nil {
 		return predicate{}, err
 	}
-	return pgrFilterSQL(cmd, ctx, jsonFieldRef(pgrFilterField), func() []string { return pgrAncestorSet(ctx, walkMatch, ancMatch, depth) }), nil
+	return pgrFilterSQL(cmd, ctx, ctx.Registry.jsonRef(pgrFilterField).sql, func() []string { return pgrAncestorSet(ctx, walkMatch, ancMatch, depth) }), nil
 }
 
 func (h *pgrHasAncestorHandler) lookups(cmd CommandNode) int { return pgrWalkLookups(cmd) }
@@ -205,7 +205,7 @@ func (h *pgrHasDescendantHandler) predicate(cmd CommandNode, ctx *CommandContext
 	if err != nil {
 		return predicate{}, err
 	}
-	return pgrFilterSQL(cmd, ctx, procKeyExpr(jsonFieldRef(pgrFilterField)), func() []string { return pgrDescendantSet(ctx, match, depth) }), nil
+	return pgrFilterSQL(cmd, ctx, procKeyExpr(ctx.Registry.jsonRef(pgrFilterField).sql), func() []string { return pgrDescendantSet(ctx, match, depth) }), nil
 }
 
 // pgrDescendantSet selects the keys of candidates with a matching descendant within depth levels.
@@ -264,7 +264,7 @@ func (h *pgrHasNetworkHandler) predicate(cmd CommandNode, ctx *CommandContext) (
 			return predicate{}, fmt.Errorf("pgrHasNetwork() external= must be true or false")
 		}
 	}
-	return pgrFilterSQL(cmd, ctx, jsonFieldRef(pgrFilterField), func() []string {
+	return pgrFilterSQL(cmd, ctx, ctx.Registry.jsonRef(pgrFilterField).sql, func() []string {
 		in := fmt.Sprintf("proc_key %s (%s)", ctx.Opts.subqueryIn(false), pgrCandidates(ctx))
 		return []string{fmt.Sprintf("SELECT process_guid FROM %s WHERE %s", procEdgesTable(ctx.Opts), pgrScope(ctx, append(slices.Clone(conds), in)...))}
 	}), nil
@@ -357,10 +357,11 @@ func pgrFilterSQL(cmd CommandNode, ctx *CommandContext, row string, sets func() 
 		join = andOf
 	}
 	f := &candidateFilter{}
+	ctx.Registry.Foreign("provenance")
 	f.build = func() predicate {
 		var tests []predicate
 		for _, set := range sets() {
-			tests = append(tests, atom(fmt.Sprintf("%s %s (%s)", row, op, set)))
+			tests = append(tests, foreignAtom(fmt.Sprintf("%s %s (%s)", row, op, set)))
 		}
 		p := group(join(tests...))
 		p.candidates = f
@@ -383,9 +384,9 @@ func pgrScope(ctx *CommandContext, conds ...string) string {
 // the rows a filter tests, narrowed by the plan's other scan filters once they are
 // known (see narrowPgrCandidates).
 func pgrCandidates(ctx *CommandContext) string {
-	conds := atoms(windowConditions(ctx.Opts)...)
+	conds := scanAtoms(windowConditions(ctx.Opts)...)
 	if fc := fractalScopeCond(ctx.Opts, ""); fc != "" {
-		conds = append(conds, atom(fc))
+		conds = append(conds, scanAtom(fc))
 	}
 	conds = append(conds, ctx.Plan.pgr.narrowing...)
 	return fmt.Sprintf("SELECT %s FROM %s%s", procKeyExpr(jsonFieldRef(pgrFilterField)), ctx.Opts.EffectiveTableName(), whereClause(conds))
@@ -402,7 +403,7 @@ func narrowPgrCandidates(ctx *CommandContext) {
 	}
 	src := &plan.SourceStage().Layer
 	for _, w := range src.Where[plan.baseWhereLen:] {
-		if readsOnlyScanColumns(w.sql) {
+		if w.deps.scan {
 			plan.pgr.narrowing = append(plan.pgr.narrowing, w)
 		}
 	}

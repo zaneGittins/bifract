@@ -5,7 +5,8 @@ import "fmt"
 // condOperand is one side of a comparison: the SQL reference plus the traits
 // that decide how it has to be coerced before the two sides can be compared.
 type condOperand struct {
-	ref string
+	ref  string
+	form refForm
 	// isJSON marks a raw JSON sub-column, which reads as NULL when the field is
 	// absent from the event.
 	isJSON bool
@@ -62,48 +63,50 @@ func lhsOperand(field, ref string, isJSON, computed bool) condOperand {
 // same rules the left-hand side uses: a pipeline-produced column is referenced
 // by its alias or inlined expression, anything else is a log field.
 func resolveValueField(name string, registry *FieldRegistry) condOperand {
-	if registry != nil {
-		// A grouping key is addressable after the aggregation only by its alias; the
-		// sub-column it resolves from is not in the GROUP BY (ClickHouse code 215).
-		if alias, ok := registry.GroupKeyAlias(name); ok {
-			return condOperand{ref: alias}
-		}
-		if entry := registry.Get(name); entry != nil {
-			switch entry.Kind {
-			case FieldKindPerRow, FieldKindAssignment:
-				return condOperand{ref: registry.Resolve(name), computed: true}
-			case FieldKindBase:
-				// NewFieldRegistry pre-registers timestamp, log_id and friends as
-				// Base, so this branch is what a base column actually takes.
-				return condOperand{ref: entry.Expr, dateTime: isDateTimeColumn(name)}
-			case FieldKindJSON:
-				// Falls through to the sub-column reference below.
-			default:
-				return condOperand{ref: entry.Name, computed: true}
-			}
+	at := func(r sqlRef) condOperand { return condOperand{ref: r.sql, form: r.form} }
+	// A grouping key is addressable after the aggregation only by its alias; the
+	// sub-column it resolves from is not in the GROUP BY (ClickHouse code 215).
+	if alias, ok := registry.GroupKeyAlias(name); ok {
+		return at(registry.Column(alias))
+	}
+	if entry := registry.Get(name); entry != nil {
+		switch entry.Kind {
+		case FieldKindPerRow, FieldKindAssignment:
+			o := at(registry.Ref(name))
+			o.computed = true
+			return o
+		case FieldKindBase:
+			// NewFieldRegistry pre-registers timestamp, log_id and friends as
+			// Base, so this branch is what a base column actually takes.
+			o := at(registry.Column(name))
+			o.dateTime = isDateTimeColumn(name)
+			return o
+		case FieldKindJSON:
+			// Falls through to the sub-column reference below.
+		default:
+			o := at(registry.Column(entry.Name))
+			o.computed = true
+			return o
 		}
 	}
-
 	switch name {
-	case normLogColumn:
-		return condOperand{ref: contentColMode(sourceModeOf(registry))}
-	case "timestamp", "ingest_timestamp":
-		return condOperand{ref: name, dateTime: true}
-	case "log_id":
-		return condOperand{ref: "log_id"}
+	case normLogColumn, "timestamp", "ingest_timestamp", "log_id":
+		o := at(registry.Column(name))
+		o.dateTime = isDateTimeColumn(name)
+		return o
 	case "normalizer", "_normalizer":
-		return condOperand{ref: "normalizer"}
+		return at(registry.Column("normalizer"))
 	}
 	// Bare aggregate names resolve to their numeric aliases, matching the
 	// left-hand side; without this they would read as a JSON field named "count".
 	if registry.bareAggregate(name) {
-		return condOperand{ref: "_" + name, computed: true}
+		o := at(registry.Column("_" + name))
+		o.computed = true
+		return o
 	}
-
-	if registry != nil {
-		return condOperand{ref: registry.fieldRef(name), isJSON: true}
-	}
-	return condOperand{ref: jsonFieldRef(name), isJSON: true}
+	o := at(registry.Ref(name))
+	o.isJSON = true
+	return o
 }
 
 // buildFieldComparisonSQL renders `lhs op field(rhs)`. Equality compares the two

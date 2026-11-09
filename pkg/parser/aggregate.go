@@ -119,8 +119,9 @@ func (c corrAgg) render(cond string) string {
 	return fmt.Sprintf("ifNotFinite(round(arrayReduce('rankCorr', arrayMap(t -> assumeNotNull(t.1), %[1]s), arrayMap(t -> assumeNotNull(t.2), %[1]s)), 4) + 0, NULL)", sample)
 }
 
-// operandAggregate is the aggregate a one-operand BQL aggregate computes over v.
-func operandAggregate(name, v string) (aggregate, bool) {
+// operandAggregate is the aggregate a one-operand BQL aggregate computes over v,
+// reading through reg what else it reads.
+func operandAggregate(reg *FieldRegistry, name, v string) (aggregate, bool) {
 	switch name {
 	case "sum", "avg", "max", "min", "median":
 		return aggCall{fn: name, args: v}, true
@@ -137,9 +138,9 @@ func operandAggregate(name, v string) (aggregate, bool) {
 	case "collect":
 		return aggCall{fn: "groupArray", args: v}, true
 	case "selectfirst":
-		return aggCall{fn: "argMin", args: v + ", timestamp"}, true
+		return aggCall{fn: "argMin", args: v + ", " + reg.Column("timestamp").sql}, true
 	case "selectlast":
-		return aggCall{fn: "argMax", args: v + ", timestamp"}, true
+		return aggCall{fn: "argMax", args: v + ", " + reg.Column("timestamp").sql}, true
 	}
 	return nil, false
 }

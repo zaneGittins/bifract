@@ -31,9 +31,9 @@ func (h *inHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate, 
 		// The expression, not the alias: an alias names the field's final value.
 		fieldRef = ctx.Registry.Resolve(field)
 	case field == "timestamp" || field == normLogColumn || field == "log_id" || field == "normalizer":
-		fieldRef = field
+		fieldRef = ctx.Registry.Column(field).sql
 	default:
-		fieldRef = jsonFieldRef(field)
+		fieldRef = ctx.Registry.jsonRef(field).sql
 	}
 
 	if set, ok := b.First("values"); ok && set.Kind == ArgBinding {
@@ -150,7 +150,7 @@ func (h *commentHandler) predicate(cmd CommandNode, ctx *CommandContext) (predic
 	for i, id := range ctx.Opts.CommentLogIDs {
 		quoted[i] = fmt.Sprintf("'%s'", escapeString(id))
 	}
-	return atom(fmt.Sprintf("log_id IN (%s)", strings.Join(quoted, ", "))), nil
+	return atom(fmt.Sprintf("%s IN (%s)", ctx.Registry.Column("log_id").sql, strings.Join(quoted, ", "))), nil
 }
 
 func init() {

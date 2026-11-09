@@ -15,6 +15,10 @@ type SelectExpr struct {
 	// a window function over the SELECT's rows.
 	agg    aggregate
 	window bool
+	// cols are the columns an aggregate reads, recorded where it was built;
+	// colsKnown is set once they are.
+	cols      []string
+	colsKnown bool
 }
 
 // selectAs is the column computing expr under alias.
@@ -81,10 +85,20 @@ func groupExprs(keys []groupKey) []string {
 type OrderTerm struct {
 	Expr string
 	Desc bool
+	// form and deps are how Expr names its value and what it reads, recorded where
+	// the term was built.
+	form refForm
+	deps deps
 }
 
-func asc(expr string) OrderTerm  { return OrderTerm{Expr: expr} }
-func desc(expr string) OrderTerm { return OrderTerm{Expr: expr, Desc: true} }
+// asc and desc order by a column the translator itself names.
+func asc(col string) OrderTerm  { return orderBy(columnRef(col), false) }
+func desc(col string) OrderTerm { return orderBy(columnRef(col), true) }
+
+// orderBy orders by a reference.
+func orderBy(r sqlRef, desc bool) OrderTerm {
+	return OrderTerm{Expr: r.sql, Desc: desc, form: r.form, deps: r.deps}
+}
 
 func (o OrderTerm) String() string {
 	if o.Desc {
@@ -110,6 +124,8 @@ type QueryLayer struct {
 	Having  []predicate
 	OrderBy []OrderTerm
 	LimitBy string
+	// limitByDeps and scanLimitByDeps are what the LIMIT BY keys read.
+	limitByDeps, scanLimitByDeps deps
 	// ScanLimitBy is a dedup that must collapse rows BEFORE this layer reads
 	// them. ClickHouse applies LIMIT BY after GROUP BY, so a dedup written into
 	// an aggregating SELECT would both fail (the key is not an output column)
@@ -171,8 +187,10 @@ type RowCap struct {
 	ScanLimitBy string
 	Limit       string
 	After       []predicate // filters written after this cap and before the next
-	// scanKeys are the ScanLimitBy keys.
-	scanKeys []string
+	// scanKeys are the ScanLimitBy keys. limitByDeps and scanDeps are what the
+	// LimitBy and ScanLimitBy keys read.
+	scanKeys              []string
+	limitByDeps, scanDeps deps
 }
 
 // combinesRows reports whether the layer's SELECT reads its rows together: it
@@ -205,7 +223,7 @@ func (l *QueryLayer) foldLastCap(readThrough bool) {
 		l.Limit != "" || l.LimitBy != "" || l.ScanLimitBy != "" {
 		return
 	}
-	l.OrderBy, l.LimitBy, l.Limit = last.OrderBy, last.LimitBy, last.Limit
+	l.OrderBy, l.LimitBy, l.limitByDeps, l.Limit = last.OrderBy, last.LimitBy, last.limitByDeps, last.Limit
 	l.Caps = l.Caps[:n-1]
 }
 
@@ -886,7 +904,7 @@ func (p *QueryPlan) joinModelAfterCaps(scan *scanSource, source *QueryStage, opt
 	// picked (timestamp, log_id) may fail them. The strict prefilter is left to the
 	// INNER JOIN, which applies exactly the same key set.
 	pf := p.modelPrefilter()
-	joinedWhere := append(slices.DeleteFunc(slices.Clone(source.Layer.Where), func(w predicate) bool { return w == pf }), atom(picked))
+	joinedWhere := append(slices.DeleteFunc(slices.Clone(source.Layer.Where), func(w predicate) bool { return w == pf }), foreignAtom(picked))
 	// The join hashes the few picked rows and streams the model past them, rather
 	// than hashing every scored key. They carry their filters with them, so a
 	// GLOBAL join on a cluster ships only those rows.
@@ -1116,7 +1134,7 @@ func (p *QueryPlan) joinPrefilter(source *QueryStage, opts QueryOptions) predica
 	if keyExpr == "" {
 		return predicate{}
 	}
-	return atom(fmt.Sprintf("%s %s (SELECT %s FROM (%s))", keyExpr, opts.subqueryIn(false), p.join.Key, p.join.SubSQL))
+	return foreignAtom(fmt.Sprintf("%s %s (SELECT %s FROM (%s))", keyExpr, opts.subqueryIn(false), p.join.Key, p.join.SubSQL))
 }
 
 // outerKeyScanExpr returns the per-row expression the outer SELECT names the join
@@ -1257,7 +1275,7 @@ func (p *QueryPlan) modelPrefilter() predicate {
 	if !p.hasModelLookup() || !p.lookup.Strict || len(p.lookup.KeyExprs) == 0 {
 		return predicate{}
 	}
-	return atom(p.lookup.keys.membership(p.lookup.KeyExprs, p.lookup.Where))
+	return foreignAtom(p.lookup.keys.membership(p.lookup.KeyExprs, p.lookup.Where))
 }
 
 // readsThroughCap reports whether the scan-level model join, or a filter on its
@@ -1327,7 +1345,18 @@ func capReadsOnlyScan(c RowCap) bool {
 	if c.LimitBy != "" && c.ScanLimitBy == "" {
 		return false
 	}
-	return orderingReadsOnlyScan(c.OrderBy, c.ScanLimitBy)
+	return orderingReadsOnlyScan(c.OrderBy, c.ScanLimitBy, c.scanDeps)
+}
+
+// orderingReadsOnlyScan reports whether ORDER BY terms, and LIMIT BY keys reading
+// keys, can be evaluated over the logs table's own columns.
+func orderingReadsOnlyScan(orderBy []OrderTerm, limitBy string, keys deps) bool {
+	for _, o := range orderBy {
+		if !o.deps.scan {
+			return false
+		}
+	}
+	return limitBy == "" || keys.scan
 }
 
 // selectsRowsBelowModelJoin reports whether the source SELECT's own ORDER BY, LIMIT
@@ -1347,7 +1376,7 @@ func (p *QueryPlan) selectsRowsBelowModelJoin(source *QueryStage, opts QueryOpti
 	if len(p.window.layers) > 0 || p.hasDeferredWrap() || p.window.zScoreExpr != "" || p.histogram.buckets > 0 || len(p.chart.layers) > 0 {
 		return false
 	}
-	return orderingReadsOnlyScan(l.OrderBy, l.LimitBy)
+	return orderingReadsOnlyScan(l.OrderBy, l.LimitBy, l.limitByDeps)
 }
 
 // joinModelAtScan appends the scan-level model join to a row source.

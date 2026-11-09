@@ -65,7 +65,7 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 	registry := ctx.registry
 	if ctx.deferredFields[name] {
 		// Produced by the deferred layer: already a bare column there.
-		return name, TypeAny, nil
+		return registry.Column(name).sql, TypeAny, nil
 	}
 	if entry := registry.Get(name); entry != nil {
 		// A folded-in expression keeps what the registry knows of its SQL type, and
@@ -77,39 +77,31 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 		case entry.Numeric:
 			typ = TypeNumberField
 		}
-		fold := func(expr string) string {
-			if expr = ctx.export(expr, name); entry.operand {
-				return expr
+		ref := func() sqlRef { return registry.through(ctx.scope, name, func() sqlRef { return registry.Ref(name) }) }
+		fold := func(r sqlRef) string {
+			if entry.operand {
+				return r.sql
 			}
-			return "(" + expr + ")"
+			return "(" + r.sql + ")"
 		}
 		if entry.Inline {
 			// An inline field is a pre-aggregation assignment folded in at each
 			// reference. Its expression is already numeric.
-			return fold(registry.Resolve(name)), TypeNumber, nil
+			return fold(ref()), TypeNumber, nil
 		}
 		// A row-level value is folded in as it is here, so a later reassignment
 		// of the name cannot change it.
 		if entry.ResolveAs != "" && registry.IsRowLevel(name) {
-			if expr := registry.Resolve(name); expr != name {
-				return fold(expr), typ, nil
+			if r := ref(); r.sql != name {
+				return fold(r), typ, nil
 			}
 		}
 		// The bare alias, not Resolve(): an aggregate output registers with
 		// Expr == its own name, which Resolve() reads as a placeholder and turns
 		// back into a fields.`name` JSON path that does not exist in this stage.
-		return name, TypeAny, nil
+		return registry.Column(name).sql, TypeAny, nil
 	}
-	return ctx.export(registry.fieldRef(name), name), TypeText, nil
-}
-
-// export routes a source-scope reference through the deferred scope when the
-// expression is being built above the scan, and is a no-op otherwise.
-func (c exprCtx) export(sql, label string) string {
-	if c.scope == nil {
-		return sql
-	}
-	return c.scope.ref(sql, label)
+	return registry.through(ctx.scope, name, func() sqlRef { return registry.Ref(name) }).sql, TypeText, nil
 }
 
 func compileUnary(e *ExprNode, ctx exprCtx) (string, ExprType, error) {

@@ -179,11 +179,12 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if xName != "" && xName == yName {
 		return fmt.Errorf("scatter(): x= and y= must be different fields")
 	}
-	xCol, xScan, err := chartColumn(xArg, ctx, "scatter", "_sc_x_src")
+	var xCol, xScan, yCol, yScan string
+	xReads, err := ctx.Registry.track(func() (err error) { xCol, xScan, err = chartColumn(xArg, ctx, "scatter", "_sc_x_src"); return })
 	if err != nil {
 		return err
 	}
-	yCol, yScan, err := chartColumn(yArg, ctx, "scatter", "_sc_y_src")
+	yReads, err := ctx.Registry.track(func() (err error) { yCol, yScan, err = chartColumn(yArg, ctx, "scatter", "_sc_y_src"); return })
 	if err != nil {
 		return err
 	}
@@ -233,9 +234,11 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Per-event points: plot the newest events that carry both values, so the
 	// limit is not spent on rows the chart would drop.
 	source := ctx.Plan.CurrentStage()
-	for _, e := range []string{xScan, yScan} {
+	for i, e := range []string{xScan, yScan} {
 		if e != "" {
-			source.Layer.Where = append(source.Layer.Where, atom(fmt.Sprintf("isFinite(toFloat64OrNull(%s))", e)))
+			p := atom(fmt.Sprintf("isFinite(toFloat64OrNull(%s))", e))
+			p.deps = []reads{xReads, yReads}[i].deps()
+			source.Layer.Where = append(source.Layer.Where, p)
 		}
 	}
 	if source.IsSource && len(source.Layer.GroupBy) == 0 && !ctx.Plan.IsAggregated && !ctx.Plan.HasGroupBy {

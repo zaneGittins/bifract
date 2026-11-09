@@ -88,7 +88,7 @@ func (h *tlshHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate
 	if cmd.Negate {
 		op = "NOT IN"
 	}
-	return atom(fmt.Sprintf("%s %s (%s)", jsonFieldRef(p.Field), op, strings.Join(digests, ", "))), nil
+	return atom(fmt.Sprintf("%s %s (%s)", ctx.Registry.jsonRef(p.Field).sql, op, strings.Join(digests, ", "))), nil
 }
 
 // renderTLSHLiterals turns resolved matches into the quoted SQL literals the IN
@@ -172,7 +172,7 @@ func projectTLSHColumns(pipeline *PipelineNode, ctx *CommandContext) error {
 		projectTLSHConstants(ctx, source)
 		return nil
 	}
-	projectTLSHTransforms(ctx, source, jsonFieldRef(p.Field), digests, distances, needles)
+	projectTLSHTransforms(ctx, source, ctx.Registry.jsonRef(p.Field).sql, digests, distances, needles)
 	return nil
 }
 

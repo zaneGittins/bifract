@@ -24,37 +24,36 @@ func (h *sortHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	descending := strings.EqualFold(b.Str("order", ""), "desc")
 
-	fieldRef, err := sortFieldRef(arg, ctx)
+	ref, err := sortFieldRef(arg, ctx)
 	if err != nil {
 		return fmt.Errorf("sort(): %w", err)
 	}
 	source := ctx.Plan.CurrentStage()
-	source.Layer.OrderBy = append(source.Layer.OrderBy, OrderTerm{Expr: fieldRef, Desc: descending})
+	source.Layer.OrderBy = append(source.Layer.OrderBy, orderBy(ref, descending))
 	return nil
 }
 
 // sortFieldRef resolves the sort key. A computed column is ordered by its alias;
 // a raw JSON subcolumn is cast to ::String so a Dynamic-stored path is orderable
 // (a bare Dynamic ref errors 44).
-func sortFieldRef(arg Argument, ctx *CommandContext) (string, error) {
+func sortFieldRef(arg Argument, ctx *CommandContext) (sqlRef, error) {
+	reg := ctx.Registry
 	if arg.IsFieldName() {
 		name := arg.Expr.Value
-		if ctx.Registry.IsComputed(name) || ctx.Registry.Has(name) {
-			return name, nil
+		if reg.IsComputed(name) || reg.Has(name) {
+			return reg.Column(name), nil
 		}
 		// count, sum and avg name the aggregate's output where one is, as they do in
 		// a filter.
-		if ctx.Registry.bareAggregate(name) && ctx.Registry.Has("_"+name) {
-			return "_" + name, nil
+		if reg.bareAggregate(name) && reg.Has("_"+name) {
+			return reg.Column("_" + name), nil
 		}
 		switch name {
-		case "timestamp", "log_id", "normalizer":
-			return name, nil
-		case normLogColumn:
-			return contentColMode(ctx.Opts.SourceMode), nil
+		case "timestamp", "log_id", "normalizer", normLogColumn:
+			return reg.Column(name), nil
 		}
 	}
-	return ResolveArg(arg, ctx.Registry)
+	return resolveArgRef(arg, reg)
 }
 
 // limitHandler handles limit(n)
@@ -134,8 +133,8 @@ func capRows(ctx *CommandContext) {
 		return
 	}
 	l := &ctx.Plan.SourceStage().Layer
-	l.Caps = append(l.Caps, RowCap{At: ctx.CmdIndex, OrderBy: l.OrderBy, LimitBy: l.LimitBy, ScanLimitBy: l.LimitBy, Limit: l.Limit})
-	l.OrderBy, l.LimitBy, l.Limit = nil, "", ""
+	l.Caps = append(l.Caps, RowCap{At: ctx.CmdIndex, OrderBy: l.OrderBy, LimitBy: l.LimitBy, ScanLimitBy: l.LimitBy, limitByDeps: l.limitByDeps, scanDeps: l.limitByDeps, Limit: l.Limit})
+	l.OrderBy, l.LimitBy, l.limitByDeps, l.Limit = nil, "", deps{}, ""
 }
 
 // onScan reports whether the running command reads the raw scan: no stage or
@@ -197,7 +196,11 @@ func scanExprFor(field string, ctx *CommandContext, stage *QueryStage) string {
 	if entry := ctx.Registry.Get(field); entry != nil && entry.ResolveAs != "" {
 		return ctx.Registry.Resolve(field)
 	}
-	return stageSelectExpr(stage, field)
+	expr := stageSelectExpr(stage, field)
+	if expr != "" {
+		ctx.Registry.computed(field, expr)
+	}
+	return expr
 }
 
 // dedupHandler handles dedup(field1, field2, ...) using LIMIT 1 BY. On the scan
@@ -231,6 +234,8 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	outputs := stageOutputs(stage)
 
 	var keys, scanKeys []string
+	keyDeps, scanDeps := noDeps, noDeps
+	both := func(d deps) { keyDeps, scanDeps = keyDeps.and(d), scanDeps.and(d) }
 	scannable := true
 	for _, arg := range args {
 		field := arg.Value()
@@ -240,27 +245,35 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if postAggregation {
 				return fmt.Errorf("dedup(%s): %q is computed from columns the preceding aggregation does not produce; dedup on a grouped field or move dedup() before the aggregation", argList(args), field)
 			}
-			sql, err := ResolveArg(arg, ctx.Registry)
+			r, err := resolveArgRef(arg, ctx.Registry)
 			if err != nil {
 				return fmt.Errorf("dedup(): %w", err)
 			}
-			keys, scanKeys = append(keys, sql), append(scanKeys, sql)
+			keys, scanKeys = append(keys, r.sql), append(scanKeys, r.sql)
+			both(r.deps)
 			continue
 		}
 		switch {
 		case postAggregation && outputs[field]:
-			keys = append(keys, field)
+			col := ctx.Registry.Column(field)
+			keys = append(keys, col.sql)
+			keyDeps = keyDeps.and(col.deps)
 		case postAggregation:
 			return fmt.Errorf("dedup(%s): %q is not produced by the preceding aggregation; dedup on a grouped field or move dedup() before the aggregation", argList(args), field)
 		case !ctx.Registry.IsComputed(field):
 			// LIMIT BY is a grouping context: cast raw JSON subcolumns to
 			// ::String so Dynamic-stored paths don't trigger error 44.
-			ref := ctx.Registry.Resolve(field)
-			keys, scanKeys = append(keys, ref), append(scanKeys, ref)
+			r := ctx.Registry.Ref(field)
+			keys, scanKeys = append(keys, r.sql), append(scanKeys, r.sql)
+			both(r.deps)
 		default:
 			// On the SELECT that computes the column its alias resolves.
-			keys = append(keys, field)
-			expr := scanExprFor(field, ctx, stage)
+			col := ctx.Registry.Column(field)
+			keys = append(keys, col.sql)
+			keyDeps = keyDeps.and(col.deps)
+			var expr string
+			sd, _ := ctx.Registry.track(func() error { expr = scanExprFor(field, ctx, stage); return nil })
+			scanDeps = scanDeps.and(sd.deps())
 			if expr == "" {
 				if aggregationAhead {
 					return fmt.Errorf("dedup(%s): %q is computed after the scan and cannot be deduplicated before an aggregation; dedup on a log field instead", argList(args), field)
@@ -275,19 +288,19 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	scanLimitBy := fmt.Sprintf("LIMIT 1 BY %s", strings.Join(scanKeys, ", "))
 	switch {
 	case postAggregation:
-		stage.Layer.LimitBy = limitBy
+		stage.Layer.LimitBy, stage.Layer.limitByDeps = limitBy, keyDeps
 	case onScan(ctx):
-		stage.Layer.LimitBy = limitBy
+		stage.Layer.LimitBy, stage.Layer.limitByDeps = limitBy, keyDeps
 		capRows(ctx)
 		c := &stage.Layer.Caps[len(stage.Layer.Caps)-1]
 		c.ScanLimitBy = ""
 		if scannable {
-			c.ScanLimitBy, c.scanKeys = scanLimitBy, scanKeys
+			c.ScanLimitBy, c.scanKeys, c.scanDeps = scanLimitBy, scanKeys, scanDeps
 		}
 	case aggregationAhead:
-		stage.Layer.ScanLimitBy = scanLimitBy
+		stage.Layer.ScanLimitBy, stage.Layer.scanLimitByDeps = scanLimitBy, scanDeps
 	default:
-		stage.Layer.ScanLimitBy = limitBy
+		stage.Layer.ScanLimitBy, stage.Layer.scanLimitByDeps = limitBy, keyDeps
 	}
 	return nil
 }

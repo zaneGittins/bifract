@@ -23,6 +23,8 @@ type predicate struct {
 	// candidates is set on a provenance filter that reads its plan's candidate
 	// set, so narrowing that set can rebuild it (see narrowPgrCandidates).
 	candidates *candidateFilter
+	// deps is what the predicate reads, recorded where it was built.
+	deps deps
 }
 
 // atomHook, when set, sees every predicate claimed as one operand. Tests use it
@@ -35,6 +37,31 @@ func atom(sql string) predicate {
 		atomHook(sql)
 	}
 	return predicate{sql: sql}
+}
+
+// scanAtom is a predicate the translator writes over the logs table's own columns
+// (its time range, scope and ids), which the scan itself can evaluate.
+func scanAtom(sql string) predicate {
+	p := atom(sql)
+	p.deps = deps{scan: true}
+	return p
+}
+
+// foreignAtom is a predicate testing membership in another table's rows, through
+// a subquery.
+func foreignAtom(sql string) predicate {
+	p := atom(sql)
+	p.deps = deps{foreign: true}
+	return p
+}
+
+// scanAtoms is each SQL text as a scanAtom.
+func scanAtoms(sqls ...string) []predicate {
+	out := make([]predicate, len(sqls))
+	for i, s := range sqls {
+		out[i] = scanAtom(s)
+	}
+	return out
 }
 
 // atoms is each SQL text as an atom.
@@ -82,7 +109,13 @@ func joinPredicates(ps []predicate, sep string, prec precedence, operand func(pr
 	case 1:
 		return only
 	}
-	return predicate{sql: strings.Join(parts, sep), prec: prec}
+	d := noDeps
+	for _, p := range ps {
+		if !p.empty() {
+			d = d.and(p.deps)
+		}
+	}
+	return predicate{sql: strings.Join(parts, sep), prec: prec, deps: d}
 }
 
 // notOf negates a predicate.
@@ -90,7 +123,7 @@ func notOf(p predicate) predicate {
 	if p.empty() {
 		return p
 	}
-	return predicate{sql: "NOT (" + p.sql + ")"}
+	return predicate{sql: "NOT (" + p.sql + ")", deps: p.deps}
 }
 
 // group is the predicate as one operand, bracketed unless it already is one.
@@ -98,7 +131,7 @@ func group(p predicate) predicate {
 	if p.prec == precAtom {
 		return p
 	}
-	return predicate{sql: "(" + p.sql + ")"}
+	return predicate{sql: "(" + p.sql + ")", deps: p.deps}
 }
 
 // whereClause renders filters as a WHERE clause, or "" when there are none.

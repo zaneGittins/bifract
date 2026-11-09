@@ -47,6 +47,7 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 	names := modelColumns[info.ModelType]
 	for _, n := range names {
 		ctx.Registry.Register(n, FieldKindJoined, n, ctx.CmdIndex)
+		ctx.Registry.setReads(n, modelColumn)
 	}
 	ctx.Plan.lookup.Outputs = append([]string(nil), names...)
 	return nil
@@ -152,6 +153,7 @@ func (h *modelLookupHandler) predicate(cmd CommandNode, ctx *CommandContext) (pr
 	for i, kf := range ks.keyFields {
 		keys[i] = modelLookupFieldRef(kf, ctx.Registry)
 	}
+	ctx.Registry.Foreign("model")
 	return atom(ks.membership(keys, nil)), nil
 }
 
