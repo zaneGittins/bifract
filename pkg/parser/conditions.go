@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// stageBucket is the clause a filter binds to, ordered by precedence: a compound
-// binds to the greatest any of its operands needs.
+// stageBucket is the clause a filter binds to, ordered by precedence: a filter
+// binds to the greatest any of its operands needs (see combine).
 type stageBucket int
 
 const (
@@ -16,6 +16,16 @@ const (
 	bucketDeferred                    // the layer above the window or join outputs it reads
 	bucketHaving                      // the HAVING of the aggregation it filters
 )
+
+// combine is where a filter reading operands of buckets a and b binds: the later of
+// the two, except that a window output exists only above the aggregation whose
+// HAVING the other needs, and the deferred layer reads that aggregation's columns.
+func combine(a, b stageBucket) stageBucket {
+	if min(a, b) == bucketDeferred && max(a, b) == bucketHaving {
+		return bucketDeferred
+	}
+	return max(a, b)
+}
 
 // bucket is the pending list for a stage bucket.
 func (p *pendingFilters) bucket(b stageBucket) *[]Condition {
@@ -258,13 +268,13 @@ func fieldsStage(c Condition, registry *FieldRegistry, plan *QueryPlan, willHave
 		// A condition command binds where the fields it reads exist.
 		b := bucketWhere
 		for _, f := range conditionCommandFields(*c.Command) {
-			b = max(b, fieldStage(f, registry, plan, willHaveAggregation))
+			b = combine(b, fieldStage(f, registry, plan, willHaveAggregation))
 		}
 		return b
 	}
 	b := fieldStage(c.Field, registry, plan, willHaveAggregation)
 	if c.ValueField != "" {
-		b = max(b, fieldStage(c.ValueField, registry, plan, willHaveAggregation))
+		b = combine(b, fieldStage(c.ValueField, registry, plan, willHaveAggregation))
 	}
 	return b
 }
@@ -303,11 +313,11 @@ func subtreeStage(cond Condition, registry *FieldRegistry, plan *QueryPlan, will
 	if !cond.IsCompound() {
 		return conditionStage(cond, registry, plan, willHaveAggregation)
 	}
-	highest := bucketWhere
+	b := bucketWhere
 	for _, child := range cond.Children {
-		highest = max(highest, subtreeStage(child, registry, plan, willHaveAggregation))
+		b = combine(b, subtreeStage(child, registry, plan, willHaveAggregation))
 	}
-	return highest
+	return b
 }
 
 // splitMixedAndCompound decomposes a compound whose conjuncts bind to different
@@ -759,19 +769,29 @@ func conditionSQL(cond Condition, registry *FieldRegistry, scope *deferredScope,
 		// * means presence only as the value of = and !=; under =~, =^ and =$ it is a term.
 		return atom(presenceSQL(fieldRef, cond.Operator == "=", isJSONField))
 	case cond.IsRegex:
-		return atom(buildRegexMatchSQL(fieldRef, cond.Value, cond.LiteralTerm, cond.Operator == "!=", mode))
+		return atom(buildRegexMatchSQL(textRef(cond.Field, fieldRef, registry), cond.Value, cond.LiteralTerm, cond.Operator == "!=", mode))
 	case cond.Operator == "=~":
-		return atom(buildContainsAnySQL(fieldRef, conditionValues(cond), cond.Negate, mode))
+		return atom(buildContainsAnySQL(textRef(cond.Field, fieldRef, registry), conditionValues(cond), cond.Negate, mode))
 	case cond.Operator == "=^":
-		return atom(buildStartsWithAnySQL(fieldRef, conditionValues(cond), cond.Negate, mode))
+		return atom(buildStartsWithAnySQL(textRef(cond.Field, fieldRef, registry), conditionValues(cond), cond.Negate, mode))
 	case cond.Operator == "=$":
-		return atom(buildEndsWithAnySQL(fieldRef, conditionValues(cond), cond.Negate, mode))
+		return atom(buildEndsWithAnySQL(textRef(cond.Field, fieldRef, registry), conditionValues(cond), cond.Negate, mode))
 	case cond.Operator == "=" || cond.Operator == "!=":
 		return equalitySQL(cond, registry, fieldRef, isJSONField)
 	case isOrdering(cond.Operator):
 		return atom(orderingSQL(cond, registry, entry, fieldRef))
 	}
 	return predicate{}
+}
+
+// textRef is a field's reference where only a String will do, as in text matching
+// and address tests: a value that may be a number is converted, and a stored field
+// or a String is read as it is.
+func textRef(field, ref string, registry *FieldRegistry) string {
+	if registry.isText(field) || !isNumericOperand(field, registry, registry.Get(field)) {
+		return ref
+	}
+	return "toString(" + ref + ")"
 }
 
 // isOrdering reports whether op is a numeric comparison.

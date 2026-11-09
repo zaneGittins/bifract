@@ -240,11 +240,11 @@ func exprFieldNames(e *ExprNode) []string {
 // expression binds to the latest stage any of its inputs is available in, so a
 // filter mixing a joined score with a log field defers to the post-join layer.
 func exprStage(e *ExprNode, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) stageBucket {
-	best := bucketWhere
+	b := bucketWhere
 	for _, f := range exprFieldNames(e) {
-		best = max(best, fieldStage(f, registry, plan, willHaveAggregation))
+		b = combine(b, fieldStage(f, registry, plan, willHaveAggregation))
 	}
-	return best
+	return b
 }
 
 // exprMatchSQL compiles a multi-value match whose left operand is an expression:

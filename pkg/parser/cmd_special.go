@@ -184,8 +184,7 @@ func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, p
 
 	ctx.Plan.PushStage()
 	ctx.Plan.IsAggregated = false
-	ctx.Plan.aggregationOutputs = make(map[string]string)
-	ctx.Plan.outer.selects, ctx.Plan.outer.reads = nil, nil
+	ctx.Plan.aggregationOutputs = make(map[string]bool)
 	ctx.Registry.ScopeToOutputs(prevOutputs)
 
 	newStage := ctx.Plan.CurrentStage()
@@ -373,6 +372,10 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
+	}
+	// chain() matches events, which a stage after an aggregation no longer has.
+	if !ctx.Plan.CurrentStage().IsSource {
+		return fmt.Errorf("chain() matches events, so it must come before the aggregation it follows")
 	}
 	// CSV keeps the legacy quoted spelling, chain("user,host"), meaning two fields.
 	chainFields := b.CSV("fields")

@@ -118,7 +118,7 @@ func TestChainedAggregatesReadEveryGroup(t *testing.T) {
 		`* | groupby(src_ip) | multi(sum(orig_bytes, as=s)) | avg(s)`,
 		`* | groupby(src_ip) | multi(sum(orig_bytes, as=s), sum(resp_bytes, as=r)) | corr(s, r)`,
 	} {
-		if sql := translateNumericViz(t, q).SQL; strings.Contains(sql, "LIMIT 1000") {
+		if sql := translateNumericViz(t, q).SQL; strings.Contains(sql, "GROUP BY src_ip LIMIT") || !strings.Contains(sql, "GROUP BY src_ip)") {
 			t.Errorf("%s: the groups are truncated by the display limit:\n%s", q, sql)
 		}
 	}

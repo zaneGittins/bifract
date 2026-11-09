@@ -2174,13 +2174,13 @@ func TestChainedAggregation(t *testing.T) {
 		}
 		// Outer query should have median and MAD referencing _count
 		if !strings.Contains(result.SQL, "any(_median_val) AS _median") {
-			t.Errorf("Expected any(_median_val) AS _median in outer query, got: %s", result.SQL)
+			t.Errorf("Expected any(_median_val) AS _median in the stage over the groups, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "median(abs(toFloat64(_count) - _median_val)) AS _mad") {
-			t.Errorf("Expected median(abs(...)) AS _mad in outer query, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "toFloat64(_count) AS _mad_val") {
+			t.Errorf("Expected the value as _mad_val, got: %s", result.SQL)
 		}
 		// Should have window function intermediate layer
-		if !strings.Contains(result.SQL, "median(toFloat64(_count)) OVER () AS _median_val") {
+		if !strings.Contains(result.SQL, "median(_mad_val) OVER () AS _median_val") {
 			t.Errorf("Expected window function layer, got: %s", result.SQL)
 		}
 		// Should NOT reference JSON field for _count
@@ -2207,7 +2207,7 @@ func TestChainedAggregation(t *testing.T) {
 			t.Errorf("Expected COUNT(*) AS _count in inner query, got: %s", result.SQL)
 		}
 		if !strings.Contains(result.SQL, "median(toFloat64(_count)) AS _median") {
-			t.Errorf("Expected median(_count) in outer query, got: %s", result.SQL)
+			t.Errorf("Expected median(_count) in the stage over the groups, got: %s", result.SQL)
 		}
 	})
 
@@ -2227,10 +2227,10 @@ func TestChainedAggregation(t *testing.T) {
 		}
 		// Outer should have MAD with window function layer referencing _sum
 		if !strings.Contains(result.SQL, "any(_median_val) AS _median") {
-			t.Errorf("Expected any(_median_val) AS _median in outer query, got: %s", result.SQL)
+			t.Errorf("Expected any(_median_val) AS _median in the stage over the groups, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "median(abs(toFloat64(_sum) - _median_val)) AS _mad") {
-			t.Errorf("Expected median(abs(...)) AS _mad in outer query, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "toFloat64(_sum) AS _mad_val") {
+			t.Errorf("Expected the value as _mad_val, got: %s", result.SQL)
 		}
 	})
 
@@ -2248,7 +2248,7 @@ func TestChainedAggregation(t *testing.T) {
 			t.Errorf("Expected COUNT(*) in inner query, got: %s", result.SQL)
 		}
 		if !strings.Contains(result.SQL, "avg(toFloat64(_count)) AS _avg") {
-			t.Errorf("Expected avg(_count) in outer query, got: %s", result.SQL)
+			t.Errorf("Expected avg(_count) in the stage over the groups, got: %s", result.SQL)
 		}
 		if strings.Contains(result.SQL, "fields.`_count`::String") {
 			t.Errorf("Should not reference _count as JSON field: %s", result.SQL)
@@ -2288,7 +2288,7 @@ func TestChainedAggregation(t *testing.T) {
 			t.Errorf("Expected COUNT(*) in inner query, got: %s", result.SQL)
 		}
 		if !strings.Contains(result.SQL, "stddevPop(toFloat64(_count)) AS _stddev") {
-			t.Errorf("Expected stddevPop(_count) in outer query, got: %s", result.SQL)
+			t.Errorf("Expected stddevPop(_count) in the stage over the groups, got: %s", result.SQL)
 		}
 		if strings.Contains(result.SQL, "fields.`_count`::String") {
 			t.Errorf("Should not reference _count as JSON field: %s", result.SQL)
@@ -2309,7 +2309,7 @@ func TestChainedAggregation(t *testing.T) {
 			t.Errorf("Expected COUNT(*) in inner query, got: %s", result.SQL)
 		}
 		if !strings.Contains(result.SQL, "quantiles(0.5, 0.75, 0.99)(toFloat64(_count)) AS _percentile") {
-			t.Errorf("Expected quantiles(_count) in outer query, got: %s", result.SQL)
+			t.Errorf("Expected quantiles(_count) in the stage over the groups, got: %s", result.SQL)
 		}
 		if strings.Contains(result.SQL, "fields.`_count`::String") {
 			t.Errorf("Should not reference _count as JSON field: %s", result.SQL)
@@ -4037,8 +4037,9 @@ func TestMultiGroupBy(t *testing.T) {
 	}
 
 	t.Run("two stage groupby count then re-count", func(t *testing.T) {
-		// Count per src_ip, then re-group by _count to get count distribution
-		pipeline, err := ParseQuery("* | groupby(src_ip, function=count()) | groupby(_count, function=count())")
+		// Count per src_ip, then re-group by _count to get count distribution. The new
+		// count needs a name of its own beside the _count key.
+		pipeline, err := ParseQuery("* | groupby(src_ip, function=count()) | groupby(_count, function=count(as=ips))")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -4061,9 +4062,26 @@ func TestMultiGroupBy(t *testing.T) {
 		}
 	})
 
+	// After groupby(country), _count is that groupby's own count, as a filter on it
+	// reads it, so sum(_count) sums it across the countries in a stage of its own.
+	// Summing the earlier counts per country is groupby(country, function=sum(_count)).
+	t.Run("two stage groupby then a sum of its own count", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(country, city, function=count()) | groupby(country) | sum(_count)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(result.SQL, "SELECT sum(toFloat64(_count)) AS _sum FROM (SELECT country, COUNT(*) AS _count") {
+			t.Errorf("want the sum over groupby(country)'s counts, got: %s", result.SQL)
+		}
+	})
+
 	t.Run("two stage groupby with sum across groups", func(t *testing.T) {
 		// Count per country+city, then sum counts per country
-		pipeline, err := ParseQuery("* | groupby(country, city, function=count()) | groupby(country) | sum(_count)")
+		pipeline, err := ParseQuery("* | groupby(country, city, function=count()) | groupby(country, function=sum(_count))")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -4078,8 +4096,8 @@ func TestMultiGroupBy(t *testing.T) {
 			t.Errorf("Expected inner GROUP BY country, city, got: %s", sql)
 		}
 		// Outer stage: GROUP BY country with sum(_count)
-		if !strings.Contains(sql, "sum(toFloat64OrNull(_count))") {
-			t.Errorf("Expected sum(toFloat64OrNull(_count)) in outer stage, got: %s", sql)
+		if !strings.Contains(sql, "sum(toFloat64(_count))") {
+			t.Errorf("Expected sum(toFloat64(_count)) in outer stage, got: %s", sql)
 		}
 		if !strings.Contains(sql, "GROUP BY country") {
 			t.Errorf("Expected GROUP BY country in outer stage, got: %s", sql)
@@ -4100,7 +4118,7 @@ func TestMultiGroupBy(t *testing.T) {
 	})
 
 	t.Run("multi-stage preserves inner stage selects", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | groupby(user, function=count()) | groupby(_count, function=count())")
+		pipeline, err := ParseQuery("* | groupby(user, function=count()) | groupby(_count, function=count(as=users))")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}

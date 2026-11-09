@@ -11,8 +11,10 @@ import (
 type SelectExpr struct {
 	Expr  string
 	Alias string
-	// agg is the aggregate Expr renders, when the column is one.
-	agg aggregate
+	// agg is the aggregate Expr renders, when the column is one, and window marks
+	// a window function over the SELECT's rows.
+	agg    aggregate
+	window bool
 }
 
 // selectAs is the column computing expr under alias.
@@ -173,6 +175,13 @@ type RowCap struct {
 	scanKeys []string
 }
 
+// combinesRows reports whether the layer's SELECT reads its rows together: it
+// groups them, aggregates them or computes a window over them. A row cap must then
+// run before it, not as its own LIMIT, which runs after.
+func (l *QueryLayer) combinesRows() bool {
+	return len(l.GroupBy) > 0 || slices.ContainsFunc(l.Selects, func(s SelectExpr) bool { return s.agg != nil || s.window })
+}
+
 // capAfter is the filter list for a position k commands in: the After of the last
 // cap before it, or nil ahead of every cap.
 func (l *QueryLayer) capAfter(k int) *[]predicate {
@@ -214,9 +223,8 @@ func (l *QueryLayer) UpsertSelect(expr SelectExpr) {
 	l.project(expr)
 }
 
-// QueryStage represents one aggregation stage in the pipeline.
-// For now there are at most 2 (inner + one chained aggregation).
-// The structure supports N stages for future multi-groupby pipelines.
+// QueryStage is one SELECT of the pipeline: the scan, then one per aggregation or
+// projection of an earlier stage's rows.
 type QueryStage struct {
 	Layer    QueryLayer
 	IsSource bool // true for the innermost stage (FROM logs)
@@ -258,10 +266,9 @@ type QueryPlan struct {
 	deferred  deferredPlan
 	table     tablePlan
 
-	// outer is the chained aggregation over a prior aggregation's outputs, and
-	// aggregationOutputs maps each aggregate alias (_count, _sum, ...) to its SQL.
-	outer              outerAggregation
-	aggregationOutputs map[string]string
+	// aggregationOutputs are the current stage's aggregate aliases (_count, _sum, ...):
+	// an aggregate reading one aggregates the stage's groups (see aggregateOver).
+	aggregationOutputs map[string]bool
 
 	// pending holds the filters classified by stage, placed once every command ran.
 	pending pendingFilters
@@ -336,15 +343,6 @@ type tablePlan struct {
 	explicit     bool     // it names its columns
 	columns      []string // the columns it names, as written
 	joinedFields []string // join() outputs it names, in the order given
-}
-
-// outerAggregation is a chained aggregation (sum, avg, ... on a prior aggregation's
-// outputs): its columns, the inner outputs they read, and for mad() the value
-// whose median the window before it computes.
-type outerAggregation struct {
-	selects []SelectExpr
-	reads   []string
-	madExpr string
 }
 
 // pendingFilters are the filters classified by the stage they bind to.
@@ -437,7 +435,7 @@ func NewQueryPlan() *QueryPlan {
 			{IsSource: true},
 		},
 		chart:              chartPlan{config: make(map[string]interface{})},
-		aggregationOutputs: make(map[string]string),
+		aggregationOutputs: make(map[string]bool),
 	}
 }
 
@@ -472,13 +470,9 @@ func (p *QueryPlan) declaredBetween(name string, from, to int) bool {
 	return false
 }
 
-// outputNames lists the columns the query returns as planned so far: those of the
-// outer aggregation when a stats command wraps the stage, otherwise the stage's
+// outputNames lists the columns the query returns as planned so far: the stage's
 // selects and, while it groups, its keys.
 func (p *QueryPlan) outputNames(registry *FieldRegistry) []string {
-	if len(p.outer.selects) > 0 {
-		return columnNames(p.outer.selects)
-	}
 	stage := p.CurrentStage()
 	names := columnNames(stage.Layer.Selects)
 	if len(stage.Layer.GroupBy) > 0 {
