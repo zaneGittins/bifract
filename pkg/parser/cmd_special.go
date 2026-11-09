@@ -88,8 +88,8 @@ func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, ag
 			// empty on every row, and aliasing that empty over the column's own name
 			// shadowed the column for anything selecting it later in the same SELECT.
 			// An eval() rebinding the name re-registers it as per-row, so it lands below.
-			sel := SelectExpr{Expr: entry.Expr}
-			if entry.Expr != field {
+			sel := SelectExpr{Expr: ctx.Registry.Column(field).sql}
+			if sel.Expr != field {
 				sel.Alias = field
 			}
 			source.Layer.Selects = append(source.Layer.Selects, sel)
@@ -129,7 +129,7 @@ func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, ag
 			if err != nil {
 				return err
 			}
-			ref := ctx.Registry.fieldRef(field)
+			ref := ctx.Registry.Stored(field).sql
 			if field == "" {
 				if ref, err = ResolveArg(arg, ctx.Registry); err != nil {
 					return err
@@ -153,7 +153,7 @@ func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, ag
 	if ctx.Plan.IsAggregated && len(nonAggregateFields) > 0 {
 		for _, field := range nonAggregateFields {
 			if field == "timestamp" {
-				source.Layer.groupBy("timestamp", field)
+				source.Layer.groupBy(ctx.Registry.Column("timestamp").sql, field)
 			} else {
 				source.Layer.groupBy(ctx.Registry.Resolve(field), field)
 			}
@@ -392,7 +392,12 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		// no single aggregate expresses; approximating it drops real matches.
 		return fmt.Errorf("chain(): within= cannot be combined with sequence=any")
 	}
-	steps, stepFields, err := compileChainSteps(cmd.Sequence, ctx.Opts, ctx.Registry)
+	var steps, stepFields []string
+	stepReads, err := ctx.Registry.track(func() error {
+		var err error
+		steps, stepFields, err = compileChainSteps(cmd.Sequence, ctx.Opts, ctx.Registry)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("chain(): %w", err)
 	}
@@ -413,7 +418,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("chain(): step field %q is a model_lookup() column and requires model_lookup() before chain() in the pipeline", stepsUseModel)
 	}
 
-	m := newChainMatch(steps, withinSeconds, ordered)
+	m := newChainMatch(steps, stepReads.deps(), withinSeconds, ordered)
 	// Narrow the scan to rows a step can use: the sequence aggregates skip events
 	// matching no condition and an entity with none fails the HAVING, so the result
 	// is unchanged while GROUP BY state drops to just the matching entities.
@@ -452,7 +457,7 @@ type chainMatch struct {
 // the steps, within= apart at most; unordered mode only requires each step to
 // occur, so it counts complete co-occurrence sets and anchors on each step's
 // earliest event.
-func newChainMatch(steps []string, withinSeconds int, ordered bool) chainMatch {
+func newChainMatch(steps []string, stepDeps deps, withinSeconds int, ordered bool) chainMatch {
 	// Millisecond ordering: toDateTime() leaves same-second event order undefined,
 	// which misorders spawn-then-connect sequences. UInt64 millis; the aggregate
 	// rejects DateTime64 and Int64.
@@ -461,8 +466,11 @@ func newChainMatch(steps []string, withinSeconds int, ordered bool) chainMatch {
 	for i, st := range steps {
 		// Each step is parenthesized so the union holds whatever shape it compiled to.
 		parenSteps[i] = atom("(" + st + ")")
+		parenSteps[i].deps = stepDeps
 	}
 	m := chainMatch{union: orOf(parenSteps...)}
+	// The match also reads the scan's timestamp.
+	matchDeps := stepDeps.and(columnRef("timestamp").deps)
 	if !ordered {
 		counts := make([]string, len(steps))
 		presence := make([]string, len(steps))
@@ -474,6 +482,7 @@ func newChainMatch(steps []string, withinSeconds int, ordered bool) chainMatch {
 		}
 		m.count = fmt.Sprintf("least(%s)", strings.Join(counts, ", "))
 		m.match = andOf(atoms(presence...)...)
+		m.match.deps = matchDeps
 		m.anchor = fmt.Sprintf("[%s]", strings.Join(anchors, ", "))
 		return m
 	}
@@ -487,6 +496,7 @@ func newChainMatch(steps []string, withinSeconds int, ordered bool) chainMatch {
 	}
 	args := fmt.Sprintf("('%s')(%s, %s)", pattern.String(), tsExpr, strings.Join(steps, ", "))
 	m.count, m.match, m.anchor = "sequenceCount"+args, atom("sequenceMatch"+args+" = 1"), "sequenceMatchEvents"+args
+	m.match.deps = matchDeps
 	return m
 }
 
@@ -500,13 +510,13 @@ func groupChainEntities(ctx *CommandContext, chainFields []string, meta *ChainMe
 	ref := func(f string) (string, bool) {
 		switch e := ctx.Registry.Get(f); {
 		case f == "timestamp" || f == normLogColumn || f == "log_id" || f == "normalizer":
-			return f, false
+			return ctx.Registry.Column(f).sql, false
 		case e != nil && e.Kind == FieldKindJoined && ctx.Plan.lookup.AtScan:
 			// A model column is per-row after the scan-level join.
-			return f, false
+			return ctx.Registry.Column(f).sql, false
 		default:
 			// The value is grouped by, and a bare Dynamic subcolumn errors 44.
-			return jsonFieldRef(f), true
+			return ctx.Registry.jsonRef(f).sql, true
 		}
 	}
 	if len(chainFields) == 1 {
@@ -569,6 +579,7 @@ func projectChainMatch(ctx *CommandContext, m chainMatch) {
 	// Only the groups where the sequence matched.
 	source.Layer.Having = append(source.Layer.Having, m.match)
 	ctx.Registry.SetResolveExpr("chain_count", m.count)
+	ctx.Registry.setReads("chain_count", m.match.deps) // the steps over timestamp, as the match
 	source.Layer.OrderBy = append(source.Layer.OrderBy, desc("chain_count"))
 }
 

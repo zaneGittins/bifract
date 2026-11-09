@@ -1,6 +1,6 @@
 package parser
 
-import "slices"
+import "strings"
 
 // FieldKind categorizes the type of a field in the query pipeline.
 type FieldKind int
@@ -47,6 +47,23 @@ type FieldEntry struct {
 	// text marks an expression known to be a String, as a stored field is.
 	// Changing the expression clears it.
 	text bool
+	// reads is what a computed value reads, recorded where it was computed, when
+	// readsKnown says it was.
+	reads      deps
+	readsKnown bool
+	// column marks a ResolveAs that is another column by name, as x := log_id is.
+	column bool
+	// cols are the columns the value reads by name, which an expression folding it
+	// in reads too, NUL-separated so entries stay comparable.
+	cols string
+}
+
+// readCols lists the columns the value reads by name.
+func (e *FieldEntry) readCols() []string {
+	if e.cols == "" {
+		return nil
+	}
+	return strings.Split(e.cols, "\x00")
 }
 
 // ClassifyKind returns the FieldKind that condition routing (WHERE vs HAVING vs
@@ -86,6 +103,8 @@ type FieldRegistry struct {
 	rowLevel bool
 	// normLogIndexHints allows norm_log index hints on scan filters (see normLogHint).
 	normLogIndexHints bool
+	// rec records the references the registry hands out (see track).
+	rec *refRecorder
 }
 
 // NewFieldRegistry creates a registry pre-populated with base fields for the
@@ -97,6 +116,7 @@ func NewFieldRegistry(mode SourceMode, icePromoted map[string]bool) *FieldRegist
 		fields:      make(map[string]*FieldEntry),
 		sourceMode:  mode,
 		icePromoted: icePromoted,
+		rec:         &refRecorder{},
 	}
 	// Register base columns
 	for _, name := range []string{"timestamp", normLogColumn, "log_id", "fractal_id", "ingest_timestamp", "normalizer"} {
@@ -128,6 +148,7 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 		groupKeys:   make(map[string]string, len(r.groupKeys)),
 		groupKeyCmd: r.groupKeyCmd,
 		rowLevel:    r.rowLevel,
+		rec:         r.rec,
 	}
 	c.normLogIndexHints = r.normLogIndexHints
 	for k, v := range r.groupKeys {
@@ -250,14 +271,28 @@ func (r *FieldRegistry) Has(name string) bool {
 // Any trailing " AS alias" suffix is stripped so the result is a bare expression.
 // For unknown fields, returns jsonFieldRef.
 func (r *FieldRegistry) Resolve(name string) string {
-	if r.resolvesToStored(name) {
-		return r.fieldRef(name)
+	return r.Ref(name).sql
+}
+
+// setColumn records that a field's expression is the column it copies.
+func (r *FieldRegistry) setColumn(name string) {
+	if entry, ok := r.fields[name]; ok {
+		entry.column = true
 	}
-	entry := r.fields[name]
-	if entry.ResolveAs != "" {
-		return entry.ResolveAs
+}
+
+// setRead records what a computed field read, as recorded while it was computed.
+func (r *FieldRegistry) setRead(name string, got reads) {
+	if entry, ok := r.fields[name]; ok {
+		entry.reads, entry.readsKnown, entry.cols = got.deps(), true, strings.Join(got.columns(), "\x00")
 	}
-	return entry.Expr
+}
+
+// setReads records what a computed field reads.
+func (r *FieldRegistry) setReads(name string, d deps) {
+	if entry, ok := r.fields[name]; ok {
+		entry.reads, entry.readsKnown = d, true
+	}
 }
 
 // isText reports whether the name resolves to a String: the stored field, or an
@@ -294,35 +329,17 @@ func (r *FieldRegistry) resolvesToStored(name string) bool {
 
 // DependsOnJoin reports whether a per-row field reads a join's output, directly or
 // through the expression it was computed from, and so exists only where that join
-// does. Joined columns are referenced by their bare names, which is how they are
-// recognised in an expression.
+// does.
 func (r *FieldRegistry) DependsOnJoin(name string) bool {
-	return r.dependsOnJoin(name, map[string]bool{})
-}
-
-// SQLDependsOnJoin reports whether generated SQL reads a join output, directly or
-// through a per-row field computed from one.
-func (r *FieldRegistry) SQLDependsOnJoin(sql string) bool {
-	return slices.ContainsFunc(columnRefs(sql), r.DependsOnJoin)
-}
-
-func (r *FieldRegistry) dependsOnJoin(name string, seen map[string]bool) bool {
 	entry, ok := r.fields[name]
-	if !ok || seen[name] {
+	if !ok {
 		return false
 	}
-	seen[name] = true
 	switch entry.Kind {
 	case FieldKindJoined:
 		return true
 	case FieldKindPerRow, FieldKindAssignment:
-	default:
-		return false
-	}
-	for _, c := range columnRefs(r.Resolve(name)) {
-		if c != name && r.dependsOnJoin(c, seen) {
-			return true
-		}
+		return r.valueDeps(entry).join
 	}
 	return false
 }
@@ -331,7 +348,10 @@ func (r *FieldRegistry) dependsOnJoin(name string, seen map[string]bool) bool {
 // If the field is not yet registered, it is auto-registered as FieldKindJSON.
 func (r *FieldRegistry) SetResolveExpr(name, expr string) {
 	if entry, ok := r.fields[name]; ok {
+		// A new expression reads what it reads: until that is recorded, nothing
+		// of the old one's is known.
 		entry.ResolveAs, entry.operand, entry.text = expr, false, false
+		entry.readsKnown, entry.column, entry.cols = false, false, ""
 	} else {
 		r.Register(name, FieldKindJSON, expr, -1)
 		r.fields[name].ResolveAs = expr
@@ -502,6 +522,7 @@ func (r *FieldRegistry) ScopeToOutputs(outputs map[string]bool) {
 			ResolveAs:  name,
 			ProducedBy: -1,
 			OriginKind: origin,
+			readsKnown: true, // a column of the stage before, which it read itself
 		}
 		r.order = append(r.order, name)
 	}

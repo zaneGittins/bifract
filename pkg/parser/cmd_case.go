@@ -91,6 +91,9 @@ func harvestSegment(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 
 	plan := NewQueryPlan()
 	reg := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
+	if parentReg != nil {
+		reg.rec = parentReg.rec // what the branch reads, the case command reads
+	}
 	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl}
 
 	// Conditions before the segment's first command resolve against the parent
@@ -122,7 +125,7 @@ func harvestSegment(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 	}
 	for i, cmd := range pl.Commands() {
 		ctx.CmdIndex = i
-		if err := getCommandHandler(cmd.Name).Execute(cmd, ctx); err != nil {
+		if _, err := runTracked(ctx, cmd, reg.Clone()); err != nil {
 			return eff, err
 		}
 	}

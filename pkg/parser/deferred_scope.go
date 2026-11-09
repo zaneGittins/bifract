@@ -35,21 +35,19 @@ func newDeferredScope() *deferredScope {
 }
 
 // ref returns the reference to use for a source expression at the deferred layer,
-// allocating a hidden projection for it if needed. A bare identifier (timestamp,
-// _count, _modified_z, _join__count) is already a named column at every layer above
-// the scan and is returned unchanged; only real expressions need exporting. label is
-// the field name the expression came from, used only to phrase errors.
-func (s *deferredScope) ref(expr, label string) string {
-	if s == nil {
-		return expr
+// allocating a hidden projection for it if needed, and whether it did. A column
+// (timestamp, _count, _modified_z, _join__count) is already named at every layer
+// above the scan and is returned unchanged; only expressions need exporting. label
+// is the field name the expression came from, used only to phrase errors.
+func (s *deferredScope) ref(ref sqlRef, label string) (sqlRef, bool) {
+	trimmed := strings.TrimSpace(ref.sql)
+	// norm_log is the one column a projection such as table() drops.
+	if s == nil || trimmed == "" || ref.form == refColumn && trimmed != normLogColumn {
+		return ref, false
 	}
-	trimmed := strings.TrimSpace(expr)
-	// norm_log is the one bare column a projection such as table() drops.
-	if trimmed == "" || isBareIdentifier(trimmed) && trimmed != normLogColumn {
-		return expr
-	}
+	exported := func(name string) (sqlRef, bool) { return sqlRef{sql: name, name: name, form: refColumn}, true }
 	if name, ok := s.alias[trimmed]; ok {
-		return name
+		return exported(name)
 	}
 	name := fmt.Sprintf("_dfr_%d", len(s.names))
 	if label == "" {
@@ -59,7 +57,7 @@ func (s *deferredScope) ref(expr, label string) string {
 	s.exprs = append(s.exprs, trimmed)
 	s.names = append(s.names, name)
 	s.labels = append(s.labels, label)
-	return name
+	return exported(name)
 }
 
 // used reports whether anything was exported.

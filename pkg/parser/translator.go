@@ -287,8 +287,15 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 			return nil, err
 		}
 	}
+	if plannedHook != nil {
+		plannedHook(q)
+	}
 	return q, nil
 }
+
+// plannedHook, when set, sees every planned query. Tests use it to hold what each
+// predicate and ordering recorded to the SQL it was built as.
+var plannedHook func(*plannedQuery)
 
 // sourceRegistry is the registry a query starts from. A subquery source (a
 // resolved source command) exposes flat columns, registered so bare references
@@ -302,6 +309,7 @@ func sourceRegistry(opts QueryOptions) *FieldRegistry {
 		if slices.Contains(opts.SourceNumericColumns, c) {
 			registry.Register(c, FieldKindAssignment, c, -1)
 			registry.SetResolveExpr(c, c)
+			registry.setReads(c, columnRef(c).deps)
 		} else {
 			registry.Register(c, FieldKindBase, c, -1)
 		}
@@ -428,7 +436,10 @@ func (q *plannedQuery) checkAggregateNames() error {
 			if s.agg == nil {
 				continue
 			}
-			for _, c := range columnRefs(s.Expr) {
+			if !s.colsKnown && unrecordedHook != nil {
+				unrecordedHook("aggregate " + s.Name())
+			}
+			for _, c := range s.cols {
 				if c != s.Name() && slices.Contains(names, c) {
 					return fmt.Errorf("%s reads %s, but this aggregation also computes an aggregate named %s, which is what ClickHouse would read: name one of them with as=, or aggregate in the groupby, e.g. groupby(<keys>, function=sum(%s))", s.Name(), c, c, c)
 				}
@@ -480,10 +491,18 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 	layer := &ctx.Plan.CurrentStage().Layer
 	layer.Selects = slices.DeleteFunc(layer.Selects, func(sel SelectExpr) bool { return sel.Name() == assignment.Field })
 
-	sqlExpr, exprType, err := compileExpr(assignment.Expr, registry)
+	var sqlExpr string
+	var exprType ExprType
+	// Read before the field is registered, so x := x + 1 reads the earlier x.
+	got, err := registry.track(func() (err error) {
+		sqlExpr, exprType, err = compileExpr(assignment.Expr, registry)
+		return err
+	})
 	if err != nil {
 		return assignmentError(assignment.Field, err)
 	}
+	// x := log_id copies the column: what it compiled to is that one column.
+	copiesColumn := len(got) == 1 && got[0].form == refColumn && got[0].sql == sqlExpr
 	// A reference to the field is spliced beside other operators (x = 1, in(x, ...)),
 	// so the registry holds it as one operand.
 	ref := operandSQL(assignment.Expr, sqlExpr)
@@ -494,12 +513,19 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 		// assignments referencing it fold in the full expression; it is never
 		// materialized as a column, which the aggregating SELECT could not select.
 		registry.RegisterInlineExpr(safeField, ref, -1)
+		if copiesColumn && ref == sqlExpr {
+			registry.setColumn(safeField)
+		}
 	case !isComputedExpr(assignment.Expr):
 		// A bare field or literal has nothing to compute and is materialized
 		// straight away; a constant stays a column of the aggregated rows too.
 		q.assignmentFields = append(q.assignmentFields, selectAs(sqlExpr, safeField))
 		registry.Register(safeField, FieldKindAssignment, safeField, -1)
 		registry.SetResolveExpr(safeField, sqlExpr)
+		registry.setRead(safeField, got)
+		if copiesColumn {
+			registry.setColumn(safeField)
+		}
 		if exprType == TypeText {
 			registry.setText(safeField)
 		}
@@ -512,6 +538,7 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 		registry.SetResolveExpr(safeField, ref)
 	}
 	registry.setOperand(safeField)
+	registry.setRead(safeField, got)
 	if exprType == TypeText {
 		registry.setText(safeField)
 	}
@@ -535,6 +562,7 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 // and records what the query returns after it.
 func executeCommand(ctx *CommandContext, cmd CommandNode, declared []FieldEntry, undeclared *FieldRegistry) error {
 	plan, registry, i := ctx.Plan, ctx.Registry, ctx.CmdIndex
+	before := registry.Clone()
 	registry.reinstate(declared, undeclared)
 	// A per-row transform that runs on a GROUP BY stage would add a
 	// non-grouped column to an aggregate SELECT (invalid, silently dropped).
@@ -552,7 +580,7 @@ func executeCommand(ctx *CommandContext, cmd CommandNode, declared []FieldEntry,
 		}
 	}
 	whereLen := len(plan.SourceStage().Layer.Where)
-	if err := getCommandHandler(cmd.Name).Execute(cmd, ctx); err != nil {
+	if _, err := runTracked(ctx, cmd, before); err != nil {
 		return err
 	}
 	// A filter the command put on the scan applies to the rows a cap kept, and
@@ -563,7 +591,7 @@ func executeCommand(ctx *CommandContext, cmd CommandNode, declared []FieldEntry,
 		after := src.capAfter(i)
 		for _, w := range added {
 			switch {
-			case plan.lookup.AtScan && registry.SQLDependsOnJoin(w.sql):
+			case plan.lookup.AtScan && w.deps.join:
 				plan.lookup.PostJoinWhere = append(plan.lookup.PostJoinWhere, postJoinFilter{At: i + 1, Pred: w})
 			case after != nil:
 				*after = append(*after, w)
@@ -583,6 +611,34 @@ func executeCommand(ctx *CommandContext, cmd CommandNode, declared []FieldEntry,
 	plan.pos.stageAfter = append(plan.pos.stageAfter, len(plan.Stages)-1)
 	plan.pos.outputs[i] = plan.outputNames(registry)
 	return nil
+}
+
+// runTracked executes cmd and records what it read on each computed field it
+// defined, before reads it from before. Every command run goes through it,
+// including those a case branch or a chain step runs.
+func runTracked(ctx *CommandContext, cmd CommandNode, before *FieldRegistry) (reads, error) {
+	got, err := ctx.Registry.track(func() error { return getCommandHandler(cmd.Name).Execute(cmd, ctx) })
+	if err != nil {
+		return got, err
+	}
+	// An aggregate the command built without recording its own reads read at most
+	// what the command did.
+	for i := range ctx.Plan.Stages {
+		for j := range ctx.Plan.Stages[i].Layer.Selects {
+			if s := &ctx.Plan.Stages[i].Layer.Selects[j]; s.agg != nil && !s.colsKnown {
+				s.cols, s.colsKnown = got.columns(), true
+			}
+		}
+	}
+	for _, name := range ctx.Registry.changedSince(before) {
+		switch e := ctx.Registry.Get(name); e.Kind {
+		case FieldKindPerRow, FieldKindAssignment, FieldKindJSON:
+			if !e.readsKnown {
+				ctx.Registry.setRead(name, got)
+			}
+		}
+	}
+	return got, nil
 }
 
 // plannedFilters copies the pipeline's filters for planning, each placed where
@@ -930,22 +986,22 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 		return
 	}
 	source := plan.SourceStage()
-	source.Layer.Where = append(source.Layer.Where, atoms(windowConditions(opts)...)...)
+	source.Layer.Where = append(source.Layer.Where, scanAtoms(windowConditions(opts)...)...)
 	if len(opts.EventTimes) > 0 {
 		lits := make([]string, len(opts.EventTimes))
 		for i, t := range opts.EventTimes {
 			lits[i] = "'" + chTimeLiteral(t) + "'"
 		}
-		source.Layer.Where = append(source.Layer.Where, atom("timestamp IN ("+strings.Join(lits, ", ")+")"))
+		source.Layer.Where = append(source.Layer.Where, scanAtom("timestamp IN ("+strings.Join(lits, ", ")+")"))
 	}
 
 	if opts.MaxEventLagSeconds > 0 {
 		source.Layer.Where = append(source.Layer.Where,
-			atom(fmt.Sprintf("dateDiff('second', timestamp, ingest_timestamp) <= %d", opts.MaxEventLagSeconds)))
+			scanAtom(fmt.Sprintf("dateDiff('second', timestamp, ingest_timestamp) <= %d", opts.MaxEventLagSeconds)))
 	}
 
 	if scope := fractalScopeCond(opts, ""); scope != "" {
-		source.Layer.Where = append(source.Layer.Where, atom(scope))
+		source.Layer.Where = append(source.Layer.Where, scanAtom(scope))
 	}
 }
 
@@ -1232,7 +1288,11 @@ func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
 	}
 	// Compute against the current registry (aggregate aliases are columns now),
 	// before scoping replaces them with bare-alias entries.
-	sqlExpr, _, err := compileExpr(a.Expr, ctx.Registry)
+	var sqlExpr string
+	got, err := ctx.Registry.track(func() (err error) {
+		sqlExpr, _, err = compileExpr(a.Expr, ctx.Registry)
+		return err
+	})
 	if err != nil {
 		return assignmentError(a.Field, err)
 	}
@@ -1247,6 +1307,7 @@ func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
 	// resolve to its alias.
 	ctx.Registry.Register(safeField, FieldKindAssignment, safeField, ctx.CmdIndex)
 	ctx.Registry.SetResolveExpr(safeField, safeField)
+	ctx.Registry.setRead(safeField, got)
 	return nil
 }
 
@@ -1571,7 +1632,8 @@ func dropField(fieldOrder []string, name string) []string {
 // scopeOrderByExpr rewrites the expression part of an "<expr> ASC|DESC" ORDER BY
 // entry through the deferred scope, leaving the direction intact.
 func scopeOrderByExpr(o OrderTerm, scope *deferredScope) OrderTerm {
-	return OrderTerm{Expr: scope.ref(o.Expr, ""), Desc: o.Desc}
+	r, _ := scope.ref(sqlRef{sql: o.Expr, form: o.form, deps: o.deps}, "")
+	return orderBy(r, o.Desc)
 }
 
 // appendJoinedFields adds a JOIN wrap's output columns to the display order,

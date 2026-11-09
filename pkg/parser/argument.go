@@ -433,20 +433,32 @@ func (c CommandNode) FieldNames() []string {
 // ResolveArg turns an argument in a field position into SQL: an expression is
 // compiled, a bare name resolves through the registry.
 func ResolveArg(a Argument, registry *FieldRegistry) (string, error) {
+	r, err := resolveArgRef(a, registry)
+	return r.sql, err
+}
+
+// resolveArgRef is ResolveArg as a reference: a field's own, or an expression
+// reading what its compilation referenced.
+func resolveArgRef(a Argument, registry *FieldRegistry) (sqlRef, error) {
 	switch a.Kind {
 	case ArgExpr:
 		if a.Expr == nil {
-			return "", fmt.Errorf("empty expression")
+			return sqlRef{}, fmt.Errorf("empty expression")
 		}
 		if a.Expr.Kind == ExprField {
-			return registry.Resolve(a.Expr.Value), nil
+			return registry.Ref(a.Expr.Value), nil
 		}
-		sql, _, err := compileExpr(a.Expr, registry)
-		return sql, err
+		var sql string
+		got, err := registry.track(func() error {
+			var err error
+			sql, _, err = compileExpr(a.Expr, registry)
+			return err
+		})
+		return sqlRef{sql: sql, form: refExpr, deps: got.deps()}, err
 	case ArgLiteral, ArgRegex:
-		return registry.Resolve(a.Text), nil
+		return registry.Ref(a.Text), nil
 	}
-	return "", fmt.Errorf("%s is not a field", a.String())
+	return sqlRef{}, fmt.Errorf("%s is not a field", a.String())
 }
 
 // ArgAlias is the output column an argument projects under: its own name when it

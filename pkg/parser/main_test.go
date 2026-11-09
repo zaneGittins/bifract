@@ -16,6 +16,10 @@ func TestMain(m *testing.M) {
 			panic("predicate with a top-level OR claimed as one operand: " + sql)
 		}
 	}
+	unrecordedHook = func(name string) {
+		panic("read before what it reads was recorded: " + name)
+	}
+	plannedHook = checkRecordedReads
 	renderHook = func(p *QueryPlan) {
 		layers := []QueryLayer{{Selects: p.format.selects}}
 		for _, st := range p.Stages {
@@ -49,4 +53,23 @@ func topLevelAS(e string) bool {
 		}
 	}
 	return false
+}
+
+// skipQuoted returns the index just past the quoted run opening at i, honouring
+// backslash escapes and doubled quotes.
+func skipQuoted(sql string, i int) int {
+	q := sql[i]
+	for i++; i < len(sql); i++ {
+		switch sql[i] {
+		case '\\':
+			i++
+		case q:
+			if i+1 < len(sql) && sql[i+1] == q {
+				i++
+				continue
+			}
+			return i + 1
+		}
+	}
+	return len(sql)
 }

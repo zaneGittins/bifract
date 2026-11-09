@@ -78,6 +78,7 @@ func (h *pgrContextHandler) Declare(cmd CommandNode, ctx *CommandContext) error 
 	for i, c := range cols {
 		names[i] = c.name
 		ctx.Registry.Register(c.name, FieldKindJoined, c.name, ctx.CmdIndex)
+		ctx.Registry.setReads(c.name, modelColumn)
 		ctx.Registry.setText(c.name) // every lineage column is a String
 	}
 	ctx.Plan.lookup.Outputs = names

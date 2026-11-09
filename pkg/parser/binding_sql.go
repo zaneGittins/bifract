@@ -42,6 +42,7 @@ func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (stri
 	}
 	host := ctx.Opts.bindingHost
 	host.usesBindingSet = true
+	ctx.Registry.Foreign(b.Name)
 	column, err := bindingSetColumn(b, result.FieldOrder, field, q.ctx.Registry.IsAggregate)
 	if err != nil {
 		return "", err

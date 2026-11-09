@@ -126,8 +126,10 @@ func executeCaseFold(cmd CommandNode, ctx *CommandContext, name, chFunc string) 
 	if err != nil {
 		return fmt.Errorf("%s(): invalid output field: %w", name, err)
 	}
-	ref := "toString(timestamp)"
-	if arg.FieldName() != "timestamp" {
+	var ref string
+	if arg.FieldName() == "timestamp" {
+		ref = "toString(" + ctx.Registry.Column("timestamp").sql + ")"
+	} else {
 		if ref, err = ResolveArg(arg, ctx.Registry); err != nil {
 			return fmt.Errorf("%s(): %w", name, err)
 		}
@@ -390,9 +392,9 @@ func replaceOutput(b *Bound) string {
 func contentFieldRef(a Argument, registry *FieldRegistry) (string, error) {
 	switch a.FieldName() {
 	case normLogColumn:
-		return normLogColumn, nil
+		return registry.Column(normLogColumn).sql, nil
 	case "timestamp":
-		return "toString(timestamp)", nil
+		return "toString(" + registry.Column("timestamp").sql + ")", nil
 	}
 	return ResolveArg(a, registry)
 }
@@ -514,7 +516,7 @@ func fieldListArgs(cmd CommandNode, ctx *CommandContext, name, defaultAlias stri
 	fields := make([]string, 0, len(args))
 	for _, a := range args {
 		if a.FieldName() == "timestamp" {
-			fields = append(fields, "toString(timestamp)")
+			fields = append(fields, "toString("+ctx.Registry.Column("timestamp").sql+")")
 			continue
 		}
 		ref, err := ResolveArg(a, ctx.Registry)
@@ -1048,7 +1050,7 @@ func requireMatched(b *Bound, def bool) bool {
 // compares against a String key, so the reference is cast either way.
 func matchFieldRef(a Argument, registry *FieldRegistry) string {
 	if a.FieldName() == "timestamp" {
-		return "toString(timestamp)"
+		return "toString(" + registry.Column("timestamp").sql + ")"
 	}
 	ref, err := ResolveArg(a, registry)
 	if err != nil {
@@ -1288,8 +1290,13 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	// Resolve through the registry so an earlier command that rewrote this field
 	// (lowercase, eval, regex...) is what gets looked up, not the raw stored value.
-	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
+	var fieldRef string
+	probeReads, _ := ctx.Registry.track(func() error { fieldRef = matchFieldRef(fieldArg, ctx.Registry); return nil })
 	probeRef := lk.probe(fieldRef)
+	if lk.prefilter != "" {
+		// The screen reads the list's expressions from its source table.
+		ctx.Registry.Foreign(lk.dict)
+	}
 	for _, col := range includeColumns {
 		safeCol, colErr := sanitizeIdentifier(col)
 		if colErr != nil {
@@ -1302,8 +1309,12 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	if strict {
 		// The stage it runs in: after an aggregation that is the grouped output.
-		ctx.Plan.CurrentStage().Layer.Where = append(ctx.Plan.CurrentStage().Layer.Where,
-			atom(lk.membership(probeRef)))
+		hit := atom(lk.membership(probeRef))
+		hit.deps = probeReads.deps()
+		if lk.prefilter != "" {
+			hit.deps = hit.deps.and(deps{foreign: true})
+		}
+		ctx.Plan.CurrentStage().Layer.Where = append(ctx.Plan.CurrentStage().Layer.Where, hit)
 	}
 	return nil
 }

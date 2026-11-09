@@ -98,7 +98,23 @@ func processAggSpec(spec *AggSpec, selects *[]SelectExpr, computedFields map[str
 		return false, nil
 	}
 	r := &aggRenderer{name: name, opts: readAggOptions(spec), registry: registry, selects: selects, computed: computedFields}
-	switch name {
+	// What the spec reads is recorded on each column it adds.
+	n := len(*selects)
+	got, err := registry.track(func() error { return r.render(spec) })
+	if err != nil {
+		return false, err
+	}
+	for i := n; i < len(*selects); i++ {
+		if s := &(*selects)[i]; s.agg != nil {
+			s.cols, s.colsKnown = got.columns(), true
+		}
+	}
+	return true, nil
+}
+
+// render adds the spec's columns.
+func (r *aggRenderer) render(spec *AggSpec) (err error) {
+	switch name := r.name; name {
 	case "corr", "rankcorr":
 		err = r.correlation(spec.Args)
 	case "count":
@@ -118,7 +134,7 @@ func processAggSpec(spec *AggSpec, selects *[]SelectExpr, computedFields map[str
 	default:
 		err = r.of(canonicalAggregate(name), true, nil, r.single)
 	}
-	return err == nil, err
+	return err
 }
 
 // aggRenderer renders one aggregate spec into a select list.
@@ -169,6 +185,7 @@ func (r *aggRenderer) of(agg string, numeric bool, ofTime aggregate, build func(
 	}
 	// The event time, or a field that resolves to it, as a copy of it does.
 	if name := r.opts.operand.FieldName(); ofTime != nil && name != "" && r.registry.Resolve(name) == "timestamp" {
+		r.registry.Column("timestamp") // what ofTime reads
 		return r.emit(out, ofTime)
 	}
 	v, err := r.operand(numeric)
@@ -179,7 +196,7 @@ func (r *aggRenderer) of(agg string, numeric bool, ofTime aggregate, build func(
 }
 
 func (r *aggRenderer) single(v string) aggregate {
-	a, _ := operandAggregate(r.name, v)
+	a, _ := operandAggregate(r.registry, r.name, v)
 	return a
 }
 

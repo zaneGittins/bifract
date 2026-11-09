@@ -143,14 +143,14 @@ func (h *simpleAggHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	switch {
 	case groups:
 		// Over a prior aggregation's output column, which is already a number.
-		operand = fmt.Sprintf("toFloat64(%s)", field)
+		operand = fmt.Sprintf("toFloat64(%s)", ctx.Registry.Column(field).sql)
 	case (h.name == "max" || h.name == "min") && ctx.Registry.Resolve(field) == "timestamp":
 	default:
 		if operand, err = aggOperandNumeric(arg, ctx.Registry); err != nil {
 			return fmt.Errorf("%s(): %w", h.name, err)
 		}
 	}
-	agg, _ := operandAggregate(h.name, operand)
+	agg, _ := operandAggregate(ctx.Registry, h.name, operand)
 	if err := aggAliasClash(source, h.name, alias, agg.sql()); err != nil {
 		return err
 	}
@@ -284,7 +284,7 @@ func (h *iqrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	var v string
 	if groups {
 		// Over a prior aggregation's output column, which is already a number.
-		v = fmt.Sprintf("toFloat64(%s)", field)
+		v = fmt.Sprintf("toFloat64(%s)", ctx.Registry.Column(field).sql)
 	} else if v, err = aggOperandNumeric(arg, ctx.Registry); err != nil {
 		return err
 	}
@@ -385,13 +385,15 @@ func (h *selectEdgeHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 		return fmt.Errorf("%s(): %w", h.name, err)
 	}
 	// Over the event time itself it is the earliest or latest time.
-	var agg aggregate = aggCall{fn: map[string]string{"first": "min", "last": "max"}[h.out], args: "timestamp"}
-	if arg.FieldName() != "timestamp" {
+	var agg aggregate
+	if arg.FieldName() == "timestamp" {
+		agg = aggCall{fn: map[string]string{"first": "min", "last": "max"}[h.out], args: ctx.Registry.Column("timestamp").sql}
+	} else {
 		ref, err := ResolveArg(arg, ctx.Registry)
 		if err != nil {
 			return fmt.Errorf("%s(): %w", h.name, err)
 		}
-		agg, _ = operandAggregate(strings.ToLower(h.name), ref)
+		agg, _ = operandAggregate(ctx.Registry, strings.ToLower(h.name), ref)
 	}
 	source := ctx.Plan.CurrentStage()
 	if err := aggAliasClash(source, h.name, alias, agg.sql()); err != nil {
@@ -515,7 +517,7 @@ func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if _, err := pushCarryForwardStage(ctx); err != nil {
 			return fmt.Errorf("mad(): %w", err)
 		}
-		v = fmt.Sprintf("toFloat64(%s)", field)
+		v = fmt.Sprintf("toFloat64(%s)", ctx.Registry.Column(field).sql)
 	} else if v, err = aggOperandNumeric(arg, ctx.Registry); err != nil {
 		return fmt.Errorf("mad(): %w", err)
 	}
@@ -574,9 +576,9 @@ func countedKeyRef(keyArg Argument, computed map[string]bool, isMultiStage bool,
 		}
 		return sql, nil
 	case computed[arg], isMultiStage, arg == "timestamp", arg == normLogColumn, arg == "log_id", arg == "normalizer":
-		return arg, nil
+		return ctx.Registry.Column(arg).sql, nil
 	}
-	return ctx.Registry.fieldRef(arg), nil
+	return ctx.Registry.Stored(arg).sql, nil
 }
 
 func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
@@ -725,13 +727,12 @@ func groupByKey(ctx *CommandContext, source *QueryStage, key Argument, computedF
 		}
 		keyAlias = safe
 		switch {
-		case arg == "timestamp" || arg == normLogColumn || arg == "log_id" || arg == "normalizer":
-			fieldRef = arg
-		case computedFields[arg] || multiStage:
+		case arg == "timestamp" || arg == normLogColumn || arg == "log_id" || arg == "normalizer",
 			// Computed fields, and in multi-stage every field, are read by alias.
-			fieldRef = arg
+			computedFields[arg] || multiStage:
+			fieldRef = ctx.Registry.Column(arg).sql
 		default:
-			fieldRef = ctx.Registry.fieldRef(arg)
+			fieldRef = ctx.Registry.Stored(arg).sql
 		}
 	}
 	source.Layer.groupBy(fieldRef, unquoteIdent(keyAlias))

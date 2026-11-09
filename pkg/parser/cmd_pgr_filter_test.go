@@ -186,7 +186,7 @@ func TestPgrCandidatesNarrowOnlyOwnEntries(t *testing.T) {
 	set := func(c *CommandContext) func() []string { return func() []string { return []string{pgrCandidates(c)} } }
 	own := pgrFilterSQL(CommandNode{}, ctx, "a", set(ctx))
 	foreign := pgrFilterSQL(CommandNode{}, other, "b", set(other))
-	ctx.Plan.SourceStage().Layer.Where = []predicate{atom("fields.`user`::String = 'bob'"), own, foreign}
+	ctx.Plan.SourceStage().Layer.Where = []predicate{scanAtom("fields.`user`::String = 'bob'"), own, foreign}
 	narrowPgrCandidates(ctx)
 	where := ctx.Plan.SourceStage().Layer.Where
 	if !strings.Contains(where[1].sql, "AND fields.`user`::String = 'bob'") {

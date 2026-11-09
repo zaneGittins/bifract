@@ -273,6 +273,7 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	n, unit := parseBucketSpan(span)
+	ctx.Registry.Column("timestamp") // what every bucket reads
 	bucketExpr := getBucketExpression(n, unit, bucketTimezone(ctx))
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: bucketExpr, Alias: "time_bucket"})
 

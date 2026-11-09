@@ -67,7 +67,7 @@ func (h *correlationHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		if err != nil {
 			return fmt.Errorf("%s(): %w", h.name, err)
 		}
-		agg := corrAgg{rank: h.name == "rankcorr", x: fmt.Sprintf("toFloat64(%s)", xArg.FieldName()), y: fmt.Sprintf("toFloat64(%s)", yArg.FieldName())}
+		agg := corrAgg{rank: h.name == "rankcorr", x: fmt.Sprintf("toFloat64(%s)", ctx.Registry.Column(xArg.FieldName()).sql), y: fmt.Sprintf("toFloat64(%s)", ctx.Registry.Column(yArg.FieldName()).sql)}
 		stage.Layer.Selects = append(stage.Layer.Selects, aggSelect(agg, alias))
 		ctx.Plan.aggregationOutputs[alias] = true
 		ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)

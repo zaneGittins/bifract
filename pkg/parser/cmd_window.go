@@ -86,7 +86,7 @@ func setWindowValue(arg Argument, ctx *CommandContext, name string) error {
 		return err
 	}
 	if measuresAggregateOutput(arg, ctx) {
-		ctx.Plan.window.zScoreExpr = fmt.Sprintf("toFloat64(%s)", arg.FieldName())
+		ctx.Plan.window.zScoreExpr = fmt.Sprintf("toFloat64(%s)", ctx.Registry.Column(arg.FieldName()).sql)
 		return nil
 	}
 	fieldRef, err := ResolveArg(arg, ctx.Registry)
@@ -177,7 +177,7 @@ func (h *histogramHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	switch {
 	case ctx.Plan.aggregationOutputs[field]:
 		// An aggregate's output column is already numeric.
-		ctx.Plan.histogram.valueExpr = fmt.Sprintf("toFloat64(%s)", field)
+		ctx.Plan.histogram.valueExpr = fmt.Sprintf("toFloat64(%s)", ctx.Registry.Column(field).sql)
 	case computedFields[field]:
 		// A computed column is projected by this stage under its own alias.
 		ctx.Plan.histogram.valueExpr = fmt.Sprintf("toFloat64OrNull(toString(%s))", field)

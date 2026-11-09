@@ -98,11 +98,16 @@ func classifyConditions(conditions []Condition, registry *FieldRegistry, plan *Q
 		}
 
 		if cond.Expr != nil {
-			compiled, stage, err := classifyExprCondition(cond, registry, plan, willHaveAggregation)
+			var stage stageBucket
+			compiled, err := registry.predicate(func() (predicate, error) {
+				sql, s, err := classifyExprCondition(cond, registry, plan, willHaveAggregation)
+				stage = s
+				return atom(sql), err
+			})
 			if err != nil {
 				return err
 			}
-			cond.compiled = atom(compiled)
+			cond.compiled = compiled
 			target := plan.pending.bucket(stage)
 			*target = append(*target, cond)
 			continue
@@ -144,21 +149,24 @@ func compileNestedExprLeaves(cond *Condition, stage stageBucket, registry *Field
 	if cond.Expr == nil || !cond.compiled.empty() {
 		return nil
 	}
-	var sql string
-	var err error
-	switch {
-	case cond.Operator != "":
-		sql, err = exprMatchSQL(*cond, registry)
-	case stage == bucketDeferred:
-		sql, err = exprConditionSQLDeferred(cond.Expr, registry, plan.deferredScope(), cond.Negate)
-	default:
-		sql, err = exprConditionSQL(cond.Expr, registry, cond.Negate)
-	}
+	// Every expression filter compiles bracketed or negated: one operand.
+	p, err := registry.predicate(func() (predicate, error) {
+		var sql string
+		var err error
+		switch {
+		case cond.Operator != "":
+			sql, err = exprMatchSQL(*cond, registry)
+		case stage == bucketDeferred:
+			sql, err = exprConditionSQLDeferred(cond.Expr, registry, plan.deferredScope(), cond.Negate)
+		default:
+			sql, err = exprConditionSQL(cond.Expr, registry, cond.Negate)
+		}
+		return atom(sql), err
+	})
 	if err != nil {
 		return err
 	}
-	// Every expression filter compiles bracketed or negated: one operand.
-	cond.compiled = atom(sql)
+	cond.compiled = p
 	return nil
 }
 
@@ -545,7 +553,6 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 // A row cap between the lookup and the filter selects rows first, so a filter after
 // one stays on the joined rows.
 func materializePostJoin(conds []Condition, registry *FieldRegistry, plan *QueryPlan) {
-	isModelColumn := func(c string) bool { return slices.Contains(plan.lookup.Fields, c) }
 	capBetween := func(at int) bool {
 		return slices.ContainsFunc(plan.SourceStage().Layer.Caps, func(c RowCap) bool {
 			return c.At > plan.lookup.Cmd && c.At < at
@@ -562,7 +569,7 @@ func materializePostJoin(conds []Condition, registry *FieldRegistry, plan *Query
 			clause := materializeCondGroup([]Condition{c}, reg, nil, false)
 			switch {
 			case clause.empty():
-			case plan.lookup.Strict && !capBetween(at) && readsOnly(clause.sql, isModelColumn):
+			case plan.lookup.Strict && !capBetween(at) && clause.deps.model:
 				plan.lookup.Where = append(plan.lookup.Where, clause)
 				if requiresNew(c, reg) {
 					plan.lookup.keys.scoreOnlyNew()
@@ -671,7 +678,8 @@ func renderCondition(c Condition, registry *FieldRegistry, scope *deferredScope,
 		if !c.compiled.empty() {
 			return c.compiled
 		}
-		return buildConditionSQL(c, registry, scope, atScan)
+		p, _ := registry.predicate(func() (predicate, error) { return buildConditionSQL(c, registry, scope, atScan), nil })
+		return p
 	}
 	parts := make([]predicate, len(c.Children))
 	for i, child := range c.Children {
@@ -692,7 +700,13 @@ func renderCondition(c Condition, registry *FieldRegistry, scope *deferredScope,
 // with a norm_log index hint when it filters a stored field or norm_log itself on
 // the logs scan.
 func buildConditionSQL(cond Condition, registry *FieldRegistry, scope *deferredScope, atScan bool) predicate {
-	fieldRef, isJSONField := resolveConditionField(cond, registry)
+	var isJSONField bool
+	ref := registry.through(scope, cond.Field, func() sqlRef {
+		var ref sqlRef
+		ref, isJSONField = resolveConditionField(cond, registry)
+		return ref
+	})
+	fieldRef := ref.sql
 	p := conditionSQL(cond, registry, scope, fieldRef, isJSONField)
 	onNormLog := fieldRef == normLogColumn
 	if p.empty() || !atScan || !(isJSONField || onNormLog) || !registry.normLogIndexHints {
@@ -706,42 +720,23 @@ func buildConditionSQL(cond Condition, registry *FieldRegistry, scope *deferredS
 
 // resolveConditionField returns the reference a condition's field compiles to, and
 // whether that is a stored JSON path rather than a column or computed field.
-func resolveConditionField(cond Condition, registry *FieldRegistry) (fieldRef string, isJSONField bool) {
-	entry := registry.Get(cond.Field)
-	if entry != nil {
+func resolveConditionField(cond Condition, registry *FieldRegistry) (ref sqlRef, isJSONField bool) {
+	if entry := registry.Get(cond.Field); entry != nil {
 		switch entry.Kind {
 		case FieldKindPerRow, FieldKindAssignment:
-			fieldRef = registry.Resolve(cond.Field)
-		case FieldKindBase:
-			fieldRef = entry.Expr
-		case FieldKindAggregate:
-			fieldRef = entry.Name
-		case FieldKindWindow:
-			fieldRef = entry.Name
-		case FieldKindJoined:
-			fieldRef = entry.Name
-		default:
-			fieldRef = entry.Name
+			return registry.Ref(cond.Field), false
 		}
-	} else {
-		// Check aggregate function aliases
-		switch {
-		case registry.bareAggregate(cond.Field):
-			fieldRef = "_" + cond.Field
-		case cond.Field == normLogColumn:
-			fieldRef = contentColMode(registry.sourceMode)
-		case cond.Field == "timestamp":
-			fieldRef = "timestamp"
-		case cond.Field == "log_id":
-			fieldRef = "log_id"
-		case cond.Field == "normalizer" || cond.Field == "_normalizer":
-			fieldRef = "normalizer"
-		default:
-			fieldRef = registry.fieldRef(cond.Field)
-			isJSONField = true
-		}
+		return registry.Column(entry.Name), false
 	}
-	return fieldRef, isJSONField
+	switch {
+	case registry.bareAggregate(cond.Field):
+		return registry.Column("_" + cond.Field), false
+	case cond.Field == normLogColumn, cond.Field == "timestamp", cond.Field == "log_id":
+		return registry.Column(cond.Field), false
+	case cond.Field == "normalizer" || cond.Field == "_normalizer":
+		return registry.Column("normalizer"), false
+	}
+	return registry.Ref(cond.Field), true
 }
 
 // conditionSQL compiles a single Condition, its field already resolved.
@@ -752,15 +747,16 @@ func conditionSQL(cond Condition, registry *FieldRegistry, scope *deferredScope,
 		return notOf(conditionSQL(cond, registry, scope, fieldRef, isJSONField))
 	}
 	entry := registry.Get(cond.Field)
-	// At a deferred layer a source expression must be read from its exported hidden
-	// column; bare column names pass through untouched.
-	fieldRef = scope.ref(fieldRef, cond.Field)
 	mode := sourceModeOf(registry)
 	switch {
 	case cond.ValueField != "":
 		// field(name) on the right-hand side: compare against another field.
-		rhs := resolveValueField(cond.ValueField, registry)
-		rhs.ref = scope.ref(rhs.ref, cond.ValueField)
+		var rhs condOperand
+		r := registry.through(scope, cond.ValueField, func() sqlRef {
+			rhs = resolveValueField(cond.ValueField, registry)
+			return sqlRef{sql: rhs.ref, form: rhs.form}
+		})
+		rhs.ref, rhs.form = r.sql, r.form
 		// A bare count/sum/avg has no registry entry but resolves to the numeric
 		// _count/_sum/_avg alias, which textToNumber rejects (code 43).
 		computed := registry.bareAggregate(cond.Field) || (entry != nil && entry.Kind != FieldKindBase && entry.Kind != FieldKindJSON)
@@ -1004,6 +1000,7 @@ func withPostSourceColumns(c Condition, registry *FieldRegistry, plan *QueryPlan
 			registry = registry.Clone()
 			registry.Register(f, FieldKindPerRow, f, -1)
 			registry.SetResolveExpr(f, f)
+			registry.setReads(f, deps{})
 		}
 	}
 	return registry
@@ -1014,9 +1011,13 @@ func withPostSourceColumns(c Condition, registry *FieldRegistry, plan *QueryPlan
 func withDeferredColumns(cmd CommandNode, registry *FieldRegistry, plan *QueryPlan) *FieldRegistry {
 	registry = registry.Clone()
 	for _, f := range conditionCommandFields(cmd) {
-		ref := plan.deferredScope().ref(registry.Resolve(f), f)
-		registry.Register(f, FieldKindPerRow, ref, -1)
-		registry.SetResolveExpr(f, ref)
+		ref := registry.through(plan.deferredScope(), f, func() sqlRef { return registry.Ref(f) })
+		registry.Register(f, FieldKindPerRow, ref.sql, -1)
+		registry.SetResolveExpr(f, ref.sql)
+		registry.setReads(f, ref.deps)
+		if ref.form == refColumn {
+			registry.setColumn(f)
+		}
 	}
 	return registry
 }
@@ -1035,7 +1036,7 @@ func negatedCommandPredicate(cmd CommandNode, ctx *CommandContext) (predicate, e
 	if negate {
 		cmd.Negate = false
 	}
-	p, err := h.predicate(cmd, ctx)
+	p, err := ctx.Registry.predicate(func() (predicate, error) { return h.predicate(cmd, ctx) })
 	switch {
 	case err != nil && negate:
 		return predicate{}, fmt.Errorf("NOT %s(): %w", commandDisplayName(cmd.Name), err)
