@@ -316,6 +316,9 @@ type formatPlan struct {
 	selects []SelectExpr
 	orderBy []OrderTerm
 	limit   string
+	// aboveJoin are columns commands compute from a join()'s outputs, which exist
+	// only above its wrap, where the formatter computes them.
+	aboveJoin []SelectExpr
 }
 
 // windowPlan is the z-score and outlier layers over the stages.

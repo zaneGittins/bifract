@@ -43,6 +43,7 @@ func (h *mitreHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *mitreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	source := ctx.Plan.CurrentStage()
 	if len(source.Layer.GroupBy) > 0 {
 		return fmt.Errorf("mitre() reads raw events and must come before groupby()/timechart()")
@@ -107,9 +108,9 @@ func (h *mitreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// HAVING; registering it as an aggregate output routes it there instead of to a
 	// pre-aggregation JSON reference that does not exist.
 	ctx.Registry.Register(mitreTagAlias, FieldKindAggregate, mitreTagAlias, ctx.CmdIndex)
-	ctx.Registry.SetResolveExpr(mitreTagAlias, mitreTagAlias)
+	ctx.Registry.define(mitreTagAlias, mitreTagAlias, readsFrom)
 	ctx.Registry.Register("_count", FieldKindAggregate, "_count", ctx.CmdIndex)
-	ctx.Registry.SetResolveExpr("_count", "_count")
+	ctx.Registry.define("_count", "_count", readsFrom)
 	ctx.Plan.aggregationOutputs["_count"] = true
 	ctx.Plan.IsAggregated = true
 

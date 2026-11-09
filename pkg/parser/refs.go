@@ -1,5 +1,7 @@
 package parser
 
+import "slices"
+
 // A field reaches SQL only through the registry, as an sqlRef: its SQL and what that
 // reads. The registry records every reference it hands out in the scopes open at
 // the time (see track), so a filter, a column or a field computed in a scope knows
@@ -17,9 +19,23 @@ const (
 	refColumn
 )
 
+// valueType is the SQL type a value is known to have.
+type valueType int
+
+const (
+	typeUnknown valueType = iota
+	// typeText is a String that is never NULL, as a stored field is.
+	typeText
+	// typeString is a String that may be NULL, as a function's result may be.
+	typeString
+	typeNumber
+	typeArray
+)
+
 // deps is what a value reads, as far as placing it is concerned.
 type deps struct {
 	join    bool // a join output, so it exists only after the join
+	wrap    bool // a join() output, which exists only above the join's wrapping SELECT
 	foreign bool // another table, through a subquery
 	scan    bool // only what the logs table itself has, so its scan can evaluate it
 	model   bool // only the joined model's columns
@@ -33,7 +49,7 @@ var noDeps = deps{scan: true, model: true}
 
 // and is what a value reading both d and o depends on.
 func (d deps) and(o deps) deps {
-	return deps{join: d.join || o.join, foreign: d.foreign || o.foreign, scan: d.scan && o.scan, model: d.model && o.model}
+	return deps{join: d.join || o.join, wrap: d.wrap || o.wrap, foreign: d.foreign || o.foreign, scan: d.scan && o.scan, model: d.model && o.model}
 }
 
 // sqlRef is a reference as SQL: the field it names, in which form, and what the SQL
@@ -45,6 +61,40 @@ type sqlRef struct {
 	deps deps
 	// cols are the columns an expression reads by name.
 	cols []string
+	// typ is the SQL type the value is known to have.
+	typ valueType
+}
+
+// typed is the reference known to have type t.
+func (s sqlRef) typed(t valueType) sqlRef {
+	s.typ = t
+	return s
+}
+
+// text is the reference where only a String will do: a number is converted, and
+// anything else is read as it is.
+func (s sqlRef) text() string {
+	if s.typ == typeNumber {
+		return "toString(" + s.sql + ")"
+	}
+	return s.sql
+}
+
+// typeOf is the SQL type a field's value has: what was recorded where it was
+// computed, a stored field's String, or what every value of its kind is.
+func (r *FieldRegistry) typeOf(name string) valueType {
+	entry, ok := r.fields[name]
+	switch {
+	case !ok || r.resolvesToStored(name):
+		return typeText
+	case entry.typ != typeUnknown:
+		return entry.typ
+	}
+	switch entry.Kind {
+	case FieldKindAggregate, FieldKindAssignment, FieldKindWindow, FieldKindJoined:
+		return typeNumber
+	}
+	return typeUnknown
 }
 
 // reads is what a piece of SQL references, in the order it did.
@@ -120,7 +170,7 @@ func (r *FieldRegistry) Ref(name string) sqlRef {
 	if entry.column {
 		form = refColumn
 	}
-	return r.record(sqlRef{sql: sql, name: name, form: form, deps: r.valueDeps(entry), cols: entry.readCols()})
+	return r.record(sqlRef{sql: sql, name: name, form: form, deps: r.valueDeps(entry), cols: entry.readCols(), typ: r.typeOf(name)})
 }
 
 // Column is the reference to a field by its column name. Only the logs table's
@@ -130,11 +180,15 @@ func (r *FieldRegistry) Column(name string) sqlRef {
 	d := deps{scan: scanColumns[name]}
 	if entry, ok := r.fields[name]; ok {
 		v := r.valueDeps(entry)
-		d.join, d.foreign = v.join, v.foreign
+		d.join, d.wrap, d.foreign = v.join, v.wrap, v.foreign
 		d.scan = d.scan && entry.Kind == FieldKindBase
 		d.model = v.model && entry.Kind == FieldKindJoined
 	}
-	return r.record(sqlRef{sql: name, name: name, form: refColumn, deps: d})
+	t := typeUnknown
+	if _, ok := r.fields[name]; ok {
+		t = r.typeOf(name)
+	}
+	return r.record(sqlRef{sql: name, name: name, form: refColumn, deps: d, typ: t})
 }
 
 // Foreign records a read of another table, through a subquery.
@@ -158,13 +212,13 @@ func columnRef(col string) sqlRef {
 // Stored is a read of the stored log field name, whatever the registry holds under
 // that name.
 func (r *FieldRegistry) Stored(name string) sqlRef {
-	return r.record(sqlRef{sql: r.fieldRef(name), name: name, form: refExpr, deps: deps{scan: true}})
+	return r.record(sqlRef{sql: r.fieldRef(name), name: name, form: refExpr, deps: deps{scan: true}, typ: typeText})
 }
 
 // jsonRef is a read of the stored field name as its JSON sub-column, whatever the
 // registry holds under that name.
 func (r *FieldRegistry) jsonRef(name string) sqlRef {
-	return r.record(sqlRef{sql: jsonFieldRef(name), name: name, form: refExpr, deps: deps{scan: true}})
+	return r.record(sqlRef{sql: jsonFieldRef(name), name: name, form: refExpr, deps: deps{scan: true}, typ: typeText})
 }
 
 // computed records a read of a computed field through the expression that computes
@@ -242,6 +296,11 @@ func (r *FieldRegistry) through(scope *deferredScope, label string, resolve func
 	}
 	var ref sqlRef
 	got := r.isolated(func() { ref = resolve() })
+	if _, named := r.fields[ref.name]; named && ref.deps.wrap && ref.form == refExpr {
+		// Computed from a join()'s outputs, it is a column above the join's wrap
+		// only: the scan cannot export it, and a layer above reads it by name.
+		return r.Column(ref.name)
+	}
 	out, exported := scope.ref(ref, label)
 	if exported {
 		return r.record(out)
@@ -250,4 +309,33 @@ func (r *FieldRegistry) through(scope *deferredScope, label string, resolve func
 		r.record(g)
 	}
 	return out
+}
+
+// readMark is a point in the innermost open scope, from which since lists what
+// was referenced. A field marks before building its SQL, so what it reads is what
+// was referenced since, whatever else its command reads.
+type readMark struct{ depth, at int }
+
+// mark is the current point in the innermost open scope.
+func (r *FieldRegistry) mark() readMark {
+	if r.rec == nil || len(r.rec.scopes) == 0 {
+		return readMark{depth: -1}
+	}
+	n := len(r.rec.scopes) - 1
+	return readMark{depth: n, at: len(r.rec.scopes[n])}
+}
+
+// since lists what was referenced in m's scope after m.
+func (r *FieldRegistry) since(m readMark) reads {
+	if m.depth < 0 || m.depth >= len(r.rec.scopes) {
+		return nil
+	}
+	return slices.Clone(r.rec.scopes[m.depth][m.at:])
+}
+
+// define sets a field's expression and records what was referenced since m as
+// what it reads.
+func (r *FieldRegistry) define(name, expr string, m readMark) {
+	r.SetResolveExpr(name, expr)
+	r.setRead(name, r.since(m))
 }

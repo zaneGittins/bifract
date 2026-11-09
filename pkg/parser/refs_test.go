@@ -193,3 +193,74 @@ func TestAggregateReadsTheColumnsOfAFoldedField(t *testing.T) {
 		}
 	}
 }
+
+// Each field a command defines reads only what its own SQL reads, so a filter on
+// one computed from stored fields stays on the scan even when the same command
+// also reads the model join.
+func TestFieldsOfOneCommandReadOnlyTheirOwn(t *testing.T) {
+	q := plannedFor(t, `* | modelLookup(model="fs", key=[user]) | eval(a=is_new, b=length(image)) | b > 5`, mlookupOpts())
+	if !q.ctx.Registry.DependsOnJoin("a") || q.ctx.Registry.DependsOnJoin("b") {
+		t.Errorf("a joins=%v b joins=%v", q.ctx.Registry.DependsOnJoin("a"), q.ctx.Registry.DependsOnJoin("b"))
+	}
+	if len(q.ctx.Plan.lookup.PostJoinWhere) != 0 {
+		t.Errorf("b > 5 waits for the join: %s", q.ctx.Plan.lookup.PostJoinWhere[0].Pred.sql)
+	}
+	h := plannedFor(t, `* | modelLookup(model="fs", key=[user]) | heatmap(x=is_new, y=image)`, mlookupOpts()).ctx.Registry
+	if !h.DependsOnJoin("_heatmap_x") || h.DependsOnJoin("_heatmap_y") {
+		t.Errorf("heatmap axes: x joins=%v y joins=%v", h.DependsOnJoin("_heatmap_x"), h.DependsOnJoin("_heatmap_y"))
+	}
+}
+
+// A reference carries the SQL type its value has, recorded where it is computed,
+// and each use converts by it: a String function converts a number, an ordering
+// parses text, and an aggregate parses only what is not a number already.
+func TestReferencesCarryTheirType(t *testing.T) {
+	for q, want := range map[string]string{
+		`* | join(dst_ip) { * | groupby(dst_ip) } | len(_join__count)`: "length(toString(_join__count))",
+		`* | x := length(user) | lowercase(x, output=y)`:               "lower(toString(length(fields.`user`::String)))",
+		`* | k := host | k > 1`:                                        "toFloat64OrDefault(fields.`host`::String, nan) > 1",
+		`* | a := "z" | lowercase(a)`:                                  "lower('z') AS a",
+		`* | eval(n = length(user)) | sum(n)`:                          "sum(toFloat64(",
+	} {
+		if sql := mustTranslate(t, q, goldenBase()); !strings.Contains(sql, want) {
+			t.Errorf("%s: want %q in\n%s", q, want, sql)
+		}
+	}
+}
+
+// Review findings: each translation keeps results the earlier SQL gave, and runs.
+func TestReviewedTypeAndJoinShapes(t *testing.T) {
+	for _, c := range []struct{ q, want, not string }{
+		// A String result may be NULL: NOT modelLookup() keeps such a row.
+		{`* | eval(k = tostring(bytes * 2)) | !modelLookup(model="fs", key=[k])`, "ifNull(toString(", ""},
+		// An array's length counts its elements.
+		{`* | groupby(user, function=collect(image)) | len(_collect)`, "length(_collect)", "toString(_collect)"},
+		// A number hashes as the number it is.
+		{`* | groupby(user) | hash(_count)`, "(_count)", "toString(_count)"},
+		{`* | eval(n = length(user)) | hash(n)`, "", "toString(length"},
+	} {
+		sql := translateML(t, c.q)
+		if c.want != "" && !strings.Contains(sql, c.want) || c.not != "" && strings.Contains(sql, c.not) {
+			t.Errorf("%s: want %q, not %q:\n%s", c.q, c.want, c.not, sql)
+		}
+	}
+}
+
+// tlsh()'s columns read the field they hash, so a filter on one never goes to the
+// model's side.
+func TestTLSHColumnsReadTheirField(t *testing.T) {
+	o := mlookupOpts()
+	o.HasTLSHFilter, o.TLSHMatches = true, []TLSHMatch{{Digest: "d", Distance: 1, Needle: "T1A"}}
+	q := `* | modelLookup(model="fs", key=[user]) | tlsh(field=sha, hash="T1A") | tlsh_distance < 50 OR is_new = "1"`
+	pl, err := ParseQuery(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := planQuery(pl, o)
+	if err != nil {
+		t.Skip(err)
+	}
+	if len(p.ctx.Plan.lookup.Where) > 0 {
+		t.Errorf("on the model's side: %s", p.ctx.Plan.lookup.Where[0].sql)
+	}
+}

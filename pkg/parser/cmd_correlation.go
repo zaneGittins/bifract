@@ -42,6 +42,7 @@ func (h *correlationHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 }
 
 func (h *correlationHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -68,7 +69,7 @@ func (h *correlationHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 			return fmt.Errorf("%s(): %w", h.name, err)
 		}
 		agg := corrAgg{rank: h.name == "rankcorr", x: fmt.Sprintf("toFloat64(%s)", ctx.Registry.Column(xArg.FieldName()).sql), y: fmt.Sprintf("toFloat64(%s)", ctx.Registry.Column(yArg.FieldName()).sql)}
-		stage.Layer.Selects = append(stage.Layer.Selects, aggSelect(agg, alias))
+		stage.Layer.Selects = append(stage.Layer.Selects, ctx.Registry.aggSelectFrom(agg, alias, readsFrom))
 		ctx.Plan.aggregationOutputs[alias] = true
 		ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
 	} else {
@@ -91,10 +92,10 @@ func (h *correlationHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		if err := aggAliasClash(source, h.name, alias, sqlExpr); err != nil {
 			return err
 		}
-		source.Layer.Selects = append(source.Layer.Selects, aggSelect(agg, alias))
+		source.Layer.Selects = append(source.Layer.Selects, ctx.Registry.aggSelectFrom(agg, alias, readsFrom))
 		ctx.Plan.aggregationOutputs[alias] = true
 	}
-	ctx.Registry.SetResolveExpr(alias, alias)
+	ctx.Registry.define(alias, alias, readsFrom)
 	ctx.Plan.IsAggregated = true
 	return nil
 }

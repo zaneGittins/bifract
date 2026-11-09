@@ -119,15 +119,15 @@ func renderTLSHLiterals(matches []TLSHMatch) (digests, distances, needles []stri
 // so the scores travel with the rows instead of needing a second lookup. Rows that
 // matched the query some other way (tlsh() as one side of an OR) fall to the
 // defaults, which is why this is correct wherever the filter itself sits.
-func projectTLSHTransforms(ctx *CommandContext, source *QueryStage, fieldRef string, digests, distances, needles []string) {
+func projectTLSHTransforms(ctx *CommandContext, source *QueryStage, field sqlRef, digests, distances, needles []string) {
 	distanceExpr := fmt.Sprintf("transform(%s, [%s], [%s], -1)",
-		fieldRef, strings.Join(digests, ", "), strings.Join(distances, ", "))
+		field.sql, strings.Join(digests, ", "), strings.Join(distances, ", "))
 	matchExpr := fmt.Sprintf("transform(%s, [%s], [%s], '')",
-		fieldRef, strings.Join(digests, ", "), strings.Join(needles, ", "))
+		field.sql, strings.Join(digests, ", "), strings.Join(needles, ", "))
 
 	source.Layer.UpsertSelect(SelectExpr{Expr: distanceExpr, Alias: TLSHDistanceField})
 	source.Layer.UpsertSelect(SelectExpr{Expr: matchExpr, Alias: TLSHMatchField})
-	publishTLSHExprs(ctx, distanceExpr, matchExpr)
+	publishTLSHExprs(ctx, distanceExpr, matchExpr, reads{field})
 }
 
 // publishTLSHExprs tells the registry what these columns actually compute.
@@ -139,9 +139,13 @@ func projectTLSHTransforms(ctx *CommandContext, source *QueryStage, fieldRef str
 // added above was discarded and the placeholder resolved to a log field that does
 // not exist. Publishing the real expression is the convention every transform
 // command follows (see cmd_transforms.go).
-func publishTLSHExprs(ctx *CommandContext, distanceExpr, matchExpr string) {
-	ctx.Registry.SetResolveExpr(TLSHDistanceField, distanceExpr)
-	ctx.Registry.SetResolveExpr(TLSHMatchField, matchExpr)
+func publishTLSHExprs(ctx *CommandContext, distanceExpr, matchExpr string, read reads) {
+	for name, expr := range map[string]string{TLSHDistanceField: distanceExpr, TLSHMatchField: matchExpr} {
+		ctx.Registry.SetResolveExpr(name, expr)
+		ctx.Registry.setRead(name, read)
+	}
+	ctx.Registry.setType(TLSHDistanceField, typeNumber)
+	ctx.Registry.setType(TLSHMatchField, typeText)
 }
 
 // projectTLSHConstants emits the "no match on this row" form of the projected
@@ -149,7 +153,7 @@ func publishTLSHExprs(ctx *CommandContext, distanceExpr, matchExpr string) {
 func projectTLSHConstants(ctx *CommandContext, source *QueryStage) {
 	source.Layer.UpsertSelect(SelectExpr{Expr: "toInt32(-1)", Alias: TLSHDistanceField})
 	source.Layer.UpsertSelect(SelectExpr{Expr: "''", Alias: TLSHMatchField})
-	publishTLSHExprs(ctx, "toInt32(-1)", "''")
+	publishTLSHExprs(ctx, "toInt32(-1)", "''", nil)
 }
 
 // projectTLSHColumns registers and projects tlsh_distance and tlsh_match for a
@@ -172,7 +176,7 @@ func projectTLSHColumns(pipeline *PipelineNode, ctx *CommandContext) error {
 		projectTLSHConstants(ctx, source)
 		return nil
 	}
-	projectTLSHTransforms(ctx, source, ctx.Registry.jsonRef(p.Field).sql, digests, distances, needles)
+	projectTLSHTransforms(ctx, source, ctx.Registry.jsonRef(p.Field), digests, distances, needles)
 	return nil
 }
 

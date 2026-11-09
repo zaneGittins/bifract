@@ -872,22 +872,14 @@ func timeFormatExpr(field Argument, chFormat, timezone string, registry *FieldRe
 		lenientDateTime(ref, field.IsFieldName() && registry.isText(field.FieldName())), escapeString(chFormat), escapeString(timezone)), nil
 }
 
-// numericCast wraps a resolved field reference for use inside aggregate
-// functions. Fields that are already numeric (FieldKindAssignment, e.g.
-// length(), levenshtein()) use toFloat64; string-typed fields use
-// toFloat64OrNull which handles non-numeric strings gracefully.
-func numericCast(fieldName, resolvedExpr string, registry *FieldRegistry) string {
-	if registry != nil && registry.IsNumericComputed(fieldName) {
-		return fmt.Sprintf("toFloat64(%s)", resolvedExpr)
+// numericCast is a field's value as a Float64 for an aggregate: a number is
+// converted, and anything else parsed, NULL where it is no number. The OrNull
+// parse takes only a String.
+func numericCast(ref sqlRef) string {
+	if ref.typ == typeNumber {
+		return fmt.Sprintf("toFloat64(%s)", ref.sql)
 	}
-	// Join-output columns are concretely typed (Float64 scores, String flags);
-	// toFloat64 handles both, while toFloat64OrNull rejects non-String input.
-	if registry != nil {
-		if e := registry.Get(fieldName); e != nil && e.Kind == FieldKindJoined {
-			return fmt.Sprintf("toFloat64(%s)", resolvedExpr)
-		}
-	}
-	return fmt.Sprintf("toFloat64OrNull(%s)", resolvedExpr)
+	return fmt.Sprintf("toFloat64OrNull(%s)", ref.sql)
 }
 
 // strftimeOnlySpecifiers are strftime spellings ClickHouse's formatDateTime lacks, mapped to

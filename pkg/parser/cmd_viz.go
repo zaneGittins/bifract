@@ -257,6 +257,7 @@ func (h *timechartHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	source := ctx.Plan.CurrentStage()
 	// timechart() buckets events by their time, which a later stage no longer has.
 	if !source.IsSource {
@@ -315,7 +316,7 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			// output so stage assembly keeps it (a per-row alias would be stripped).
 			source.Layer.UpsertSelect(SelectExpr{Expr: expr, Alias: safe})
 			ctx.Registry.Register(f, FieldKindAggregate, f, ctx.CmdIndex)
-			ctx.Registry.SetResolveExpr(f, f)
+			ctx.Registry.define(f, f, readsFrom)
 			ctx.Plan.aggregationOutputs[f] = true
 			percentFields = append(percentFields, f)
 		}
@@ -547,11 +548,12 @@ func aggFlag(spec *AggSpec, def bool, names ...string) bool {
 
 // declareChartKey records a column a chart groups by under the alias it outputs.
 func declareChartKey(ctx *CommandContext, field, alias string) {
+	readsFrom := ctx.Registry.mark()
 	if field == "" {
 		return
 	}
 	ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
-	ctx.Registry.SetResolveExpr(alias, alias)
+	ctx.Registry.define(alias, alias, readsFrom)
 	ctx.Registry.SetGroupKeyAlias(field, alias, ctx.CmdIndex)
 	if alias != field {
 		ctx.Registry.SetGroupKeyAlias(alias, alias, ctx.CmdIndex)

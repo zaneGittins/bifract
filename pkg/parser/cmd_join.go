@@ -118,6 +118,7 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	for _, col := range joinCarriedColumns(subResult.FieldOrder, includeFields, safeKey) {
 		name := joinPrefixed(col)
 		ctx.Registry.Register(name, FieldKindJoined, name, ctx.CmdIndex)
+		ctx.Registry.setReads(name, deps{join: true, wrap: true})
 	}
 
 	return nil

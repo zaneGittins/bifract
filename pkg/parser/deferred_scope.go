@@ -45,7 +45,9 @@ func (s *deferredScope) ref(ref sqlRef, label string) (sqlRef, bool) {
 	if s == nil || trimmed == "" || ref.form == refColumn && trimmed != normLogColumn {
 		return ref, false
 	}
-	exported := func(name string) (sqlRef, bool) { return sqlRef{sql: name, name: name, form: refColumn}, true }
+	exported := func(name string) (sqlRef, bool) {
+		return sqlRef{sql: name, name: name, form: refColumn, typ: ref.typ}, true
+	}
 	if name, ok := s.alias[trimmed]; ok {
 		return exported(name)
 	}

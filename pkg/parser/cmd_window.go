@@ -43,9 +43,10 @@ func (h *modifiedZScoreHandler) Execute(cmd CommandNode, ctx *CommandContext) er
 // the entries Declare made are gone by the time a later filter or sort is
 // classified, and the column reads as an ordinary log field.
 func registerWindowOutputs(ctx *CommandContext, names ...string) {
+	readsFrom := ctx.Registry.mark()
 	for _, n := range names {
 		ctx.Registry.Register(n, FieldKindWindow, n, ctx.CmdIndex)
-		ctx.Registry.SetResolveExpr(n, n)
+		ctx.Registry.define(n, n, readsFrom)
 	}
 }
 
@@ -89,12 +90,17 @@ func setWindowValue(arg Argument, ctx *CommandContext, name string) error {
 		ctx.Plan.window.zScoreExpr = fmt.Sprintf("toFloat64(%s)", ctx.Registry.Column(arg.FieldName()).sql)
 		return nil
 	}
-	fieldRef, err := ResolveArg(arg, ctx.Registry)
+	ref, err := resolveArgRef(arg, ctx.Registry)
 	if err != nil {
 		return err
 	}
-	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects,
-		SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s)", fieldRef), Alias: windowValueColumn})
+	value := selectAs(numericCast(ref), windowValueColumn)
+	if plan := ctx.Plan; ref.deps.wrap && plan.join != nil && plan.join.SubSQL != "" {
+		// A join()'s output exists only above its wrap, below the window layers.
+		plan.format.aboveJoin = append(plan.format.aboveJoin, value)
+	} else {
+		plan.CurrentStage().Layer.Selects = append(plan.CurrentStage().Layer.Selects, value)
+	}
 	ctx.Plan.window.zScoreExpr = windowValueColumn
 	return nil
 }
@@ -147,6 +153,7 @@ func (h *histogramHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *histogramHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -186,7 +193,7 @@ func (h *histogramHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		fieldRef := ctx.Registry.Resolve(field)
 		source.Layer.Selects = append(source.Layer.Selects,
 			SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s)", fieldRef), Alias: "_hist_val"})
-		ctx.Registry.SetResolveExpr("_hist_val", fmt.Sprintf("toFloat64OrNull(%s)", fieldRef))
+		ctx.Registry.define("_hist_val", fmt.Sprintf("toFloat64OrNull(%s)", fieldRef), readsFrom)
 		ctx.Plan.histogram.valueExpr = "_hist_val"
 	}
 
