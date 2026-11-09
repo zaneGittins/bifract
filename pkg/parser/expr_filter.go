@@ -236,15 +236,13 @@ func exprFieldNames(e *ExprNode) []string {
 	return out
 }
 
-// exprPriority is fieldPriority over every field an expression reads: the
+// exprStage is fieldStage over every field an expression reads: the
 // expression binds to the latest stage any of its inputs is available in, so a
 // filter mixing a joined score with a log field defers to the post-join layer.
-func exprPriority(e *ExprNode, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
-	best := 0
+func exprStage(e *ExprNode, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) stageBucket {
+	best := bucketWhere
 	for _, f := range exprFieldNames(e) {
-		if p := fieldPriority(f, registry, plan, willHaveAggregation); p > best {
-			best = p
-		}
+		best = max(best, fieldStage(f, registry, plan, willHaveAggregation))
 	}
 	return best
 }

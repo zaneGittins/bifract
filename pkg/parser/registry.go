@@ -1,8 +1,6 @@
 package parser
 
-import (
-	"slices"
-)
+import "slices"
 
 // FieldKind categorizes the type of a field in the query pipeline.
 type FieldKind int
@@ -43,6 +41,12 @@ type FieldEntry struct {
 	// source WHERE. OriginKind keeps that original kind so condition classification
 	// stays correct across carry-forward stages.
 	OriginKind FieldKind
+	// operand marks an expression that is one SQL operand, so a reference folds
+	// it in without brackets. Changing the expression clears it.
+	operand bool
+	// text marks an expression known to be a String, as a stored field is.
+	// Changing the expression clears it.
+	text bool
 }
 
 // ClassifyKind returns the FieldKind that condition routing (WHERE vs HAVING vs
@@ -246,23 +250,46 @@ func (r *FieldRegistry) Has(name string) bool {
 // Any trailing " AS alias" suffix is stripped so the result is a bare expression.
 // For unknown fields, returns jsonFieldRef.
 func (r *FieldRegistry) Resolve(name string) string {
-	if entry, ok := r.fields[name]; ok {
-		expr := entry.ResolveAs
-		if expr == "" {
-			// No Execute-phase expression set. If the Declare-phase Expr is just
-			// a placeholder (same as the field name) and the field is not a base
-			// column, fall through to jsonFieldRef so we get the proper
-			// fields.`name`.:String reference. Joined, aggregate and window columns
-			// are excluded: they resolve to their bare output column name.
-			if entry.Expr == name && entry.Kind != FieldKindBase && entry.Kind != FieldKindJoined &&
-				entry.Kind != FieldKindAggregate && entry.Kind != FieldKindWindow {
-				return r.fieldRef(name)
-			}
-			expr = entry.Expr
-		}
-		return expr
+	if r.resolvesToStored(name) {
+		return r.fieldRef(name)
 	}
-	return r.fieldRef(name)
+	entry := r.fields[name]
+	if entry.ResolveAs != "" {
+		return entry.ResolveAs
+	}
+	return entry.Expr
+}
+
+// isText reports whether the name resolves to a String: the stored field, or an
+// expression recorded as one.
+func (r *FieldRegistry) isText(name string) bool {
+	if e, ok := r.fields[name]; ok && e.text {
+		return true
+	}
+	return r.resolvesToStored(name)
+}
+
+// setText records that a field's expression is a String.
+func (r *FieldRegistry) setText(name string) {
+	if entry, ok := r.fields[name]; ok {
+		entry.text = true
+	}
+}
+
+// resolvesToStored reports whether the name resolves to the stored log field: it
+// is unregistered, or registered with only a placeholder expression (its own
+// name) and is not a base column or a join, aggregate or window output, which
+// resolve to their own column names.
+func (r *FieldRegistry) resolvesToStored(name string) bool {
+	entry, ok := r.fields[name]
+	if !ok {
+		return true
+	}
+	switch entry.Kind {
+	case FieldKindBase, FieldKindJoined, FieldKindAggregate, FieldKindWindow:
+		return false
+	}
+	return entry.ResolveAs == "" && entry.Expr == name
 }
 
 // DependsOnJoin reports whether a per-row field reads a join's output, directly or
@@ -304,7 +331,7 @@ func (r *FieldRegistry) dependsOnJoin(name string, seen map[string]bool) bool {
 // If the field is not yet registered, it is auto-registered as FieldKindJSON.
 func (r *FieldRegistry) SetResolveExpr(name, expr string) {
 	if entry, ok := r.fields[name]; ok {
-		entry.ResolveAs = expr
+		entry.ResolveAs, entry.operand, entry.text = expr, false, false
 	} else {
 		r.Register(name, FieldKindJSON, expr, -1)
 		r.fields[name].ResolveAs = expr
@@ -321,6 +348,13 @@ func (r *FieldRegistry) RegisterInlineExpr(name, expr string, producedBy int) {
 	entry := r.fields[name]
 	entry.ResolveAs = expr
 	entry.Inline = true
+}
+
+// setOperand records that a field's expression is one SQL operand.
+func (r *FieldRegistry) setOperand(name string) {
+	if entry, ok := r.fields[name]; ok {
+		entry.operand = true
+	}
 }
 
 // SetNumeric records that a field's expression is already a number.

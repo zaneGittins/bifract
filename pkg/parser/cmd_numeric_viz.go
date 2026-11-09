@@ -32,7 +32,7 @@ func chartColumn(arg Argument, ctx *CommandContext, cmdName, scanAlias string) (
 	if err != nil {
 		return "", "", fmt.Errorf("%s(): %w", cmdName, err)
 	}
-	scanExpr = groupableCast(ref)
+	scanExpr = ref
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: scanExpr, Alias: scanAlias})
 	ctx.Registry.SetResolveExpr(scanAlias, ref)
 	return scanAlias, scanExpr, nil
@@ -85,7 +85,7 @@ func (h *boxplotHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	f := strconv.FormatFloat(fence, 'f', -1, 64)
 	k := strconv.Itoa(extremes)
-	ctx.Plan.ChartLayers = []QueryLayer{
+	ctx.Plan.chart.layers = []QueryLayer{
 		{Selects: []SelectExpr{
 			{Expr: chartNumeric(valCol), Alias: "_bp_val"},
 			{Expr: groupExpr, Alias: "_group"},
@@ -102,7 +102,7 @@ func (h *boxplotHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				{Expr: fmt.Sprintf("groupArraySorted(%s)(_bp_val)", k), Alias: "_bp_low"},
 				{Expr: fmt.Sprintf("arrayMap(x -> -x, groupArraySorted(%s)(-_bp_val))", k), Alias: "_bp_high"},
 			},
-			Where:   []string{"isFinite(_bp_val)"},
+			Where:   atoms("isFinite(_bp_val)"),
 			GroupBy: []groupKey{{Expr: "_group", Name: "_group"}},
 			OrderBy: []OrderTerm{desc("_count"), asc("_group")},
 			Limit:   fmt.Sprintf("LIMIT %d", groups),
@@ -133,18 +133,18 @@ func (h *boxplotHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			{Expr: "arrayMap(x -> round(x, 4), arrayFilter(x -> x > _bp_uf, _bp_high))", Alias: "_outliers_high"},
 		}},
 	}
-	ctx.Plan.ChartReadsAllRows = true
-	ctx.Plan.ChartFieldOrder = []string{"_group", "_count", "_min", "_q1", "_median", "_q3", "_max",
+	ctx.Plan.chart.readsAllRows = true
+	ctx.Plan.chart.fieldOrder = []string{"_group", "_count", "_min", "_q1", "_median", "_q3", "_max",
 		"_mean", "_stddev", "_lower_fence", "_upper_fence", "_whisker_low", "_whisker_high",
 		"_outliers_low", "_outliers_high"}
 	if groupName == "" {
-		ctx.Plan.ChartFieldOrder = ctx.Plan.ChartFieldOrder[1:]
+		ctx.Plan.chart.fieldOrder = ctx.Plan.chart.fieldOrder[1:]
 	}
-	ctx.Plan.ChartType = "boxplot"
-	ctx.Plan.ChartConfig["field"] = arg.FieldName()
-	ctx.Plan.ChartConfig["by"] = groupName
-	ctx.Plan.ChartConfig["fence"] = fence
-	ctx.Plan.ChartConfig["outliers"] = extremes
+	ctx.Plan.chart.kind = "boxplot"
+	ctx.Plan.chart.config["field"] = arg.FieldName()
+	ctx.Plan.chart.config["by"] = groupName
+	ctx.Plan.chart.config["fence"] = fence
+	ctx.Plan.chart.config["outliers"] = extremes
 	return nil
 }
 
@@ -218,7 +218,7 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		order = append([]string{labelName}, order...)
 	}
 
-	ctx.Plan.ChartLayers = []QueryLayer{
+	ctx.Plan.chart.layers = []QueryLayer{
 		{Selects: []SelectExpr{
 			{Expr: chartNumeric(xCol), Alias: "_sc_x"},
 			{Expr: chartNumeric(yCol), Alias: "_sc_y"},
@@ -226,7 +226,7 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}},
 		{
 			Selects: selects,
-			Where:   []string{"isFinite(_sc_x)", "isFinite(_sc_y)"},
+			Where:   atoms("isFinite(_sc_x)", "isFinite(_sc_y)"),
 			Limit:   fmt.Sprintf("LIMIT %d", limit),
 		},
 	}
@@ -235,7 +235,7 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
 	for _, e := range []string{xScan, yScan} {
 		if e != "" {
-			source.Layer.Where = append(source.Layer.Where, fmt.Sprintf("isFinite(toFloat64OrNull(%s))", e))
+			source.Layer.Where = append(source.Layer.Where, atom(fmt.Sprintf("isFinite(toFloat64OrNull(%s))", e)))
 		}
 	}
 	if source.IsSource && len(source.Layer.GroupBy) == 0 && !ctx.Plan.IsAggregated && !ctx.Plan.HasGroupBy {
@@ -246,14 +246,14 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			source.Layer.Limit = fmt.Sprintf("LIMIT %d", limit)
 		}
 	}
-	ctx.Plan.ChartReadsAllRows = true
-	ctx.Plan.ChartFieldOrder = order
-	ctx.Plan.ChartType = "scatter"
-	ctx.Plan.ChartConfig["xField"] = xName
-	ctx.Plan.ChartConfig["yField"] = yName
-	ctx.Plan.ChartConfig["labelField"] = labelName
-	ctx.Plan.ChartConfig["limit"] = limit
-	ctx.Plan.ChartConfig["line"] = line
+	ctx.Plan.chart.readsAllRows = true
+	ctx.Plan.chart.fieldOrder = order
+	ctx.Plan.chart.kind = "scatter"
+	ctx.Plan.chart.config["xField"] = xName
+	ctx.Plan.chart.config["yField"] = yName
+	ctx.Plan.chart.config["labelField"] = labelName
+	ctx.Plan.chart.config["limit"] = limit
+	ctx.Plan.chart.config["line"] = line
 	return nil
 }
 

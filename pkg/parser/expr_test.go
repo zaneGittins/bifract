@@ -678,3 +678,24 @@ func TestExprBooleanLiterals(t *testing.T) {
 		t.Errorf("expected a boolean literal, got: %s", sql)
 	}
 }
+
+// A string function given a field computed as a number reads it as text: lower()
+// rejects a UInt64.
+func TestStringFunctionOnNumericFieldConverts(t *testing.T) {
+	for q, want := range map[string]string{
+		`* | x := len(user) | y := lower(x) | table(y)`:       "lower(toString(length(fields.`user`::String))) AS y",
+		`* | x := bytes * 2 | y := concat(x, "b") | table(y)`: "concat(toString(",
+	} {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sql, err := TranslateToSQL(pl, serverOpts())
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		if !strings.Contains(sql, want) {
+			t.Errorf("%s: want %s in:\n%s", q, want, sql)
+		}
+	}
+}

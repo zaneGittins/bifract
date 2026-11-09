@@ -1277,7 +1277,7 @@ func TestModelLookup_FilterOnDerivedColumnIsPostJoin(t *testing.T) {
 	}
 
 	r = mlResult(t, `* | modelLookup(model="fs", key=[user]) | n := event_count * 2 | n > 10`, mlookupOpts())
-	if !strings.Contains(r.SQL, "* 2 > 10) AS _mlookup") {
+	if !strings.Contains(r.SQL, "* 2) > 10) AS _mlookup") {
 		t.Errorf("a filter on model columns alone should narrow the model side:\n%s", r.SQL)
 	}
 }
@@ -1738,5 +1738,95 @@ func TestModelLookup_PickedRowsAreTheJoinsBuildSide(t *testing.T) {
 	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", Distributed: true, Keys: []string{"user"}}
 	if sql := translateMLWith(t, `* | modelLookup(model="fs", key=[user])`, opts); !strings.Contains(sql, ") AS _mlookup GLOBAL INNER JOIN (SELECT *, _shard_num FROM logs_distributed WHERE ") {
 		t.Errorf("cluster: expected a GLOBAL join shipping the picked rows with their shard, got:\n%s", sql)
+	}
+}
+
+// A filter a command puts on the scan reads the joined rows when it reads a model
+// column, directly or through a field computed from one. One reading log fields
+// alone stays on the scan.
+func TestCommandScanFilterOnModelColumnFollowsTheJoin(t *testing.T) {
+	postJoin := func(q string) []string {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts := mlookupOpts()
+		opts.DictionaryDatabase, opts.Dictionaries = "logs", map[string]map[string]string{"d": {"c": "d_names"}}
+		pq, err := planQuery(pl, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, f := range pq.ctx.Plan.lookup.PostJoinWhere {
+			out = append(out, f.Pred.sql)
+		}
+		return out
+	}
+	for q, want := range map[string][]string{
+		`* | modelLookup(model="fs", key=[user]) | scatter(x=bytes, y=size)`:                                                                   nil,
+		`* | modelLookup(model="fs", key=[user]) | match(dict="d", field=user, column="c", include=[c], strict=true)`:                          nil,
+		`* | modelLookup(model="fs", key=[user]) | k := concat(user, is_new) | match(dict="d", field=k, column="c", include=[c], strict=true)`: {"k"},
+	} {
+		got := postJoin(q)
+		if len(got) != len(want) {
+			t.Errorf("%s: post-join filters %q, want %d reading %v", q, got, len(want), want)
+		}
+	}
+}
+
+// A chain's entity is the stored field, so a strict lookup on it after the chain
+// still narrows the scan to the keys the model scores.
+func TestModelLookupAfterChainKeepsTheScanPrefilter(t *testing.T) {
+	sql := translateML(t, `* | chain(user, within=5m) { a="x"; b="y" } | modelLookup(model="fs", key=[user])`)
+	if !strings.Contains(sql, "AND fields.`user`::String IN (SELECT") {
+		t.Errorf("the scan lost its model key prefilter:\n%s", sql)
+	}
+}
+
+// A field computed from a model column exists only after the join, however the
+// command computing it names its input, so a filter on it never reaches the raw
+// scan, the provenance candidates or the model side.
+func TestFieldsComputedFromModelColumnsStayAfterTheJoin(t *testing.T) {
+	for _, q := range []string{
+		`* | modelLookup(model="fs", key=[user]) | eval(k = is_new) | k = "1"`,
+		`* | modelLookup(model="fs", key=[user]) | lowercase("is_new", output=k) | k="1"`,
+		`* | modelLookup(model="fs", key=[user]) | case { is_new="1" | k := "a"; * | k := "b" } | k = "a"`,
+		`* | modelLookup(model="fs", key=[user]) | eval(x = 1) | eval(x = x + event_count) | x > 1`,
+		`* | modelLookup(model="fs", key=[user]) | eval(k = is_new) | in(k, values=["1"])`,
+		`* | modelLookup(model="fs", key=[user]) | k := is_new | chain(user, within=5m) { k="1"; b="y" }`,
+	} {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pq, err := planQuery(pl, mlookupOpts())
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		scan := whereClause(pq.ctx.Plan.SourceStage().Layer.Where)
+		if strings.Contains(scan, "is_new") || strings.Contains(scan, "event_count") {
+			t.Errorf("%s: the raw scan reads a model column:\n%s", q, scan)
+		}
+	}
+}
+
+// A quoted name in a field position is the field, so a filter command naming a
+// model column that way binds after the join, as the unquoted form does.
+func TestQuotedFieldInFilterCommandFollowsTheJoin(t *testing.T) {
+	for _, q := range []string{
+		`* | modelLookup(model="fs", key=[user]) | in("is_new", values=["1"])`,
+		`* | modelLookup(model="fs", key=[user]) | cidr("is_new", "10.0.0.0/8")`,
+	} {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pq, err := planQuery(pl, mlookupOpts())
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		if scan := whereClause(pq.ctx.Plan.SourceStage().Layer.Where); strings.Contains(scan, "is_new") {
+			t.Errorf("%s: the raw scan reads a model column:\n%s", q, scan)
+		}
 	}
 }

@@ -82,7 +82,7 @@ func TestReassignmentProjectsOnce(t *testing.T) {
 		{"literal over literal after aggregation", `* | groupby(x) | y := 1 | y := 2`,
 			[]string{"2 AS y"}, nil},
 		{"self-reference reads the earlier value", `* | y := upper(x) | y := lower(y)`,
-			[]string{"lower((upper(fields.`x`::String))) AS y"}, nil},
+			[]string{"lower(upper(fields.`x`::String)) AS y"}, nil},
 		{"self-reference reads a transform", `* | lowercase(x) | x := concat(x, "!")`,
 			[]string{"concat((lower(fields.`x`::String)), '!') AS x"}, nil},
 		{"self-reference with no earlier value reads the log field", `* | x := x * 100`,

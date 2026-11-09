@@ -189,8 +189,11 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.UpsertSelect(selectAs(expr, safeFieldName))
 		ctx.Registry.SetResolveExpr(name, expr)
 		// A filter coerces text with textToNumber, which rejects a number.
-		if exprType == TypeNumber {
+		switch exprType {
+		case TypeNumber:
 			ctx.Registry.SetNumeric(name)
+		case TypeText:
+			ctx.Registry.setText(name)
 		}
 	}
 	return nil
@@ -217,6 +220,9 @@ func evalAssignmentSQL(a Argument, registry *FieldRegistry) (string, ExprType, e
 			return compileExpr(a.Expr, registry)
 		}
 		sql, err := ResolveArg(a, registry)
+		if a.IsFieldName() && registry.isText(a.FieldName()) {
+			return sql, TypeText, err
+		}
 		return sql, TypeAny, err
 	}
 	_, expression, found := strings.Cut(a.Value(), "=")
@@ -1297,7 +1303,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if strict {
 		// The stage it runs in: after an aggregation that is the grouped output.
 		ctx.Plan.CurrentStage().Layer.Where = append(ctx.Plan.CurrentStage().Layer.Where,
-			lk.membership(probeRef))
+			atom(lk.membership(probeRef)))
 	}
 	return nil
 }

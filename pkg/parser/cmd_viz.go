@@ -22,12 +22,12 @@ func (h *piechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
 		ctx.Plan.IsAggregated = true
 	}
-	ctx.Plan.ChartType = "piechart"
+	ctx.Plan.chart.kind = "piechart"
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
 	}
-	ctx.Plan.ChartConfig["render"] = chartRender(b, 10, 0)
+	ctx.Plan.chart.config["render"] = chartRender(b, 10, 0)
 	if err := applyChartLimit(b, ctx); err != nil {
 		return fmt.Errorf("piechart(): %w", err)
 	}
@@ -50,12 +50,12 @@ func (h *barchartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
 		ctx.Plan.IsAggregated = true
 	}
-	ctx.Plan.ChartType = "barchart"
+	ctx.Plan.chart.kind = "barchart"
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
 	}
-	ctx.Plan.ChartConfig["render"] = chartRender(b, 10, 0)
+	ctx.Plan.chart.config["render"] = chartRender(b, 10, 0)
 	if err := applyChartLimit(b, ctx); err != nil {
 		return fmt.Errorf("barchart(): %w", err)
 	}
@@ -70,7 +70,7 @@ func (h *graphHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	ctx.Plan.ChartType = "graph"
+	ctx.Plan.chart.kind = "graph"
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -89,7 +89,7 @@ func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return fmt.Errorf("graph(): labels= takes field names, not expressions (%s); compute it first with eval() or :=", a)
 		}
 	}
-	ctx.Plan.ChartConfig["render"] = chartRender(b, 100, 500)
+	ctx.Plan.chart.config["render"] = chartRender(b, 100, 500)
 	if err := applyChartLimit(b, ctx); err != nil {
 		return fmt.Errorf("graph(): %w", err)
 	}
@@ -98,10 +98,10 @@ func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("graph() requires both child= and parent= parameters, e.g. graph(child=process_guid, parent=parent_process_guid)")
 	}
 
-	ctx.Plan.ChartConfig["childField"] = childField
-	ctx.Plan.ChartConfig["parentField"] = parentField
+	ctx.Plan.chart.config["childField"] = childField
+	ctx.Plan.chart.config["parentField"] = parentField
 	if len(labelFields) > 0 {
-		ctx.Plan.ChartConfig["labels"] = labelFields
+		ctx.Plan.chart.config["labels"] = labelFields
 	}
 	return projectGraphFields(b, ctx)
 }
@@ -111,7 +111,7 @@ func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 // finds no child or parent. Rows already shaped by table(), an aggregation or a
 // source command carry the columns and are left alone.
 func projectGraphFields(b *Bound, ctx *CommandContext) error {
-	if ctx.Plan.HasTableCmd || ctx.Plan.IsAggregated || len(ctx.Plan.CurrentStage().Layer.GroupBy) > 0 ||
+	if ctx.Plan.table.present || ctx.Plan.IsAggregated || len(ctx.Plan.CurrentStage().Layer.GroupBy) > 0 ||
 		ctx.Opts.SourceSubquery != "" {
 		return nil
 	}
@@ -139,12 +139,12 @@ type pgraphHandler struct{}
 func (h *pgraphHandler) Declare(cmd CommandNode, ctx *CommandContext) error { return nil }
 
 func (h *pgraphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	ctx.Plan.ChartType = "pgraph"
+	ctx.Plan.chart.kind = "pgraph"
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
 	}
-	ctx.Plan.ChartConfig["render"] = chartRender(b, 3000, 0)
+	ctx.Plan.chart.config["render"] = chartRender(b, 3000, 0)
 	if err := applyChartLimit(b, ctx); err != nil {
 		return fmt.Errorf("pgraph(): %w", err)
 	}
@@ -163,7 +163,7 @@ func (h *meshHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *meshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	ctx.Plan.ChartType = "mesh"
+	ctx.Plan.chart.kind = "mesh"
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -186,8 +186,8 @@ func (h *meshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	colorField := b.Str("color", "")
 	labelFields := b.Strings("labels")
-	ctx.Plan.ChartConfig["directed"] = b.Flag("directed", false)
-	ctx.Plan.ChartConfig["render"] = chartRender(b, 100, 500)
+	ctx.Plan.chart.config["directed"] = b.Flag("directed", false)
+	ctx.Plan.chart.config["render"] = chartRender(b, 100, 500)
 	if err := applyChartLimit(b, ctx); err != nil {
 		return fmt.Errorf("mesh(): %w", err)
 	}
@@ -205,15 +205,15 @@ func (h *meshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		sizeField = "_count"
 	}
 
-	ctx.Plan.ChartConfig["srcField"] = srcField
-	ctx.Plan.ChartConfig["dstField"] = dstField
-	ctx.Plan.ChartConfig["weightField"] = weightField
-	ctx.Plan.ChartConfig["sizeField"] = sizeField
+	ctx.Plan.chart.config["srcField"] = srcField
+	ctx.Plan.chart.config["dstField"] = dstField
+	ctx.Plan.chart.config["weightField"] = weightField
+	ctx.Plan.chart.config["sizeField"] = sizeField
 	if colorField != "" {
-		ctx.Plan.ChartConfig["color"] = colorField
+		ctx.Plan.chart.config["color"] = colorField
 	}
 	if len(labelFields) > 0 {
-		ctx.Plan.ChartConfig["labels"] = labelFields
+		ctx.Plan.chart.config["labels"] = labelFields
 	}
 	return nil
 }
@@ -232,19 +232,19 @@ func (h *singlevalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Only reject if the current stage still has an active GROUP BY with no
 	// outer aggregation wrapping it. When a second stage was pushed (e.g.
 	// groupby(field) | count() | singleval()), the current stage has no
-	// GROUP BY and produces a single row. Similarly, outerAggregations
+	// GROUP BY and produces a single row. Similarly, an outer aggregation
 	// collapse grouped results into a single value.
 	currentStage := ctx.Plan.CurrentStage()
-	if len(currentStage.Layer.GroupBy) > 0 && len(ctx.Plan.outerAggregations) == 0 {
+	if len(currentStage.Layer.GroupBy) > 0 && len(ctx.Plan.outer.selects) == 0 {
 		return fmt.Errorf("singleval() cannot be used with groupBy() - it displays a single value only")
 	}
-	ctx.Plan.ChartType = "singleval"
+	ctx.Plan.chart.kind = "singleval"
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
 	}
 	if title := b.Str("title", ""); title != "" {
-		ctx.Plan.ChartConfig["title"] = title
+		ctx.Plan.chart.config["title"] = title
 	}
 	return nil
 }
@@ -305,7 +305,7 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			}
 			// Resolve BEFORE re-registering so a case()/computed boolean column is
 			// inlined as its CASE expression, not referenced by its own alias.
-			ref := resolveFieldRef(f, ctx.Registry)
+			ref := ctx.Registry.Resolve(f)
 			expr := fmt.Sprintf("round(100.0 * countIf(toString(%s) IN ('true', '1')) / count(*), 2)", ref)
 			// Upsert so a same-named per-row column from a prior case() is replaced
 			// by this aggregate rather than duplicated; re-register as an aggregate
@@ -317,9 +317,9 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			percentFields = append(percentFields, f)
 		}
 		ctx.Plan.IsAggregated = true
-		ctx.Plan.ChartConfig["valueFields"] = percentFields
-		ctx.Plan.ChartConfig["unit"] = "percent"
-		ctx.Plan.ChartConfig["yLabel"] = "Percent"
+		ctx.Plan.chart.config["valueFields"] = percentFields
+		ctx.Plan.chart.config["unit"] = "percent"
+		ctx.Plan.chart.config["yLabel"] = "Percent"
 	case "groupby":
 		fields := aggFields(fn)
 		if len(fields) == 0 {
@@ -368,8 +368,8 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 	}
 
-	ctx.Plan.ChartType = "timechart"
-	ctx.Plan.ChartConfig["span"] = span
+	ctx.Plan.chart.kind = "timechart"
+	ctx.Plan.chart.config["span"] = span
 	return nil
 }
 
@@ -381,7 +381,7 @@ func (h *graphWorldHandler) Declare(cmd CommandNode, ctx *CommandContext) error 
 }
 
 func (h *graphWorldHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	ctx.Plan.ChartType = "worldmap"
+	ctx.Plan.chart.kind = "worldmap"
 
 	b, err := BindCommand(cmd)
 	if err != nil {
@@ -399,7 +399,7 @@ func (h *graphWorldHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 	if err != nil {
 		return err
 	}
-	ctx.Plan.ChartConfig["render"] = chartRender(b, 5000, 50000)
+	ctx.Plan.chart.config["render"] = chartRender(b, 5000, 50000)
 	if err := applyChartLimit(b, ctx); err != nil {
 		return fmt.Errorf("graphworld(): %w", err)
 	}
@@ -411,10 +411,10 @@ func (h *graphWorldHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 		lonField = "longitude"
 	}
 
-	ctx.Plan.ChartConfig["latField"] = latField
-	ctx.Plan.ChartConfig["lonField"] = lonField
+	ctx.Plan.chart.config["latField"] = latField
+	ctx.Plan.chart.config["lonField"] = lonField
 	if labelField != "" {
-		ctx.Plan.ChartConfig["labelField"] = labelField
+		ctx.Plan.chart.config["labelField"] = labelField
 	}
 
 	return nil

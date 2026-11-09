@@ -164,7 +164,8 @@ func isAggregatedStage(plan *QueryPlan, stage *QueryStage) bool {
 func reverseOrderBy(order []OrderTerm) []OrderTerm {
 	flipped := make([]OrderTerm, len(order))
 	for i, t := range order {
-		flipped[i] = OrderTerm{Expr: t.Expr, Desc: !t.Desc}
+		t.Desc = !t.Desc
+		flipped[i] = t
 	}
 	return flipped
 }
@@ -249,7 +250,7 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		case !ctx.Registry.IsComputed(field):
 			// LIMIT BY is a grouping context: cast raw JSON subcolumns to
 			// ::String so Dynamic-stored paths don't trigger error 44.
-			ref := resolveFieldRef(field, ctx.Registry)
+			ref := ctx.Registry.Resolve(field)
 			keys, scanKeys = append(keys, ref), append(scanKeys, ref)
 		default:
 			// On the SELECT that computes the column its alias resolves.
@@ -276,7 +277,7 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		c := &stage.Layer.Caps[len(stage.Layer.Caps)-1]
 		c.ScanLimitBy = ""
 		if scannable {
-			c.ScanLimitBy = scanLimitBy
+			c.ScanLimitBy, c.scanKeys = scanLimitBy, scanKeys
 		}
 	case aggregationAhead:
 		stage.Layer.ScanLimitBy = scanLimitBy

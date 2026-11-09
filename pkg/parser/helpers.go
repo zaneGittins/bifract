@@ -15,8 +15,8 @@ import (
 func buildAnalyzeFieldsSQL(
 	fieldsList []string,
 	scanLimit int,
-	whereConditions []string,
-	havingConditions []string,
+	whereConditions []predicate,
+	havingConditions []predicate,
 	orderByFields []OrderTerm,
 	limitClause string,
 	chartType string,
@@ -26,10 +26,7 @@ func buildAnalyzeFieldsSQL(
 	var sql strings.Builder
 
 	// Build WHERE clause for the inner scan
-	whereClause := ""
-	if len(whereConditions) > 0 {
-		whereClause = " WHERE " + andJoin(whereConditions)
-	}
+	scanWhere := whereClause(whereConditions)
 
 	// Build optional path filter for specific fields
 	pathFilter := ""
@@ -42,10 +39,7 @@ func buildAnalyzeFieldsSQL(
 	}
 
 	// HAVING conditions become WHERE on the outermost query
-	outerFilter := ""
-	if len(havingConditions) > 0 {
-		outerFilter = " WHERE " + andJoin(havingConditions)
-	}
+	outerFilter := whereClause(havingConditions)
 
 	// Order: default to _events DESC, respect user sort if provided
 	orderClause := "ORDER BY _events DESC"
@@ -72,7 +66,7 @@ func buildAnalyzeFieldsSQL(
 	sql.WriteString("round(stddevPop(toFloat64OrNull(kv.2)), 2) AS _stdev ")
 	sql.WriteString("FROM (")
 	sql.WriteString(fmt.Sprintf("SELECT arrayJoin(JSONExtractKeysAndValues(norm_log, 'String')) AS kv FROM %s%s LIMIT %d",
-		opts.EffectiveTableName(), whereClause, scanLimit))
+		opts.EffectiveTableName(), scanWhere, scanLimit))
 	sql.WriteString(")")
 	sql.WriteString(pathFilter)
 	sql.WriteString(" GROUP BY kv.1 ")
@@ -137,25 +131,13 @@ var procTreePgraphFieldOrder = []string{"parent", "child", "label", "event_type"
 // post-filters do.
 func buildProcessTreeSQL(
 	startValue string,
-	havingConditions []string,
+	havingConditions []predicate,
 	chartType string, chartConfig map[string]interface{},
 	opts QueryOptions,
 ) (*TranslationResult, error) {
 	if opts.ProcessTree == nil {
 		return nil, fmt.Errorf("ptg() is not available here: its process tree is only walked for searches, dashboards and alerts")
 	}
-
-	// Post-traversal filters route here from window-field conditions (_depth/_path). Drop
-	// any that reference logs-only columns (a compound like `_depth<=3 AND image="x"` would
-	// otherwise inject fields.image and crash the flat-table query).
-	var safeHaving []string
-	for _, h := range havingConditions {
-		if strings.Contains(h, "fields.") || strings.Contains(h, "norm_log") || strings.Contains(h, "raw_log") {
-			continue
-		}
-		safeHaving = append(safeHaving, h)
-	}
-	havingConditions = safeHaving
 
 	const unionCols = "timestamp, log_id, fractal_id, process_guid, parent_guid, image, parent_image, commandline, computer_name, _depth, _path, group_size, group_first, group_last"
 	const finalCols = "substring(timestamp, 1, 19) AS timestamp, process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, toString(_depth) AS _depth, _path, group_size, group_first, group_last"
@@ -166,9 +148,7 @@ func buildProcessTreeSQL(
 	// ClickHouse resolves the WHERE identifier to the String alias (NO_COMMON_TYPE, code 386),
 	// so the toString projection lives in a strictly outer SELECT than the filter.
 	inner := "SELECT " + unionCols + " FROM " + traversal
-	if len(havingConditions) > 0 {
-		inner += " WHERE " + andJoin(havingConditions)
-	}
+	inner += whereClause(havingConditions)
 
 	// pgraph() renders the pgr() edge shape, so a `ptg() | pgraph()` tree is projected into
 	// those same columns: every row is one spawn edge (parent_guid -> process_guid). There is
@@ -207,10 +187,6 @@ func buildProcessTreeSQL(
 		ChartType:    chartType,
 		ChartConfig:  chartConfig,
 	}, nil
-}
-
-func isWordByte(b byte) bool {
-	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 // conditionFields lists every field the conditions read, once each, in the
@@ -483,8 +459,7 @@ func SetCustomTypeHintedFields(custom map[string]bool) {}
 //
 // The former "bare ref for type-hinted fields" optimization was based on the
 // false premise that CAST breaks index matching; it also caused a whole class of
-// error-44/43 bugs on mixed-history tables. Removed. See groupableCast (now an
-// idempotent no-op given this invariant, kept as a defensive guard).
+// error-44/43 bugs on mixed-history tables. Removed.
 func jsonFieldRef(field string) string {
 	parts := strings.Split(field, ".")
 	var b strings.Builder
@@ -653,12 +628,6 @@ const caseInsensitiveFlag = "(?i)"
 // admits NULL so rows missing the field are not silently dropped (NULL NOT IN
 // (...) evaluates to NULL, which is falsy).
 func buildEqualityListSQL(fieldRef string, values []string, negate, isJSONField bool) string {
-	// IN / NOT IN reject a bare Dynamic subcolumn (error 43). Cast raw JSON refs
-	// to ::String so a mixed-history (pre-type-hint) path still works; the skip
-	// index is preserved (a no-op cast to the column's own type is elided by the
-	// analyzer). Matches the existing fields.X::String IN (...) pattern in
-	// provenance.go.
-	fieldRef = groupableCast(fieldRef)
 	quoted := make([]string, len(values))
 	for i, v := range values {
 		quoted[i] = "'" + escapeString(v) + "'"
@@ -676,16 +645,15 @@ func buildEqualityListSQL(fieldRef string, values []string, negate, isJSONField 
 // buildIcebergEqualityListSQL renders a comma-separated equality list against an
 // Iceberg source, reusing icebergEqualityPredicate per value so MAP correctness
 // and promoted `_ice_` column pruning are preserved.
-func buildIcebergEqualityListSQL(field string, values []string, negate bool, promoted map[string]bool) string {
-	parts := make([]string, len(values))
+func buildIcebergEqualityListSQL(field string, values []string, negate bool, promoted map[string]bool) predicate {
+	parts := make([]predicate, len(values))
 	for i, v := range values {
 		parts[i] = icebergEqualityPredicate(field, v, promoted)
 	}
-	inner := strings.Join(parts, " OR ")
 	if negate {
-		return "NOT (" + inner + ")"
+		return notOf(orOf(parts...))
 	}
-	return "(" + inner + ")"
+	return group(orOf(parts...))
 }
 
 // buildContainsAnySQL returns a case-insensitive substring-contains-any expression.
@@ -694,11 +662,6 @@ func buildIcebergEqualityListSQL(field string, values []string, negate bool, pro
 // (inverted) skip indexes when those are present on the target column.
 func buildContainsAnySQL(fieldRef string, values []string, negate bool, mode SourceMode) string {
 	values = normLogSearchValues(fieldRef, values, mode)
-	// multiSearchAnyCaseInsensitive rejects a bare Dynamic subcolumn. Cast raw
-	// JSON refs to ::String so a mixed-history (pre-type-hint) path still works;
-	// bloom_filter/set indexes do not accelerate substring search anyway, so no
-	// index is lost.
-	fieldRef = groupableCast(fieldRef)
 	quoted := make([]string, len(values))
 	for i, v := range values {
 		quoted[i] = "'" + escapeString(v) + "'"
@@ -872,35 +835,6 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
-// resolveFieldRef returns the SQL expression for a field, using a computed
-// expression if one exists (e.g. from lowercase, eval) or falling back to
-// the JSON subcolumn reference.
-func resolveFieldRef(field string, registry *FieldRegistry) string {
-	return groupableCast(registry.Resolve(field))
-}
-
-// groupableCast makes a resolved reference safe for GROUP BY / ORDER BY /
-// DISTINCT / display projection contexts. Type-hinted JSON subcolumns are
-// emitted bare (no ::String) by jsonFieldRef so WHERE-clause bloom/set skip
-// indexes fire, but a bare reference is NOT groupable when the underlying path
-// is stored as Dynamic -- which happens for rows ingested before the field was
-// type-hinted (a mixed-history table). ClickHouse rejects GROUP/ORDER on a
-// Dynamic column with error 44 (ILLEGAL_COLUMN). Casting to ::String is a no-op
-// for a concretely typed String path and makes a Dynamic path groupable, so it
-// is always safe here. resolveFieldRef is never used to build the base-scan
-// WHERE clause (that path calls registry.fieldRef directly), so the skip-index
-// optimization is unaffected.
-//
-// Only raw hot-mode JSON subcolumn refs (fields.`x`) need it; iceberg norm_log
-// refs (JSONExtractString(norm_log, 'x')) are already String, computed/base
-// columns and already-cast refs are left untouched.
-func groupableCast(ref string) string {
-	if strings.HasPrefix(ref, "fields.`") && !strings.HasSuffix(ref, "::String") {
-		return ref + "::String"
-	}
-	return ref
-}
-
 // lenientDateTime coerces an arbitrary log field into a DateTime64 without ever
 // aborting the query. Time-bearing fields arrive in every shape: ISO8601 with or
 // without fractional seconds or a zone, "YYYY-MM-DD hh:mm:ss", epoch
@@ -909,9 +843,9 @@ func groupableCast(ref string) string {
 // first value it dislikes and kills the whole search, so parse best-effort and
 // let unparseable values fall out as NULL. Callers must render the result
 // NULL-safe (see timeFormatExpr).
-func lenientDateTime(ref string) string {
+func lenientDateTime(ref string, text bool) string {
 	s := ref
-	if !strings.HasSuffix(s, "::String") {
+	if !text {
 		s = fmt.Sprintf("toString(%s)", ref)
 	}
 	return fmt.Sprintf("multiIf("+
@@ -935,7 +869,7 @@ func timeFormatExpr(field Argument, chFormat, timezone string, registry *FieldRe
 		return "", err
 	}
 	return fmt.Sprintf("ifNull(formatDateTime(%s, '%s', '%s'), '')",
-		lenientDateTime(ref), escapeString(chFormat), escapeString(timezone)), nil
+		lenientDateTime(ref, field.IsFieldName() && registry.isText(field.FieldName())), escapeString(chFormat), escapeString(timezone)), nil
 }
 
 // numericCast wraps a resolved field reference for use inside aggregate
@@ -1060,7 +994,7 @@ func bucketTimezone(ctx *CommandContext) string {
 			tz = "UTC"
 		}
 	}
-	ctx.Plan.ChartConfig["bucketTimezone"] = tz
+	ctx.Plan.chart.config["bucketTimezone"] = tz
 	return tz
 }
 
@@ -1121,7 +1055,7 @@ func buildChainStep(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 		reg = parentReg.Clone()
 	}
 
-	var conjuncts []string
+	var conjuncts []predicate
 	var fields []string
 	seen := make(map[string]bool)
 
@@ -1130,7 +1064,7 @@ func buildChainStep(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 	first, later := SplitFirstStage(pl)
 	if w, err := conditionsPredicate(first, reg.rowLevelClone(), opts); err != nil {
 		return "", nil, fmt.Errorf("chain step: %w", err)
-	} else if w != "" {
+	} else if !w.empty() {
 		conjuncts = append(conjuncts, w)
 	}
 	addFields := func(names []string) {
@@ -1156,7 +1090,7 @@ func buildChainStep(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 
 	if w, err := conditionsPredicate(later, reg.rowLevelClone(), opts); err != nil {
 		return "", nil, fmt.Errorf("chain step: %w", err)
-	} else if w != "" {
+	} else if !w.empty() {
 		conjuncts = append(conjuncts, w)
 	}
 	addFields(conditionFields(later...))
@@ -1171,9 +1105,9 @@ func buildChainStep(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 		// sequences match, so a step that only projects is an error.
 		return "", nil, fmt.Errorf("chain step: no condition; each step must match events")
 	case 1:
-		return conjuncts[0], fields, nil
+		return conjuncts[0].sql, fields, nil
 	default:
-		return "(" + strings.Join(conjuncts, " AND ") + ")", fields, nil
+		return group(andOf(conjuncts...)).sql, fields, nil
 	}
 }
 
@@ -1182,7 +1116,7 @@ func buildChainStep(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 // result. A step is a row condition, so a command that can be one compiles as one;
 // a command that only projects contributes no predicate but registers an
 // expression the step's own conditions can reference.
-func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistry) ([]string, []string, error) {
+func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistry) ([]predicate, []string, error) {
 	plan := NewQueryPlan()
 	reg := parentReg
 	if reg == nil {
@@ -1207,11 +1141,11 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	for i, cmd := range commands {
 		ctx.CmdIndex = i
 		if isPredicateCommand(cmd.Name) {
-			sql, err := negatedCommandPredicate(cmd, ctx)
+			p, err := negatedCommandPredicate(cmd, ctx)
 			if err != nil {
 				return nil, nil, err
 			}
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, sql)
+			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, p)
 			continue
 		}
 		if err := getCommandHandler(cmd.Name).Execute(cmd, ctx); err != nil {
@@ -1222,7 +1156,7 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	src := &plan.SourceStage().Layer
 	if len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" ||
 		src.LimitBy != "" || len(src.Having) > 0 || plan.IsAggregated || plan.join != nil ||
-		plan.Chain != nil || plan.special != nil || len(plan.WindowLayers) > 0 ||
+		plan.Chain != nil || plan.special != nil || len(plan.window.layers) > 0 ||
 		plan.hasModelLookup() || len(plan.Stages) > 1 {
 		return nil, nil, notConditionError(fmt.Sprintf("only row conditions are allowed; %s() changes the shape of the result", pl.Commands()[0].Name))
 	}

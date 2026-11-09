@@ -103,9 +103,9 @@ func orderSQL(terms []OrderTerm) string {
 // QueryLayer holds the parts of a single SQL query level.
 type QueryLayer struct {
 	Selects []SelectExpr
-	Where   []string
+	Where   []predicate
 	GroupBy []groupKey
-	Having  []string
+	Having  []predicate
 	OrderBy []OrderTerm
 	LimitBy string
 	// ScanLimitBy is a dedup that must collapse rows BEFORE this layer reads
@@ -168,12 +168,14 @@ type RowCap struct {
 	// computed column.
 	ScanLimitBy string
 	Limit       string
-	After       []string // filters written after this cap and before the next
+	After       []predicate // filters written after this cap and before the next
+	// scanKeys are the ScanLimitBy keys.
+	scanKeys []string
 }
 
 // capAfter is the filter list for a position k commands in: the After of the last
 // cap before it, or nil ahead of every cap.
-func (l *QueryLayer) capAfter(k int) *[]string {
+func (l *QueryLayer) capAfter(k int) *[]predicate {
 	for i := len(l.Caps) - 1; i >= 0; i-- {
 		if l.Caps[i].At < k {
 			return &l.Caps[i].After
@@ -232,106 +234,149 @@ type QueryStage struct {
 // QueryPlan holds the structured representation of a query before rendering to SQL.
 type QueryPlan struct {
 	Stages []QueryStage // pipeline of aggregation stages (first = innermost)
-	// stageAfterCmd[i] is the current stage index once command i has executed.
-	stageAfterCmd    []int
-	WindowLayers     []QueryLayer // z-score, histogram wrapping (applied after all stages)
-	DeferredWhere    []string     // conditions on window fields
-	DeferredOrder    []OrderTerm  // ORDER BY on window fields
-	DeferredLimit    string       // LIMIT when sorting by window fields
-	Formatters       []SelectExpr // outer SELECT: timestamp formatting, deferred math
-	FormatterOrderBy []OrderTerm  // ORDER BY lifted to formatter outer SELECT for streaming
-	FormatterLimit   string       // LIMIT lifted to formatter outer SELECT for streaming
 
 	// IsAggregated records that an aggregate function runs, so the result is
 	// aggregated rows. HasGroupBy records that a grouping command ran and its
 	// groups are still the rows, which a later bare count() collapses.
 	IsAggregated bool
 	HasGroupBy   bool
-	ChartType    string
-	ChartConfig  map[string]interface{}
 
 	// special is a query whose SQL replaces the standard rendering, nil for most.
 	special queryMode
-
 	// Chain describes the chain() the query matches, nil without one.
 	Chain *ChainMeta
-
-	// rowLimitByCommand records that a command (head, limit, dedup, a
-	// limit= option) bounded the row set, rather than the caller's MaxRows.
-	rowLimitByCommand bool
-
-	// usesBindingSet records that a result-set binding was rendered. Like join(),
-	// its subquery carries its own copy of the time bounds, so a caller must not
-	// re-translate the query over a narrower window.
-	usesBindingSet bool
-	// pgrWhere holds the source conditions this plan's provenance filters wrote.
-	pgrWhere []string
-
-	// bindingCTEs holds the result-set bindings this query reads more than once.
-	bindingCTEs []bindingCTE
-
-	// Histogram-specific fields
-	HistogramBuckets int
-	// HistogramValueExpr is the numeric expression the buckets are computed from,
-	// resolved while the registry still knows the field. Rebuilding it at window
-	// layer time emitted a bare identifier the scan never projected (code 47).
-	HistogramValueExpr string
-
-	// ChartLayers wrap the result for a chart that reshapes it (boxplot,
-	// scatter); they run after any z-score layers. ChartFieldOrder is their output.
-	ChartLayers     []QueryLayer
-	ChartFieldOrder []string
-	// ChartReadsAllRows marks a chart that summarizes every row, so the default
-	// display LIMIT must not truncate its input.
-	ChartReadsAllRows bool
-
-	// Z-score/MAD window-specific fields
-	ModifiedZScoreExpr string
-	OutlierThreshold   string
-	MADWindowExpr      string
-
 	// join is the plan's join() of its rows with a subquery's, nil without one.
 	join *joinPlan
-
 	// lookup is the model join modelLookup() or pgrContext() adds.
 	lookup lookupPlan
 
-	// Table command tracking
-	HasTableCmd             bool
-	TableHasExplicitColumns bool
-	TableColumns            []string // the columns table() names, as written
-	TableJoinedFields       []string // join() outputs named in table(), in the order given
+	// What renders around the stages, and table()'s request.
+	format    formatPlan
+	window    windowPlan
+	chart     chartPlan
+	histogram histogramPlan
+	deferred  deferredPlan
+	table     tablePlan
 
-	// Pending conditions: classified by kind after Declare, materialized after Execute
-	pendingWhereConditions    []Condition
-	pendingHavingConditions   []Condition
-	pendingDeferredConditions []Condition
+	// outer is the chained aggregation over a prior aggregation's outputs, and
+	// aggregationOutputs maps each aggregate alias (_count, _sum, ...) to its SQL.
+	outer              outerAggregation
+	aggregationOutputs map[string]string
 
-	// positionAt is the registry a filter resolves its fields against, keyed by
-	// where it is written.
-	positionAt map[position]*FieldRegistry
-	// stageAt is the stage in effect at each position.
-	stageAt map[position]int
-	// outputsAfter[i] is the columns the query returns once command i has run.
-	outputsAfter map[int][]string
-	// declaredBy[i] is what command i registers as its outputs.
-	declaredBy [][]FieldEntry
-	// firstAggregation is the index of the first aggregating command, or the
-	// number of commands when none aggregates.
-	firstAggregation int
-	// commands is the pipeline being planned.
-	commands []CommandNode
+	// pending holds the filters classified by stage, placed once every command ran.
+	pending pendingFilters
+	// pos is what the planner knows about the pipeline and each position in it.
+	pos positions
 	// baseWhereLen counts the source WHERE entries that scope the scan (time range,
 	// fractal) rather than filter it. First-stage conditions follow them, ahead of
 	// anything a command adds.
 	baseWhereLen int
+	// pgr holds the provenance filters and what narrows their candidates.
+	pgr pgrPlan
 
-	// Source expressions exported to the deferred layer as hidden columns.
-	deferred *deferredScope
+	// rowLimitByCommand records that a command (head, limit, dedup, a
+	// limit= option) bounded the row set, rather than the caller's MaxRows.
+	rowLimitByCommand bool
+	// usesBindingSet records that a result-set binding was rendered. Like join(),
+	// its subquery carries its own copy of the time bounds, so a caller must not
+	// re-translate the query over a narrower window.
+	usesBindingSet bool
+	// bindingCTEs holds the result-set bindings this query reads more than once.
+	bindingCTEs []bindingCTE
+}
 
-	// Chained aggregation state (for sum/avg/etc. on prior aggregation outputs)
-	outerAggregations  []SelectExpr      // the outer (chained) aggregation query's columns
-	aggregationOutputs map[string]string // tracks agg aliases (_count, _sum, etc.) -> SQL expression
+// formatPlan is the outer SELECT that formats the rows: timestamp formatting and
+// deferred math, with the ordering and limit lifted to it for streaming.
+type formatPlan struct {
+	selects []SelectExpr
+	orderBy []OrderTerm
+	limit   string
+}
+
+// windowPlan is the z-score and outlier layers over the stages.
+type windowPlan struct {
+	layers           []QueryLayer
+	zScoreExpr       string
+	outlierThreshold string
+}
+
+// chartPlan is the chart the result is drawn as and the layers that reshape it
+// (boxplot, scatter), which run after any window layers.
+type chartPlan struct {
+	kind       string
+	config     map[string]interface{}
+	layers     []QueryLayer
+	fieldOrder []string // the chart layers' output
+	// readsAllRows marks a chart that summarizes every row, so the default display
+	// LIMIT must not truncate its input.
+	readsAllRows bool
+}
+
+// histogramPlan is a histogram's buckets over valueExpr, the numeric expression
+// resolved while the registry still knows the field. Rebuilding it at window layer
+// time emitted a bare identifier the scan never projected (code 47).
+type histogramPlan struct {
+	buckets   int
+	valueExpr string
+}
+
+// deferredPlan is the outermost layer, for filters, ordering and a limit on window
+// and join outputs, and the source expressions the scan exports to it as hidden
+// columns.
+type deferredPlan struct {
+	where   []predicate
+	orderBy []OrderTerm
+	limit   string
+	scope   *deferredScope
+}
+
+// tablePlan is what table() asked for.
+type tablePlan struct {
+	present      bool
+	explicit     bool     // it names its columns
+	columns      []string // the columns it names, as written
+	joinedFields []string // join() outputs it names, in the order given
+}
+
+// outerAggregation is a chained aggregation (sum, avg, ... on a prior aggregation's
+// outputs): its columns, the inner outputs they read, and for mad() the value
+// whose median the window before it computes.
+type outerAggregation struct {
+	selects []SelectExpr
+	reads   []string
+	madExpr string
+}
+
+// pendingFilters are the filters classified by the stage they bind to.
+type pendingFilters struct {
+	where, having, deferred []Condition
+}
+
+// positions is what the planner knows about the pipeline: its commands, and the
+// registry, stage and outputs at each position.
+type positions struct {
+	// registry is the registry a filter resolves its fields against, keyed by
+	// where it is written, and stage the stage in effect there.
+	registry map[position]*FieldRegistry
+	stage    map[position]int
+	// stageAfter[i] is the current stage index once command i has executed, and
+	// outputs[i] the columns the query returns then.
+	stageAfter []int
+	outputs    map[int][]string
+	// declared[i] is what command i registers as its outputs.
+	declared [][]FieldEntry
+	// firstAgg is the index of the first aggregating command, or the number of
+	// commands when none aggregates.
+	firstAgg int
+	// commands is the pipeline being planned.
+	commands []CommandNode
+}
+
+// pgrPlan holds the provenance filters this plan compiled, and the scan filters
+// that narrow their candidates (see narrowPgrCandidates).
+type pgrPlan struct {
+	filters   []*candidateFilter
+	narrowing []predicate
 }
 
 // lookupPlan is the join of a model's scores, or pgrContext()'s context, onto the
@@ -345,7 +390,7 @@ type lookupPlan struct {
 	// Where: filters on model columns alone, applied to the model side of a strict
 	// join (and so to its scan prefilter) rather than to the joined rows. Each is a
 	// property of the key, so the join keeps exactly the rows it would have kept.
-	Where []string
+	Where []predicate
 	// keys is the model's key set: its key columns, its topology, its scoring
 	// subquery and the set the strict scan prefilter tests. nil without a lookup.
 	keys *modelKeySet
@@ -381,8 +426,8 @@ type joinPlan struct {
 // postJoinFilter is a filter on the scan-level model join's rows. At is the number
 // of commands before it, which orders it against the row caps.
 type postJoinFilter struct {
-	At  int
-	SQL string
+	At   int
+	Pred predicate
 }
 
 // NewQueryPlan creates a plan with a single source stage.
@@ -391,7 +436,7 @@ func NewQueryPlan() *QueryPlan {
 		Stages: []QueryStage{
 			{IsSource: true},
 		},
-		ChartConfig:        make(map[string]interface{}),
+		chart:              chartPlan{config: make(map[string]interface{})},
 		aggregationOutputs: make(map[string]string),
 	}
 }
@@ -405,7 +450,7 @@ func (p *QueryPlan) CurrentStage() *QueryStage {
 // against: the registry as the pipeline left it there, or fallback outside a
 // planned pipeline.
 func (p *QueryPlan) registryAt(pos position, fallback *FieldRegistry) *FieldRegistry {
-	if v, ok := p.positionAt[pos]; ok {
+	if v, ok := p.pos.registry[pos]; ok {
 		return v
 	}
 	return fallback
@@ -414,12 +459,12 @@ func (p *QueryPlan) registryAt(pos position, fallback *FieldRegistry) *FieldRegi
 // rewrittenAfterAggregation reports whether a command between the first
 // aggregation and the first n commands declares field.
 func (p *QueryPlan) rewrittenAfterAggregation(field string, n int) bool {
-	return n > p.firstAggregation+1 && p.declaredBetween(field, p.firstAggregation+1, n)
+	return n > p.pos.firstAgg+1 && p.declaredBetween(field, p.pos.firstAgg+1, n)
 }
 
 // declaredBetween reports whether a command in [from, to) declares name.
 func (p *QueryPlan) declaredBetween(name string, from, to int) bool {
-	for _, entries := range p.declaredBy[from:min(to, len(p.declaredBy))] {
+	for _, entries := range p.pos.declared[from:min(to, len(p.pos.declared))] {
 		if slices.ContainsFunc(entries, func(e FieldEntry) bool { return e.Name == name }) {
 			return true
 		}
@@ -431,8 +476,8 @@ func (p *QueryPlan) declaredBetween(name string, from, to int) bool {
 // outer aggregation when a stats command wraps the stage, otherwise the stage's
 // selects and, while it groups, its keys.
 func (p *QueryPlan) outputNames(registry *FieldRegistry) []string {
-	if len(p.outerAggregations) > 0 {
-		return columnNames(p.outerAggregations)
+	if len(p.outer.selects) > 0 {
+		return columnNames(p.outer.selects)
 	}
 	stage := p.CurrentStage()
 	names := columnNames(stage.Layer.Selects)
@@ -474,10 +519,10 @@ func (p *QueryPlan) SourceStage() *QueryStage {
 // A filter between groupby() and a following count() filters the groups, one
 // after it filters the count. Without positions it is the outermost.
 func (p *QueryPlan) havingStageIndexAt(cmdIndex int) int {
-	if cmdIndex <= 0 || cmdIndex > len(p.stageAfterCmd) {
+	if cmdIndex <= 0 || cmdIndex > len(p.pos.stageAfter) {
 		return p.havingStageIndex()
 	}
-	for i := p.stageAfterCmd[cmdIndex-1]; i >= 0; i-- {
+	for i := p.pos.stageAfter[cmdIndex-1]; i >= 0; i-- {
 		if len(p.Stages[i].Layer.GroupBy) > 0 || p.Stages[i].Aggregates {
 			return i
 		}
@@ -488,17 +533,17 @@ func (p *QueryPlan) havingStageIndexAt(cmdIndex int) int {
 // afterRowKeeping reports whether the last aggregating command among the first n
 // scores each row against all of them.
 func (p *QueryPlan) afterRowKeeping(n int) bool {
-	at := lastAggregatingCommandIndex(p.commands, n)
-	return at >= 0 && commandScoresAgainstAllRows(p.commands[at].Name)
+	at := lastAggregatingCommandIndex(p.pos.commands, n)
+	return at >= 0 && commandScoresAgainstAllRows(p.pos.commands[at].Name)
 }
 
 // capStageAt returns the stage wrapping the last cap on aggregated rows before the
 // first n commands, or -1 when none precedes.
 func (p *QueryPlan) capStageAt(n int) int {
-	if n <= 0 || n > len(p.stageAfterCmd) {
+	if n <= 0 || n > len(p.pos.stageAfter) {
 		return -1
 	}
-	for i := p.stageAfterCmd[n-1]; i >= 0; i-- {
+	for i := p.pos.stageAfter[n-1]; i >= 0; i-- {
 		if p.Stages[i].AfterCap {
 			return i
 		}
@@ -520,23 +565,23 @@ func (p *QueryPlan) havingStageIndex() int {
 // hasDeferredWrap reports whether renderStandard will emit the outer layer that
 // carries deferred filters/ordering (and strips the exported hidden columns).
 func (p *QueryPlan) hasDeferredWrap() bool {
-	return len(p.DeferredWhere) > 0 || len(p.DeferredOrder) > 0 || p.DeferredLimit != ""
+	return len(p.deferred.where) > 0 || len(p.deferred.orderBy) > 0 || p.deferred.limit != ""
 }
 
 // deferredScope returns the plan's scope for expressions relocated above the source
 // scan, creating it on first use.
 func (p *QueryPlan) deferredScope() *deferredScope {
-	if p.deferred == nil {
-		p.deferred = newDeferredScope()
+	if p.deferred.scope == nil {
+		p.deferred.scope = newDeferredScope()
 	}
-	return p.deferred
+	return p.deferred.scope
 }
 
 // exportDeferredColumns projects the hidden columns the deferred layer needs into the
 // source scan. Nothing to do unless a relocated expression actually referenced a
 // source expression.
 func (p *QueryPlan) exportDeferredColumns() error {
-	if !p.deferred.used() {
+	if !p.deferred.scope.used() {
 		return nil
 	}
 	// A scope reference can be allocated for a condition whose SQL then comes out
@@ -550,7 +595,7 @@ func (p *QueryPlan) exportDeferredColumns() error {
 	if len(p.Stages) > 1 {
 		return fmt.Errorf("a filter or sort on a log field cannot be combined with this pipeline: the field is not available after the aggregation stages; move the filter before the aggregation")
 	}
-	if err := p.validateJoinKeysSurviveAggregation(source, "the filtered or sorted field", p.deferred.exprs, p.deferred.labels); err != nil {
+	if err := p.validateJoinKeysSurviveAggregation(source, "the filtered or sorted field", p.deferred.scope.exprs, p.deferred.scope.labels); err != nil {
 		return err
 	}
 	if len(source.Layer.Selects) == 0 {
@@ -560,8 +605,8 @@ func (p *QueryPlan) exportDeferredColumns() error {
 		// the query's columns.
 		return fmt.Errorf("cannot evaluate a filter or sort on a log field at this point in the pipeline")
 	}
-	source.Layer.Selects = append(source.Layer.Selects, p.deferred.projections()...)
-	p.deferred.markExported()
+	source.Layer.Selects = append(source.Layer.Selects, p.deferred.scope.projections()...)
+	p.deferred.scope.markExported()
 	return nil
 }
 
@@ -681,7 +726,7 @@ func (p *QueryPlan) scanSelectClause(source *QueryStage, opts QueryOptions) (str
 		return selectClause, nil
 	}
 	if opts.SourceSubquery == "" && !p.outerHasColumn(j.Key) {
-		j.KeyExpr = groupableCast(jsonFieldRef(j.Key))
+		j.KeyExpr = jsonFieldRef(j.Key)
 	}
 	if j.KeyExpr == "" {
 		return selectClause, nil
@@ -700,8 +745,8 @@ func (p *QueryPlan) scanSelectClause(source *QueryStage, opts QueryOptions) (str
 // the only place its key set can prune granules through the key sub-columns' skip
 // indexes.
 func (p *QueryPlan) placePrefilters(source *QueryStage, opts QueryOptions) {
-	place := func(pf string, at int) {
-		if pf == "" {
+	place := func(pf predicate, at int) {
+		if pf.empty() {
 			return
 		}
 		if after := source.Layer.capAfter(at); after != nil {
@@ -710,7 +755,7 @@ func (p *QueryPlan) placePrefilters(source *QueryStage, opts QueryOptions) {
 			source.Layer.Where = append(source.Layer.Where, pf)
 		}
 	}
-	if pf := p.joinPrefilter(source, opts); pf != "" {
+	if pf := p.joinPrefilter(source, opts); !pf.empty() {
 		place(pf, p.join.Cmd)
 	}
 	place(p.modelPrefilter(), p.lookup.Cmd)
@@ -720,7 +765,7 @@ func (p *QueryPlan) placePrefilters(source *QueryStage, opts QueryOptions) {
 // apply. joined records that the scan-level model join is already in from.
 type scanSource struct {
 	from    string
-	pending []string
+	pending []predicate
 	joined  bool
 }
 
@@ -847,7 +892,7 @@ func (p *QueryPlan) joinModelAfterCaps(scan *scanSource, source *QueryStage, opt
 	// picked (timestamp, log_id) may fail them. The strict prefilter is left to the
 	// INNER JOIN, which applies exactly the same key set.
 	pf := p.modelPrefilter()
-	joinedWhere := append(slices.DeleteFunc(slices.Clone(source.Layer.Where), func(w string) bool { return w == pf }), picked)
+	joinedWhere := append(slices.DeleteFunc(slices.Clone(source.Layer.Where), func(w predicate) bool { return w == pf }), atom(picked))
 	// The join hashes the few picked rows and streams the model past them, rather
 	// than hashing every scored key. They carry their filters with them, so a
 	// GLOBAL join on a cluster ships only those rows.
@@ -866,14 +911,14 @@ func (p *QueryPlan) joinModelAfterCaps(scan *scanSource, source *QueryStage, opt
 
 // renderSelect renders one SELECT over from with the layer's grouping, ordering
 // and limits.
-func renderSelect(selectClause, from string, where []string, layer *QueryLayer, limitBy string) string {
+func renderSelect(selectClause, from string, where []predicate, layer *QueryLayer, limitBy string) string {
 	var sql strings.Builder
 	sql.WriteString("SELECT " + selectClause + " FROM " + from + whereClause(where))
 	if len(layer.GroupBy) > 0 {
 		sql.WriteString(" GROUP BY " + strings.Join(groupExprs(layer.GroupBy), ", "))
 	}
 	if len(layer.Having) > 0 {
-		sql.WriteString(" HAVING " + andJoin(layer.Having))
+		sql.WriteString(" HAVING " + andOf(layer.Having...).sql)
 	}
 	if len(layer.OrderBy) > 0 {
 		sql.WriteString(" ORDER BY " + orderSQL(layer.OrderBy))
@@ -897,36 +942,34 @@ func (p *QueryPlan) wrapOuterLayers(sql string) string {
 	if p.join != nil && p.join.SubSQL != "" {
 		sql = p.wrapWithJoin(sql)
 	}
-	if len(p.Formatters) > 0 {
-		sql = "SELECT " + strings.Join(selectStrings(p.Formatters), ", ") + " FROM (" + sql + ")"
-		if len(p.FormatterOrderBy) > 0 {
-			sql += " ORDER BY " + orderSQL(p.FormatterOrderBy)
+	if len(p.format.selects) > 0 {
+		sql = "SELECT " + strings.Join(selectStrings(p.format.selects), ", ") + " FROM (" + sql + ")"
+		if len(p.format.orderBy) > 0 {
+			sql += " ORDER BY " + orderSQL(p.format.orderBy)
 		}
-		if p.FormatterLimit != "" {
-			sql += " " + p.FormatterLimit
+		if p.format.limit != "" {
+			sql += " " + p.format.limit
 		}
 	}
-	for _, wl := range p.WindowLayers {
+	for _, wl := range p.window.layers {
 		sql = wrapWithLayer(sql, wl)
 	}
 	if !p.hasDeferredWrap() {
 		return sql
 	}
 	outer := "SELECT *"
-	if p.deferred.exported {
+	if p.deferred.scope.exported {
 		// The exported columns exist only to make this layer's expressions
 		// resolvable; drop them from the result.
-		outer += " EXCEPT (" + strings.Join(p.deferred.names, ", ") + ")"
+		outer += " EXCEPT (" + strings.Join(p.deferred.scope.names, ", ") + ")"
 	}
 	outer += " FROM (" + sql + ")"
-	if len(p.DeferredWhere) > 0 {
-		outer += " WHERE " + andJoin(p.DeferredWhere)
+	outer += whereClause(p.deferred.where)
+	if len(p.deferred.orderBy) > 0 {
+		outer += " ORDER BY " + orderSQL(p.deferred.orderBy)
 	}
-	if len(p.DeferredOrder) > 0 {
-		outer += " ORDER BY " + orderSQL(p.DeferredOrder)
-	}
-	if p.DeferredLimit != "" {
-		outer += " " + p.DeferredLimit
+	if p.deferred.limit != "" {
+		outer += " " + p.deferred.limit
 	}
 	return outer
 }
@@ -945,14 +988,6 @@ func dedupScanOrder(opts QueryOptions) []OrderTerm {
 		}
 	}
 	return terms
-}
-
-// whereClause renders filters as a WHERE clause, or "" when there are none.
-func whereClause(where []string) string {
-	if len(where) == 0 {
-		return ""
-	}
-	return " WHERE " + andJoin(where)
 }
 
 // defaultRowOrder is the ordering a row cap keeps rows by when its command gave
@@ -995,17 +1030,14 @@ func wrapWithLayer(innerSQL string, layer QueryLayer) string {
 	outer.WriteString(" FROM (")
 	outer.WriteString(innerSQL)
 	outer.WriteString(")")
-	if len(layer.Where) > 0 {
-		outer.WriteString(" WHERE ")
-		outer.WriteString(andJoin(layer.Where))
-	}
+	outer.WriteString(whereClause(layer.Where))
 	if len(layer.GroupBy) > 0 {
 		outer.WriteString(" GROUP BY ")
 		outer.WriteString(strings.Join(groupExprs(layer.GroupBy), ", "))
 	}
 	if len(layer.Having) > 0 {
 		outer.WriteString(" HAVING ")
-		outer.WriteString(andJoin(layer.Having))
+		outer.WriteString(andOf(layer.Having...).sql)
 	}
 	if len(layer.OrderBy) > 0 {
 		outer.WriteString(" ORDER BY ")
@@ -1078,19 +1110,19 @@ func (p *QueryPlan) innerJoinWrap() bool {
 
 // joinPrefilter is the scan predicate that keeps only rows whose join key the
 // subquery returns, or "" when the key has no scan-level expression.
-func (p *QueryPlan) joinPrefilter(source *QueryStage, opts QueryOptions) string {
+func (p *QueryPlan) joinPrefilter(source *QueryStage, opts QueryOptions) predicate {
 	if !p.innerJoinWrap() || len(p.Stages) != 1 || opts.SourceSubquery != "" || p.Chain != nil {
-		return ""
+		return predicate{}
 	}
 	// Same resolution as renderStandard's hidden _join_k projection.
-	keyExpr := groupableCast(jsonFieldRef(p.join.Key))
+	keyExpr := jsonFieldRef(p.join.Key)
 	if p.outerHasColumn(p.join.Key) {
 		keyExpr = p.outerKeyScanExpr(source)
 	}
 	if keyExpr == "" {
-		return ""
+		return predicate{}
 	}
-	return fmt.Sprintf("%s %s (SELECT %s FROM (%s))", keyExpr, opts.subqueryIn(false), p.join.Key, p.join.SubSQL)
+	return atom(fmt.Sprintf("%s %s (SELECT %s FROM (%s))", keyExpr, opts.subqueryIn(false), p.join.Key, p.join.SubSQL))
 }
 
 // outerKeyScanExpr returns the per-row expression the outer SELECT names the join
@@ -1102,9 +1134,6 @@ func (p *QueryPlan) outerKeyScanExpr(source *QueryStage) string {
 			continue
 		}
 		expr := sel.Expr
-		if strings.Contains(strings.ToUpper(expr), " OVER ") {
-			return ""
-		}
 		if len(source.Layer.GroupBy) > 0 || p.IsAggregated {
 			if !slices.ContainsFunc(source.Layer.GroupBy, func(g groupKey) bool {
 				return g.Name == p.join.Key || g.Expr == expr || unquoteIdent(g.Expr) == p.join.Key
@@ -1220,7 +1249,7 @@ func (p *QueryPlan) modelJoinSource() string {
 	if len(p.lookup.Where) == 0 {
 		return p.lookup.keys.scoringSQL
 	}
-	return "SELECT * FROM (" + p.lookup.keys.scoringSQL + ") WHERE " + andJoin(p.lookup.Where)
+	return "SELECT * FROM (" + p.lookup.keys.scoringSQL + ")" + whereClause(p.lookup.Where)
 }
 
 // hasModelLookup reports whether a model_lookup() joins the model's scores.
@@ -1230,11 +1259,11 @@ func (p *QueryPlan) hasModelLookup() bool { return p.lookup.keys != nil }
 // only logs whose key the model scores can survive the INNER JOIN, and the scan is
 // the one place the key sub-columns' skip indexes can prune on that set. Filters on
 // model columns narrow the set exactly as they narrow the model side.
-func (p *QueryPlan) modelPrefilter() string {
+func (p *QueryPlan) modelPrefilter() predicate {
 	if !p.hasModelLookup() || !p.lookup.Strict || len(p.lookup.KeyExprs) == 0 {
-		return ""
+		return predicate{}
 	}
-	return p.lookup.keys.membership(p.lookup.KeyExprs, p.lookup.Where)
+	return atom(p.lookup.keys.membership(p.lookup.KeyExprs, p.lookup.Where))
 }
 
 // readsThroughCap reports whether the scan-level model join, or a filter on its
@@ -1261,9 +1290,8 @@ func (p *QueryPlan) dedupsByModelKeys(c RowCap) bool {
 	if c.Limit != "" || c.ScanLimitBy == "" {
 		return false
 	}
-	keys := strings.Split(strings.TrimPrefix(c.ScanLimitBy, "LIMIT 1 BY "), ", ")
 	for _, k := range p.lookup.KeyExprs {
-		if !slices.Contains(keys, k) {
+		if !slices.Contains(c.scanKeys, k) {
 			return false
 		}
 	}
@@ -1272,11 +1300,11 @@ func (p *QueryPlan) dedupsByModelKeys(c RowCap) bool {
 
 // postJoinSQL returns the post-join filters written after command index after and
 // up to command index upTo (RowCap.At values); -1 leaves that side open.
-func (p *QueryPlan) postJoinSQL(after, upTo int) []string {
-	var out []string
+func (p *QueryPlan) postJoinSQL(after, upTo int) []predicate {
+	var out []predicate
 	for _, f := range p.lookup.PostJoinWhere {
 		if (after < 0 || f.At > after) && (upTo < 0 || f.At <= upTo) {
-			out = append(out, f.SQL)
+			out = append(out, f.Pred)
 		}
 	}
 	return out
@@ -1322,7 +1350,7 @@ func (p *QueryPlan) selectsRowsBelowModelJoin(source *QueryStage, opts QueryOpti
 		p.IsAggregated || p.Chain != nil || opts.SourceMode == SourceIceberg || opts.SourceSubquery != "" {
 		return false
 	}
-	if len(p.WindowLayers) > 0 || p.hasDeferredWrap() || p.ModifiedZScoreExpr != "" || p.HistogramBuckets > 0 || len(p.ChartLayers) > 0 {
+	if len(p.window.layers) > 0 || p.hasDeferredWrap() || p.window.zScoreExpr != "" || p.histogram.buckets > 0 || len(p.chart.layers) > 0 {
 		return false
 	}
 	return orderingReadsOnlyScan(l.OrderBy, l.LimitBy)
@@ -1350,14 +1378,14 @@ func (p *QueryPlan) outerHasColumn(column string) bool {
 // deferred above the scan, a dedup, a command-set row limit, or a subquery
 // carrying its own scope.
 func (p *QueryPlan) sourceWhereComplete() bool {
-	if len(p.Stages) != 1 || len(p.WindowLayers) > 0 {
+	if len(p.Stages) != 1 || len(p.window.layers) > 0 {
 		return false
 	}
 	src := p.SourceStage().Layer
 	if len(src.GroupBy) > 0 || len(src.Having) > 0 || src.LimitBy != "" || src.ScanLimitBy != "" {
 		return false
 	}
-	if len(p.DeferredWhere) > 0 || len(p.lookup.PostJoinWhere) > 0 || len(p.lookup.Where) > 0 {
+	if len(p.deferred.where) > 0 || len(p.lookup.PostJoinWhere) > 0 || len(p.lookup.Where) > 0 {
 		return false
 	}
 	if p.IsAggregated || p.HasGroupBy || p.Chain != nil || p.special != nil {
@@ -1366,7 +1394,7 @@ func (p *QueryPlan) sourceWhereComplete() bool {
 	if p.join != nil || p.hasModelLookup() || p.usesBindingSet || p.rowLimitByCommand {
 		return false
 	}
-	return p.HistogramBuckets == 0 && p.ModifiedZScoreExpr == "" && len(p.ChartLayers) == 0
+	return p.histogram.buckets == 0 && p.window.zScoreExpr == "" && len(p.chart.layers) == 0
 }
 
 // SourceProjection is one column the source scan computes, as the alias it is

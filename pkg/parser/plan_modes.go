@@ -24,7 +24,7 @@ func (m *processTreeMode) translate(plan *QueryPlan, opts QueryOptions) (*Transl
 	if opts.SourceMode == SourceIceberg {
 		return nil, fmt.Errorf("ptg() operates on live process lineage and is not available over archived data")
 	}
-	return buildProcessTreeSQL(m.start, plan.SourceStage().Layer.Having, plan.ChartType, plan.ChartConfig, opts)
+	return buildProcessTreeSQL(m.start, plan.SourceStage().Layer.Having, plan.chart.kind, plan.chart.config, opts)
 }
 
 // analyzeDefaultScan is how many rows analyzeFields() samples without limit=.
@@ -39,7 +39,7 @@ type analyzeMode struct {
 
 func (m *analyzeMode) translate(plan *QueryPlan, opts QueryOptions) (*TranslationResult, error) {
 	src := plan.SourceStage().Layer
-	return buildAnalyzeFieldsSQL(m.fields, m.scanLimit, src.Where, src.Having, src.OrderBy, src.Limit, plan.ChartType, plan.ChartConfig, opts)
+	return buildAnalyzeFieldsSQL(m.fields, m.scanLimit, src.Where, src.Having, src.OrderBy, src.Limit, plan.chart.kind, plan.chart.config, opts)
 }
 
 // isProcessTree reports whether the plan is a ptg() query.

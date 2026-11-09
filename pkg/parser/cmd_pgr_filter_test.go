@@ -178,21 +178,22 @@ func TestPgrCandidatesDoNotEmbedOtherFilters(t *testing.T) {
 	}
 }
 
-// Candidate text from another query must stay as it is: narrowing it by this query's filters
-// changed results when a binding was inlined.
+// A filter another plan compiled keeps its candidates: narrowing it by this
+// query's filters changed results when a binding was inlined.
 func TestPgrCandidatesNarrowOnlyOwnEntries(t *testing.T) {
 	ctx := &CommandContext{Plan: NewQueryPlan(), Opts: pgrOpts(), Registry: NewFieldRegistry(SourceHot, nil)}
-	candidates := pgrCandidates(ctx)
-	own, foreign := "a IN ("+candidates+")", "b IN ("+candidates+")"
-	ctx.Plan.SourceStage().Layer.Where = []string{"fields.`user`::String = 'bob'", own, foreign}
-	ctx.Plan.pgrWhere = []string{own}
+	other := &CommandContext{Plan: NewQueryPlan(), Opts: pgrOpts(), Registry: ctx.Registry}
+	set := func(c *CommandContext) func() []string { return func() []string { return []string{pgrCandidates(c)} } }
+	own := pgrFilterSQL(CommandNode{}, ctx, "a", set(ctx))
+	foreign := pgrFilterSQL(CommandNode{}, other, "b", set(other))
+	ctx.Plan.SourceStage().Layer.Where = []predicate{atom("fields.`user`::String = 'bob'"), own, foreign}
 	narrowPgrCandidates(ctx)
 	where := ctx.Plan.SourceStage().Layer.Where
-	if !strings.Contains(where[1], "AND fields.`user`::String = 'bob'") {
-		t.Errorf("own entry not narrowed: %s", where[1])
+	if !strings.Contains(where[1].sql, "AND fields.`user`::String = 'bob'") {
+		t.Errorf("own entry not narrowed: %s", where[1].sql)
 	}
 	if where[2] != foreign {
-		t.Errorf("foreign entry changed: %s", where[2])
+		t.Errorf("foreign entry changed: %s", where[2].sql)
 	}
 }
 

@@ -18,7 +18,15 @@ const (
 	TypeString
 	TypeNumber
 	TypeBool
+	// TypeText is a stored field: a TypeAny whose SQL is known to be a String.
+	TypeText
+	// TypeNumberField is a field computed as a number: a TypeAny whose SQL is
+	// known to be numeric, so text positions convert it.
+	TypeNumberField
 )
+
+// anyType reports whether the type is a field's, coercible to either side.
+func (t ExprType) anyType() bool { return t == TypeAny || t == TypeText || t == TypeNumberField }
 
 func (t ExprType) String() string {
 	switch t {
@@ -50,6 +58,9 @@ type exprFunc struct {
 	Params  []exprParam
 	Returns ExprType
 	Render  func(args []string) string
+	// RenderTyped, when set, renders instead of Render from each argument's type
+	// as well, for a function whose SQL depends on it.
+	RenderTyped func(args []string, types []ExprType) string
 	// MinArgs, when non-zero, overrides the required-argument count derived from
 	// Params. Used by variadic functions that need at least N.
 	MinArgs int
@@ -331,8 +342,8 @@ func init() {
 		Name:    "datediff",
 		Params:  []exprParam{str("unit"), str("start"), str("end")},
 		Returns: TypeNumber,
-		Render: func(a []string) string {
-			return fmt.Sprintf("dateDiff(%s, %s, %s)", a[0], lenientDateTime(a[1]), lenientDateTime(a[2]))
+		RenderTyped: func(a []string, t []ExprType) string {
+			return fmt.Sprintf("dateDiff(%s, %s, %s)", a[0], lenientDateTime(a[1], t[1] == TypeText), lenientDateTime(a[2], t[2] == TypeText))
 		},
 	})
 

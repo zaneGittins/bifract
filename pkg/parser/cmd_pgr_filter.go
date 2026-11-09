@@ -37,28 +37,28 @@ type pgrHasAncestorHandler struct{ rowFilter }
 func (h *pgrHasAncestorHandler) readsLogRows()  {}
 func (h *pgrHasAncestorHandler) appliesNegate() {}
 
-func (h *pgrHasAncestorHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
+func (h *pgrHasAncestorHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate, error) {
 	if err := checkPgrSource("pgrHasAncestor", ctx); err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	arg, ok := b.First("value")
 	if !ok {
-		return "", fmt.Errorf("pgrHasAncestor() needs a name, path or /regex/ to look for")
+		return predicate{}, fmt.Errorf("pgrHasAncestor() needs a name, path or /regex/ to look for")
 	}
 	walkMatch, err := pgrImageMatch("pgrHasAncestor", arg, "parent_image")
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	ancMatch, _ := pgrImageMatch("pgrHasAncestor", arg, "anc_image") // the same value, already checked
 	depth, err := pgrDepth("pgrHasAncestor", b)
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
-	return pgrFilterSQL(cmd, ctx, jsonFieldRef(pgrFilterField), pgrAncestorSet(ctx, walkMatch, ancMatch, depth)...), nil
+	return pgrFilterSQL(cmd, ctx, jsonFieldRef(pgrFilterField), func() []string { return pgrAncestorSet(ctx, walkMatch, ancMatch, depth) }), nil
 }
 
 func (h *pgrHasAncestorHandler) lookups(cmd CommandNode) int { return pgrWalkLookups(cmd) }
@@ -99,14 +99,14 @@ func pgrAncestorSet(ctx *CommandContext, walkMatch, ancMatch string, depth int) 
 		return []string{pgrWalkUp(ctx, walkMatch, depth, cand)}
 	}
 	status := fmt.Sprintf("SELECT proc_key, argMax(open_key, version) AS open_key FROM %s WHERE %s GROUP BY proc_key", anc,
-		andJoin(pgrScope(ctx, "depth = 0", fmt.Sprintf("proc_key %s (%s)", in, cand))))
+		pgrScope(ctx, "depth = 0", fmt.Sprintf("proc_key %s (%s)", in, cand)))
 	arrived := fmt.Sprintf("SELECT proc_key FROM %s WHERE %s", lineage,
-		andJoin(pgrScope(ctx, fmt.Sprintf("proc_key %s (SELECT open_key FROM (%s) WHERE open_key != '')", in, status))))
+		pgrScope(ctx, fmt.Sprintf("proc_key %s (SELECT open_key FROM (%s) WHERE open_key != '')", in, status)))
 	closed := fmt.Sprintf("SELECT proc_key FROM (%s) WHERE open_key = '' OR open_key %s (%s)", status, notIn, arrived)
 	hits := fmt.Sprintf("SELECT process_guid FROM %s WHERE %s", anc,
-		andJoin(pgrScope(ctx, fmt.Sprintf("depth BETWEEN 1 AND %d", depth), ancMatch, fmt.Sprintf("proc_key %s (%s)", in, closed))))
+		pgrScope(ctx, fmt.Sprintf("depth BETWEEN 1 AND %d", depth), ancMatch, fmt.Sprintf("proc_key %s (%s)", in, closed)))
 	rest := fmt.Sprintf("SELECT proc_key FROM %s WHERE %s", lineage,
-		andJoin(pgrScope(ctx, fmt.Sprintf("proc_key %s (%s)", in, cand), fmt.Sprintf("proc_key %s (%s)", notIn, closed))))
+		pgrScope(ctx, fmt.Sprintf("proc_key %s (%s)", in, cand), fmt.Sprintf("proc_key %s (%s)", notIn, closed)))
 	return []string{hits, pgrWalkUp(ctx, walkMatch, depth, rest)}
 }
 
@@ -136,7 +136,7 @@ func pgrWalkUp(ctx *CommandContext, match string, depth int, start string) strin
 	level[0] = start
 	for i := 1; i < depth; i++ {
 		level[i] = fmt.Sprintf("SELECT parent_key FROM %s WHERE %s", table,
-			andJoin(pgrScope(ctx, fmt.Sprintf("proc_key %s (%s)", in, level[i-1]))))
+			pgrScope(ctx, fmt.Sprintf("proc_key %s (%s)", in, level[i-1])))
 	}
 	set := ""
 	for i := depth - 1; i >= 0; i-- {
@@ -149,7 +149,7 @@ func pgrWalkUp(ctx *CommandContext, match string, depth int, start string) strin
 			col = "process_guid"
 		}
 		set = fmt.Sprintf("SELECT %s FROM %s WHERE %s", col, table,
-			andJoin(pgrScope(ctx, hit, fmt.Sprintf("proc_key %s (%s)", in, level[i]))))
+			pgrScope(ctx, hit, fmt.Sprintf("proc_key %s (%s)", in, level[i])))
 	}
 	return set
 }
@@ -185,27 +185,27 @@ func (h *pgrHasDescendantHandler) readsProvenance() {}
 
 func (h *pgrHasDescendantHandler) lookups(cmd CommandNode) int { return pgrWalkLookups(cmd) }
 
-func (h *pgrHasDescendantHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
+func (h *pgrHasDescendantHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate, error) {
 	if err := checkPgrSource("pgrHasDescendant", ctx); err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	arg, ok := b.First("value")
 	if !ok {
-		return "", fmt.Errorf("pgrHasDescendant() needs a name, path or /regex/ to look for")
+		return predicate{}, fmt.Errorf("pgrHasDescendant() needs a name, path or /regex/ to look for")
 	}
 	match, err := pgrImageMatch("pgrHasDescendant", arg, "image")
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	depth, err := pgrDepth("pgrHasDescendant", b)
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
-	return pgrFilterSQL(cmd, ctx, procKeyExpr(jsonFieldRef(pgrFilterField)), pgrDescendantSet(ctx, match, depth)...), nil
+	return pgrFilterSQL(cmd, ctx, procKeyExpr(jsonFieldRef(pgrFilterField)), func() []string { return pgrDescendantSet(ctx, match, depth) }), nil
 }
 
 // pgrDescendantSet selects the keys of candidates with a matching descendant within depth levels.
@@ -215,17 +215,17 @@ func pgrDescendantSet(ctx *CommandContext, match string, depth int) []string {
 	in := ctx.Opts.subqueryIn(false)
 	lineage, anc := procLineageTable(ctx.Opts), procAncestryTable(ctx.Opts)
 	built := fmt.Sprintf("SELECT anc_key FROM %s WHERE %s", anc,
-		andJoin(pgrScope(ctx, fmt.Sprintf("depth BETWEEN 1 AND %d", depth), match, "anc_key != ''", fmt.Sprintf("anc_key %s (%s)", in, pgrCandidates(ctx)))))
+		pgrScope(ctx, fmt.Sprintf("depth BETWEEN 1 AND %d", depth), match, "anc_key != ''", fmt.Sprintf("anc_key %s (%s)", in, pgrCandidates(ctx))))
 	since := fmt.Sprintf("ingest_timestamp >= (SELECT argMax(at, set_at) FROM %s)", procAncestryMarkTable(ctx.Opts))
 	ready := fmt.Sprintf("(SELECT throwIf(count() > %d, 'pgrHasDescendant() is not available yet: process ancestry is still being recorded. Try again later.') "+
-		"FROM %s WHERE %s) = 0", pgrDescendantMaxPending, lineage, andJoin(pgrScope(ctx, since)))
-	recent := fmt.Sprintf("SELECT proc_key FROM %s WHERE %s", lineage, andJoin(pgrScope(ctx, ready, since)))
-	below := fmt.Sprintf("SELECT proc_key FROM %s WHERE %s", anc, andJoin(pgrScope(ctx, fmt.Sprintf("anc_key %s (%s)", in, recent))))
+		"FROM %s WHERE %s) = 0", pgrDescendantMaxPending, lineage, pgrScope(ctx, since))
+	recent := fmt.Sprintf("SELECT proc_key FROM %s WHERE %s", lineage, pgrScope(ctx, ready, since))
+	below := fmt.Sprintf("SELECT proc_key FROM %s WHERE %s", anc, pgrScope(ctx, fmt.Sprintf("anc_key %s (%s)", in, recent)))
 	level := fmt.Sprintf("SELECT proc_key FROM %s WHERE %s", lineage,
-		andJoin(pgrScope(ctx, match, fmt.Sprintf("(proc_key %s (%s) OR proc_key %s (%s))", in, recent, in, below))))
+		pgrScope(ctx, match, fmt.Sprintf("(proc_key %s (%s) OR proc_key %s (%s))", in, recent, in, below)))
 	parts := []string{built}
 	for i := 0; i < depth; i++ {
-		level = fmt.Sprintf("SELECT parent_key FROM %s WHERE %s", lineage, andJoin(pgrScope(ctx, "parent_key != ''", fmt.Sprintf("proc_key %s (%s)", in, level))))
+		level = fmt.Sprintf("SELECT parent_key FROM %s WHERE %s", lineage, pgrScope(ctx, "parent_key != ''", fmt.Sprintf("proc_key %s (%s)", in, level)))
 		parts = append(parts, level)
 	}
 	return parts
@@ -239,19 +239,19 @@ func (h *pgrHasNetworkHandler) appliesNegate() {}
 
 func (h *pgrHasNetworkHandler) lookups(CommandNode) int { return pgrFilterLookups }
 
-func (h *pgrHasNetworkHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
+func (h *pgrHasNetworkHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate, error) {
 	if err := checkPgrSource("pgrHasNetwork", ctx); err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
-	conds := pgrScope(ctx, "event_type = 'net_connect'")
+	conds := []string{"event_type = 'net_connect'"}
 	if arg, ok := b.First("value"); ok {
 		cond, err := pgrNetworkMatch(arg)
 		if err != nil {
-			return "", err
+			return predicate{}, err
 		}
 		conds = append(conds, cond)
 	}
@@ -261,11 +261,13 @@ func (h *pgrHasNetworkHandler) predicate(cmd CommandNode, ctx *CommandContext) (
 			conds = append(conds, pgrExternalTarget)
 		case "false":
 		default:
-			return "", fmt.Errorf("pgrHasNetwork() external= must be true or false")
+			return predicate{}, fmt.Errorf("pgrHasNetwork() external= must be true or false")
 		}
 	}
-	conds = append(conds, fmt.Sprintf("proc_key %s (%s)", ctx.Opts.subqueryIn(false), pgrCandidates(ctx)))
-	return pgrFilterSQL(cmd, ctx, jsonFieldRef(pgrFilterField), fmt.Sprintf("SELECT process_guid FROM %s WHERE %s", procEdgesTable(ctx.Opts), andJoin(conds))), nil
+	return pgrFilterSQL(cmd, ctx, jsonFieldRef(pgrFilterField), func() []string {
+		in := fmt.Sprintf("proc_key %s (%s)", ctx.Opts.subqueryIn(false), pgrCandidates(ctx))
+		return []string{fmt.Sprintf("SELECT process_guid FROM %s WHERE %s", procEdgesTable(ctx.Opts), pgrScope(ctx, append(slices.Clone(conds), in)...))}
+	}), nil
 }
 
 // pgrNetworkMatch tests a stored destination against the value, compared as ingest stored it.
@@ -342,68 +344,78 @@ func checkPgrSource(name string, ctx *CommandContext) error {
 
 var errPgrAssignedGUID = fmt.Errorf("pgrHas filters and pgrContext() read the logged process_guid, so it cannot be assigned in the same query")
 
-// pgrFilterSQL tests whether the row's process, as row, is in any of sets, recording
-// the predicate for narrowing. Negated, it is in none of them.
-func pgrFilterSQL(cmd CommandNode, ctx *CommandContext, row string, sets ...string) string {
-	op, join := ctx.Opts.subqueryIn(cmd.Negate), " OR "
+// candidateFilter is a provenance filter of one plan, rebuilt by build when its
+// candidate set narrows.
+type candidateFilter struct{ build func() predicate }
+
+// pgrFilterSQL tests whether the row's process, as row, is in any of the sets.
+// Negated, it is in none of them. The filter is recorded on the plan, so
+// narrowPgrCandidates can rebuild the sets over fewer candidates.
+func pgrFilterSQL(cmd CommandNode, ctx *CommandContext, row string, sets func() []string) predicate {
+	op, join := ctx.Opts.subqueryIn(cmd.Negate), orOf
 	if cmd.Negate {
-		join = " AND "
+		join = andOf
 	}
-	tests := make([]string, len(sets))
-	for i, set := range sets {
-		tests[i] = fmt.Sprintf("%s %s (%s)", row, op, set)
+	f := &candidateFilter{}
+	f.build = func() predicate {
+		var tests []predicate
+		for _, set := range sets() {
+			tests = append(tests, atom(fmt.Sprintf("%s %s (%s)", row, op, set)))
+		}
+		p := group(join(tests...))
+		p.candidates = f
+		return p
 	}
-	entry := tests[0]
-	if len(tests) > 1 {
-		entry = "(" + strings.Join(tests, join) + ")"
-	}
-	ctx.Plan.pgrWhere = append(ctx.Plan.pgrWhere, entry)
-	return entry
+	ctx.Plan.pgr.filters = append(ctx.Plan.pgr.filters, f)
+	return f.build()
 }
 
-// pgrScope prefixes conditions with the fractal scope, which leads every provenance key.
-func pgrScope(ctx *CommandContext, conds ...string) []string {
+// pgrScope is the WHERE of a provenance lookup: the fractal scope, which leads
+// every key, and conds, each one operand.
+func pgrScope(ctx *CommandContext, conds ...string) string {
 	if fc := fractalScopeCond(ctx.Opts, ""); fc != "" {
-		return append([]string{fc}, conds...)
+		conds = append([]string{fc}, conds...)
 	}
-	return conds
+	return andOf(atoms(conds...)...).sql
 }
 
-// pgrCandidates selects the process keys of every log in the window: a superset of the rows a
-// filter tests, which narrowPgrCandidates may shrink.
+// pgrCandidates selects the process keys of every log in the window: a superset of
+// the rows a filter tests, narrowed by the plan's other scan filters once they are
+// known (see narrowPgrCandidates).
 func pgrCandidates(ctx *CommandContext) string {
-	conds := windowConditions(ctx.Opts)
+	conds := atoms(windowConditions(ctx.Opts)...)
 	if fc := fractalScopeCond(ctx.Opts, ""); fc != "" {
-		conds = append(conds, fc)
+		conds = append(conds, atom(fc))
 	}
-	return fmt.Sprintf("SELECT %s FROM %s WHERE %s", procKeyExpr(jsonFieldRef(pgrFilterField)), ctx.Opts.EffectiveTableName(), andJoin(conds))
+	conds = append(conds, ctx.Plan.pgr.narrowing...)
+	return fmt.Sprintf("SELECT %s FROM %s%s", procKeyExpr(jsonFieldRef(pgrFilterField)), ctx.Opts.EffectiveTableName(), whereClause(conds))
 }
 
-// narrowPgrCandidates adds the plan's other scan filters to its own filters' candidates. Only
-// entries this plan wrote are touched: the same text inlined from elsewhere is another query's.
+// narrowPgrCandidates narrows the candidates of the plan's own provenance filters,
+// and of its pgrContext() lookup, by its other scan filters, and rebuilds them.
+// A filter compiled by another plan, inlined here, keeps its own candidates.
 func narrowPgrCandidates(ctx *CommandContext) {
-	if len(ctx.Plan.pgrWhere) == 0 && ctx.Plan.lookup.name != pgrContextName {
+	plan := ctx.Plan
+	rescore := plan.lookup.name == pgrContextName && plan.lookup.keys != nil && plan.lookup.keys.rescore != nil
+	if len(plan.pgr.filters) == 0 && !rescore {
 		return
 	}
-	src := &ctx.Plan.SourceStage().Layer
-	var others []string
-	for _, w := range src.Where[ctx.Plan.baseWhereLen:] {
-		if readsOnlyScanColumns(w) {
-			others = append(others, w)
+	src := &plan.SourceStage().Layer
+	for _, w := range src.Where[plan.baseWhereLen:] {
+		if readsOnlyScanColumns(w.sql) {
+			plan.pgr.narrowing = append(plan.pgr.narrowing, w)
 		}
 	}
-	if len(others) == 0 {
+	if len(plan.pgr.narrowing) == 0 {
 		return
 	}
-	candidates := pgrCandidates(ctx)
-	narrowed := candidates + " AND " + andJoin(others)
 	for i, w := range src.Where {
-		if slices.Contains(ctx.Plan.pgrWhere, w) {
-			src.Where[i] = strings.ReplaceAll(w, candidates, narrowed)
+		if w.candidates != nil && slices.Contains(plan.pgr.filters, w.candidates) {
+			src.Where[i] = w.candidates.build()
 		}
 	}
-	if ks := ctx.Plan.lookup.keys; ks != nil && ctx.Plan.lookup.name == pgrContextName {
-		ks.scoringSQL = strings.ReplaceAll(ks.scoringSQL, candidates, narrowed)
+	if rescore {
+		plan.lookup.keys.scoringSQL = plan.lookup.keys.rescore()
 	}
 }
 

@@ -198,7 +198,11 @@ func (p *argParser) parseLiteral() Argument {
 	if tok.Type == TokenRegex {
 		kind = ArgRegex
 	}
-	return Argument{Kind: kind, Text: tok.Value, Quoted: tok.Type == TokenString, Pos: tok.Pos}
+	arg := Argument{Kind: kind, Text: tok.Value, Quoted: tok.Type == TokenString, Pos: tok.Pos}
+	if kind == ArgRegex {
+		arg.Written = tok.Text
+	}
+	return arg
 }
 
 // parseExpr parses a field position as an expression. A quoted value there names

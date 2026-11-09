@@ -95,7 +95,8 @@ func (h *pgrContextHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 		return err
 	}
 	ks := &modelKeySet{keyFields: []string{pgrFilterField}, rightCols: []string{pgrFilterField},
-		global: ctx.Opts.readsDistributed(), scoringSQL: pgrContextSQL(ctx, cols)}
+		global: ctx.Opts.readsDistributed(), rescore: func() string { return pgrContextSQL(ctx, cols) }}
+	ks.scoringSQL = ks.rescore()
 	for _, c := range cols {
 		ks.fields = append(ks.fields, c.name)
 	}
@@ -117,7 +118,7 @@ func (h *pgrContextHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 func pgrContextSQL(ctx *CommandContext, cols []pgrContextColumn) string {
 	in := ctx.Opts.subqueryIn(false)
 	table := procLineageTable(ctx.Opts)
-	inRange := andJoin(pgrScope(ctx, fmt.Sprintf("proc_key %s (%s)", in, pgrCandidates(ctx))))
+	inRange := pgrScope(ctx, fmt.Sprintf("proc_key %s (%s)", in, pgrCandidates(ctx)))
 	parent := slices.ContainsFunc(cols, func(c pgrContextColumn) bool { return c.expr == "" })
 	sel := []string{"process_guid"}
 	if parent {
@@ -141,7 +142,7 @@ func pgrContextSQL(ctx *CommandContext, cols []pgrContextColumn) string {
 		}
 	}
 	parents := fmt.Sprintf("SELECT proc_key, argMax(commandline, (timestamp, commandline != '')) AS commandline FROM %s WHERE %s GROUP BY proc_key", table,
-		andJoin(pgrScope(ctx, fmt.Sprintf("proc_key %s (SELECT parent_key FROM %s WHERE %s)", in, table, inRange))))
+		pgrScope(ctx, fmt.Sprintf("proc_key %s (SELECT parent_key FROM %s WHERE %s)", in, table, inRange)))
 	return fmt.Sprintf("SELECT %s FROM (%s) AS c LEFT JOIN (%s) AS p ON c.parent_key = p.proc_key", strings.Join(outer, ", "), rows, parents)
 }
 

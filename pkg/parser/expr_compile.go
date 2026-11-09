@@ -68,16 +68,31 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 		return name, TypeAny, nil
 	}
 	if entry := registry.Get(name); entry != nil {
+		// A folded-in expression keeps what the registry knows of its SQL type, and
+		// is bracketed unless the registry knows it is one operand already.
+		typ := TypeAny
+		switch {
+		case entry.text:
+			typ = TypeText
+		case entry.Numeric:
+			typ = TypeNumberField
+		}
+		fold := func(expr string) string {
+			if expr = ctx.export(expr, name); entry.operand {
+				return expr
+			}
+			return "(" + expr + ")"
+		}
 		if entry.Inline {
 			// An inline field is a pre-aggregation assignment folded in at each
 			// reference. Its expression is already numeric.
-			return "(" + ctx.export(registry.Resolve(name), name) + ")", TypeNumber, nil
+			return fold(registry.Resolve(name)), TypeNumber, nil
 		}
 		// A row-level value is folded in as it is here, so a later reassignment
 		// of the name cannot change it.
 		if entry.ResolveAs != "" && registry.IsRowLevel(name) {
 			if expr := registry.Resolve(name); expr != name {
-				return "(" + ctx.export(expr, name) + ")", TypeAny, nil
+				return fold(expr), typ, nil
 			}
 		}
 		// The bare alias, not Resolve(): an aggregate output registers with
@@ -85,7 +100,7 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 		// back into a fields.`name` JSON path that does not exist in this stage.
 		return name, TypeAny, nil
 	}
-	return ctx.export(groupableCast(registry.fieldRef(name)), name), TypeAny, nil
+	return ctx.export(registry.fieldRef(name), name), TypeText, nil
 }
 
 // export routes a source-scope reference through the deferred scope when the
@@ -233,7 +248,7 @@ func arithmeticError(op string, err error) error {
 
 // asNumber coerces an expression into numeric SQL, rejecting anything known to
 // be a string. toFloat64OrNull requires String input, so a column alias is
-// stringified first while a JSON sub-column (already ::String) is not.
+// stringified first while a stored field (already a String) is not.
 func asNumber(sql string, typ ExprType, node *ExprNode) (string, error) {
 	switch typ {
 	case TypeNumber:
@@ -242,16 +257,17 @@ func asNumber(sql string, typ ExprType, node *ExprNode) (string, error) {
 		return "", fmt.Errorf("expected a number, got the string %s", node.String())
 	case TypeBool:
 		return "", fmt.Errorf("expected a number, got the condition %s", node.String())
-	}
-	if strings.HasSuffix(sql, "::String") {
+	case TypeText:
 		return "toFloat64OrNull(" + sql + ")", nil
+	case TypeNumberField:
+		return sql, nil
 	}
 	return "toFloat64OrNull(toString(" + sql + "))", nil
 }
 
 // asString renders an expression as string SQL.
 func asString(sql string, typ ExprType) string {
-	if typ == TypeNumber {
+	if typ == TypeNumber || typ == TypeNumberField {
 		return "toString(" + sql + ")"
 	}
 	return sql
@@ -288,6 +304,9 @@ func compileCall(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 	if fn.Name == "if" {
 		return compileIf(fn, args, types)
 	}
+	if fn.RenderTyped != nil {
+		return fn.RenderTyped(args, types), fn.Returns, nil
+	}
 	return fn.Render(args), fn.Returns, nil
 }
 
@@ -298,12 +317,12 @@ func compileIf(fn *exprFunc, args []string, types []ExprType) (string, ExprType,
 	switch {
 	case then == els:
 		return fn.Render(args), then, nil
-	case then == TypeAny || els == TypeAny:
-		known := then
-		if known == TypeAny {
-			known = els
-		}
-		return fn.Render(args), known, nil
+	case then.anyType() && els.anyType():
+		return fn.Render(args), TypeAny, nil
+	case then.anyType():
+		return fn.Render(args), els, nil
+	case els.anyType():
+		return fn.Render(args), then, nil
 	}
 	return "", TypeAny, fmt.Errorf("if(): branches must have the same type, got %s and %s", then, els)
 }
@@ -401,6 +420,15 @@ func isComputedExpr(e *ExprNode) bool {
 		return true
 	}
 	return false
+}
+
+// operandSQL brackets a compiled expression whose root is an operator, so SQL that
+// places it beside other operators keeps its grouping.
+func operandSQL(e *ExprNode, sql string) string {
+	if e.Kind == ExprBinary || e.Kind == ExprUnary {
+		return "(" + sql + ")"
+	}
+	return sql
 }
 
 func assignmentError(field string, err error) error {

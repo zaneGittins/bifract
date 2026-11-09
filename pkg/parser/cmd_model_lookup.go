@@ -115,7 +115,7 @@ func joinModelAfterAggregation(ctx *CommandContext, keyFields, keyExprs []string
 		if !slices.Contains(carried, kf) {
 			return fmt.Errorf("%[2]s() key %[1]s must be part of the grouping to survive aggregation: add %[1]s to the group/table columns, or drop the aggregation", kf, plan.lookup.name)
 		}
-		left[i] = modelKeyString("_outer." + quoteIdent(kf))
+		left[i] = modelKeyString("_outer."+quoteIdent(kf), false)
 	}
 	stage := plan.CurrentStage()
 	for _, f := range plan.lookup.Fields {
@@ -134,25 +134,25 @@ func joinModelAfterAggregation(ctx *CommandContext, keyFields, keyExprs []string
 // predicate compiles modelLookup() used as a row condition: the log's key is one
 // the model scores, exactly the rows the default join keeps. NOT around it keeps
 // the rows the model does not score.
-func (h *modelLookupHandler) predicate(cmd CommandNode, ctx *CommandContext) (string, error) {
+func (h *modelLookupHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate, error) {
 	b, err := BindCommand(cmd)
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	for _, name := range []string{"require", "strict"} {
 		if b.Has(name) {
-			return "", fmt.Errorf("modelLookup() as a condition only tests whether the model scores the key, so %s= has no effect; drop it", name)
+			return predicate{}, fmt.Errorf("modelLookup() as a condition only tests whether the model scores the key, so %s= has no effect; drop it", name)
 		}
 	}
 	ks, err := resolveModelKeySet(cmd, ctx)
 	if err != nil {
-		return "", err
+		return predicate{}, err
 	}
 	keys := make([]string, len(ks.keyFields))
 	for i, kf := range ks.keyFields {
 		keys[i] = modelLookupFieldRef(kf, ctx.Registry)
 	}
-	return ks.membership(keys, nil), nil
+	return atom(ks.membership(keys, nil)), nil
 }
 
 // modelKeySet is what a model scores: its scoring subquery and the key set that
@@ -162,9 +162,12 @@ type modelKeySet struct {
 	keyFields  []string // the log fields matched against the model key, in order
 	table      string   // the model table
 	fractalIDs []string
-	scoringSQL string   // one row per scored key, carrying the output columns
-	fields     []string // the output columns the join adds, in display order
-	rightCols  []string // the scoring subquery's key columns, aligned with keyFields
+	scoringSQL string // one row per scored key, carrying the output columns
+	// rescore rebuilds scoringSQL once the plan's candidates narrow, nil for a
+	// scoring subquery that reads none.
+	rescore   func() string
+	fields    []string // the output columns the join adds, in display order
+	rightCols []string // the scoring subquery's key columns, aligned with keyFields
 	// rawWhere narrows the raw key columns the way the scoring subquery narrows its
 	// rows; exact says the two key sets are then identical, so membership can read
 	// the raw columns. exact starts false so a model type that forgets it falls back
@@ -256,7 +259,7 @@ func resolveModelKeySet(cmd CommandNode, ctx *CommandContext) (*modelKeySet, err
 // membership is the predicate "the model scores this key, and its scored row
 // passes modelWhere": exactly the keys the join matches. It reads the raw key
 // columns where they hold exactly that set, and the scored set otherwise.
-func (k *modelKeySet) membership(keys, modelWhere []string) string {
+func (k *modelKeySet) membership(keys []string, modelWhere []predicate) string {
 	var cols, set string
 	if k.exact && len(modelWhere) == 0 {
 		qualified := make([]string, len(k.rightCols))
@@ -271,9 +274,7 @@ func (k *modelKeySet) membership(keys, modelWhere []string) string {
 		set = fmt.Sprintf("SELECT %s FROM `%s` AS %s WHERE %s", cols, k.table, modelPrefilterAlias, where)
 	} else {
 		set = fmt.Sprintf("SELECT %s FROM (%s)", k.keyColumns(k.rightCols), k.scoringSQL)
-		if len(modelWhere) > 0 {
-			set += " WHERE " + andJoin(modelWhere)
-		}
+		set += whereClause(modelWhere)
 	}
 
 	// Both sides mirror the JOIN ON exactly (see QueryPlan.modelJoinOn).
@@ -547,14 +548,14 @@ func modelLookupFieldRef(field string, registry *FieldRegistry) string {
 	// Resolved through the registry, so a key an earlier command produced is looked
 	// up as the value that command computed rather than as a stored field of the
 	// same name, which is empty on every row.
-	return modelKeyString(resolveFieldRef(field, registry))
+	return modelKeyString(registry.Resolve(field), registry.isText(field))
 }
 
 // modelKeyString casts a key reference to String unless it already is one. A NULL
 // key reads as the empty string, as a stored field the log lacks does, so NOT
 // modelLookup() keeps the row rather than NOT (NULL IN ...) dropping it.
-func modelKeyString(ref string) string {
-	if strings.HasPrefix(ref, "fields.`") && strings.HasSuffix(ref, "::String") {
+func modelKeyString(ref string, stored bool) string {
+	if stored {
 		return ref
 	}
 	return "ifNull(toString(" + ref + "), '')"

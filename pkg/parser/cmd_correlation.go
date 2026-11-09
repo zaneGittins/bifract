@@ -66,7 +66,8 @@ func (h *correlationHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 	if xOut {
 		agg := corrAgg{rank: h.name == "rankcorr", x: fmt.Sprintf("toFloat64(%s)", xArg.FieldName()), y: fmt.Sprintf("toFloat64(%s)", yArg.FieldName())}
 		sqlExpr := agg.sql()
-		ctx.Plan.outerAggregations = append(ctx.Plan.outerAggregations, aggSelect(agg, alias))
+		ctx.Plan.outer.selects = append(ctx.Plan.outer.selects, aggSelect(agg, alias))
+		ctx.Plan.outer.reads = append(ctx.Plan.outer.reads, xArg.FieldName(), yArg.FieldName())
 		ctx.Plan.aggregationOutputs[alias] = sqlExpr
 	} else {
 		x, err := aggOperandNumeric(xArg, ctx.Registry)

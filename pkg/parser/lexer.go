@@ -51,8 +51,9 @@ const (
 type Token struct {
 	Type  TokenType
 	Value string
-	Pos   int // start offset (rune index, inclusive) of the token in the source input
-	End   int // end offset (rune index, exclusive) of the token in the source input
+	Text  string // the token as written: a regex's /pattern/flags, a string's quotes
+	Pos   int    // start offset (rune index, inclusive) of the token in the source input
+	End   int    // end offset (rune index, exclusive) of the token in the source input
 }
 
 type Lexer struct {
@@ -60,10 +61,7 @@ type Lexer struct {
 	pos      int
 	ch       rune
 	lastType TokenType
-	// exprMode excludes '*' and '-' from identifiers so arithmetic splits into
-	// its own tokens. Filter syntax needs them folded in (a wildcard value, a
-	// hyphenated field name); expression syntax never does.
-	exprMode bool
+	syntax   lexSyntax
 	// scanComments makes the lexer skip comment lines and record their [start, end)
 	// rune spans in comments. Only StripComments sets it: everything else lexes text
 	// with comments already blanked, or a fragment that has no lines of its own.
@@ -80,7 +78,7 @@ func NewLexer(input string) *Lexer {
 // newExprLexer lexes src in expression mode from start, reporting positions in
 // src's own coordinates.
 func newExprLexer(src []rune, start int) *Lexer {
-	l := &Lexer{runes: src, pos: start, exprMode: true}
+	l := &Lexer{runes: src, pos: start, syntax: exprSyntax}
 	l.readChar()
 	return l
 }
@@ -210,11 +208,32 @@ func (l *Lexer) readBindingName() string {
 	return result.String()
 }
 
+// lexSyntax is the grammar a lexer reads, which decides what continues a word.
+type lexSyntax int
+
+const (
+	// filterSyntax folds '-' and '*' into a word: a hyphenated field name, a
+	// wildcard value.
+	filterSyntax lexSyntax = iota
+	// exprSyntax keeps them operators, so arithmetic splits into tokens, except a
+	// '-' wedged between two words (user-agent).
+	exprSyntax
+)
+
+// continuesWord reports whether ch, followed by next, continues a word.
+func (s lexSyntax) continuesWord(ch, next rune) bool {
+	switch {
+	case unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '.':
+		return true
+	case s == filterSyntax:
+		return ch == '-' || ch == '*'
+	}
+	return ch == '-' && isHyphenatedName(next)
+}
+
 func (l *Lexer) readIdentifier() string {
 	var result strings.Builder
-	for unicode.IsLetter(l.ch) || unicode.IsDigit(l.ch) || l.ch == '_' || l.ch == '.' ||
-		(!l.exprMode && (l.ch == '-' || l.ch == '*')) ||
-		(l.exprMode && l.ch == '-' && isHyphenatedName(l.peekChar())) {
+	for l.syntax.continuesWord(l.ch, l.peekChar()) {
 		result.WriteRune(l.ch)
 		l.readChar()
 	}
@@ -229,210 +248,133 @@ func isHyphenatedName(next rune) bool {
 	return unicode.IsLetter(next) || next == '_'
 }
 
+// operators are the punctuation tokens, longest first so no spelling shadows a
+// longer one it begins. '/' is not here: it is a division, a regex or an error by
+// what precedes it (see slash).
+var operators = []struct {
+	text string
+	typ  TokenType
+}{
+	{"!=~", TokenNotContainsAny}, {"!=^", TokenNotStartsWithAny}, {"!=$", TokenNotEndsWithAny},
+	{":=", TokenAssign}, {"=~", TokenContainsAny}, {"=^", TokenStartsWithAny}, {"=$", TokenEndsWithAny},
+	{"!=", TokenNotEqual}, {">=", TokenGreaterEqual}, {"<=", TokenLessEqual},
+	{"|", TokenPipe}, {"=", TokenEqual}, {"!", TokenNot}, {">", TokenGreater}, {"<", TokenLess},
+	{"(", TokenLParen}, {")", TokenRParen}, {"[", TokenLBracket}, {"]", TokenRBracket},
+	{"{", TokenLBrace}, {"}", TokenRBrace}, {",", TokenComma}, {";", TokenSemicolon},
+	{"*", TokenMultiply}, {"+", TokenPlus}, {"-", TokenMinus},
+}
+
+// keywords are the words that are operators, matched in any case.
+var keywords = map[string]TokenType{"AND": TokenAnd, "OR": TokenOr, "NOT": TokenNot}
+
+// NextToken reads the next token, its span and the text it was written as.
 func (l *Lexer) NextToken() Token {
 	l.skipWhitespace()
-
-	// Start offset of this token: l.ch is the rune at index l.pos-1.
-	startPos := l.pos - 1
-	// endPos, when set >= 0, overrides the default end-of-token offset. The
-	// identifier branch sets it before its function-vs-field lookahead, which
-	// skips trailing whitespace and would otherwise inflate the token span.
-	endPos := -1
-
-	var tok Token
-
-	switch l.ch {
-	case 0:
-		tok = Token{Type: TokenEOF, Value: ""}
-	case '|':
-		tok = Token{Type: TokenPipe, Value: "|"}
-		l.readChar()
-	case ':':
-		if l.peekChar() == '=' {
-			l.readChar()
-			tok = Token{Type: TokenAssign, Value: ":="}
-			l.readChar()
-		} else {
-			// Single colon is not a valid token in our language
-			tok = Token{Type: TokenValue, Value: ":"}
-			l.readChar()
-		}
-	case '=':
-		switch l.peekChar() {
-		case '~':
-			l.readChar()
-			tok = Token{Type: TokenContainsAny, Value: "=~"}
-			l.readChar()
-		case '^':
-			l.readChar()
-			tok = Token{Type: TokenStartsWithAny, Value: "=^"}
-			l.readChar()
-		case '$':
-			l.readChar()
-			tok = Token{Type: TokenEndsWithAny, Value: "=$"}
-			l.readChar()
-		default:
-			tok = Token{Type: TokenEqual, Value: "="}
-			l.readChar()
-		}
-	case '!':
-		if l.peekChar() == '=' {
-			l.readChar()
-			switch l.peekChar() {
-			case '~':
-				l.readChar()
-				tok = Token{Type: TokenNotContainsAny, Value: "!=~"}
-			case '^':
-				l.readChar()
-				tok = Token{Type: TokenNotStartsWithAny, Value: "!=^"}
-			case '$':
-				l.readChar()
-				tok = Token{Type: TokenNotEndsWithAny, Value: "!=$"}
-			default:
-				tok = Token{Type: TokenNotEqual, Value: "!="}
-			}
-			l.readChar()
-		} else {
-			tok = Token{Type: TokenNot, Value: "!"}
-			l.readChar()
-		}
-	case '>':
-		if l.peekChar() == '=' {
-			l.readChar()
-			tok = Token{Type: TokenGreaterEqual, Value: ">="}
-			l.readChar()
-		} else {
-			tok = Token{Type: TokenGreater, Value: ">"}
-			l.readChar()
-		}
-	case '<':
-		if l.peekChar() == '=' {
-			l.readChar()
-			tok = Token{Type: TokenLessEqual, Value: "<="}
-			l.readChar()
-		} else {
-			tok = Token{Type: TokenLess, Value: "<"}
-			l.readChar()
-		}
-	case '(':
-		tok = Token{Type: TokenLParen, Value: "("}
-		l.readChar()
-	case ')':
-		tok = Token{Type: TokenRParen, Value: ")"}
-		l.readChar()
-	case '[':
-		tok = Token{Type: TokenLBracket, Value: "["}
-		l.readChar()
-	case ']':
-		tok = Token{Type: TokenRBracket, Value: "]"}
-		l.readChar()
-	case '{':
-		tok = Token{Type: TokenLBrace, Value: "{"}
-		l.readChar()
-	case '}':
-		tok = Token{Type: TokenRBrace, Value: "}"}
-		l.readChar()
-	case ',':
-		tok = Token{Type: TokenComma, Value: ","}
-		l.readChar()
-	case ';':
-		tok = Token{Type: TokenSemicolon, Value: ";"}
-		l.readChar()
-	case '"':
-		tok = Token{Type: TokenString, Value: l.readString('"')}
-	case '\'':
-		tok = Token{Type: TokenString, Value: l.readString('\'')}
-	case '/':
-		// After ), ], value, or field, treat / as division, not regex
-		if l.lastType == TokenRParen || l.lastType == TokenRBracket || l.lastType == TokenValue || l.lastType == TokenField {
-			tok = Token{Type: TokenDivide, Value: "/"}
-			l.readChar()
-		} else if l.peekChar() == '/' {
-			// An empty regex is never intended; it is a comment that does not
-			// start its line, and would otherwise silently match everything.
-			tok = Token{Type: TokenError, Value: "//"}
-			l.readChar()
-			l.readChar()
-		} else {
-			tok = Token{Type: TokenRegex, Value: l.readRegex()}
-		}
-	case '*':
-		tok = Token{Type: TokenMultiply, Value: "*"}
-		l.readChar()
-	case '+':
-		tok = Token{Type: TokenPlus, Value: "+"}
-		l.readChar()
-	case '-':
-		tok = Token{Type: TokenMinus, Value: "-"}
-		l.readChar()
-	case '&':
-		// &name is a let binding. The sigil is kept in the token value so a
-		// binding and a log field of the same name can never collide.
-		l.readChar()
-		if !unicode.IsLetter(l.ch) && l.ch != '_' {
-			tok = Token{Type: TokenError, Value: "&"}
-			l.readChar()
-			break
-		}
-		tok = Token{Type: TokenBinding, Value: "&" + l.readBindingName()}
-		endPos = l.pos - 1
-	default:
-		if unicode.IsLetter(l.ch) || l.ch == '_' {
-			ident := l.readIdentifier()
-			// Capture the identifier's true end before the function-vs-field
-			// lookahead below (skipWhitespace) advances past trailing spaces.
-			endPos = l.pos - 1
-			// Check if it's a keyword
-			switch strings.ToUpper(ident) {
-			case "AND":
-				tok = Token{Type: TokenAnd, Value: ident}
-			case "OR":
-				tok = Token{Type: TokenOr, Value: ident}
-			case "NOT":
-				tok = Token{Type: TokenNot, Value: ident}
-			default:
-				// Special handling for case function which uses { } instead of ( )
-				if ident == "case" {
-					l.skipWhitespace()
-					if l.ch == '{' {
-						tok = Token{Type: TokenFunction, Value: ident}
-					} else {
-						tok = Token{Type: TokenField, Value: ident}
-					}
-				} else {
-					// Check if next char is '(' to determine if it's a function
-					l.skipWhitespace()
-					if l.ch == '(' {
-						tok = Token{Type: TokenFunction, Value: ident}
-					} else {
-						tok = Token{Type: TokenField, Value: ident}
-					}
-				}
-			}
-		} else if unicode.IsDigit(l.ch) {
-			tok = Token{Type: TokenValue, Value: l.readIdentifier()}
-		} else {
-			tok = Token{Type: TokenError, Value: string(l.ch)}
-			l.readChar()
-		}
-	}
-
+	// l.ch is the rune at index l.pos-1.
+	start := l.pos - 1
+	tok, end := l.scan()
 	l.lastType = tok.Type
-	tok.Pos = startPos
-	// After consuming a token, l.ch is the first rune NOT part of it, sitting at
-	// index l.pos-1. That is the exclusive end offset. For EOF nothing is
-	// consumed, so End == Pos (a zero-width caret at the end of input). The
-	// identifier branch sets endPos explicitly to avoid counting whitespace its
-	// lookahead skipped.
-	if endPos >= 0 {
-		tok.End = endPos
-	} else {
-		tok.End = l.pos - 1
-	}
-	if tok.End < startPos {
-		tok.End = startPos
-	}
+	// For EOF nothing is consumed, so End == Pos: a zero-width caret at the end.
+	tok.Pos, tok.End = start, max(end, start)
+	// An unterminated string or regex reads past the end of the input.
+	tok.Text = string(l.runes[min(start, len(l.runes)):min(tok.End, len(l.runes))])
 	return tok
+}
+
+// scan reads one token at l.ch, and returns it with its exclusive end offset.
+func (l *Lexer) scan() (Token, int) {
+	switch c := l.ch; {
+	case c == 0:
+		return Token{Type: TokenEOF}, l.pos - 1
+	case c == '"' || c == '\'':
+		return Token{Type: TokenString, Value: l.readString(c)}, l.pos - 1
+	case c == '/':
+		return l.slash(), l.pos - 1
+	case c == '&':
+		return l.binding(), l.pos - 1
+	case unicode.IsLetter(c) || c == '_':
+		return l.word()
+	case unicode.IsDigit(c):
+		return Token{Type: TokenValue, Value: l.readIdentifier()}, l.pos - 1
+	}
+	for _, op := range operators {
+		if l.hasPrefix(op.text) {
+			l.advance(len(op.text))
+			return Token{Type: op.typ, Value: op.text}, l.pos - 1
+		}
+	}
+	// A lone ':' is no operator; the parser reports it where it is out of place.
+	if l.ch == ':' {
+		l.readChar()
+		return Token{Type: TokenValue, Value: ":"}, l.pos - 1
+	}
+	c := l.ch
+	l.readChar()
+	return Token{Type: TokenError, Value: string(c)}, l.pos - 1
+}
+
+// hasPrefix reports whether the input continues with s at l.ch.
+func (l *Lexer) hasPrefix(s string) bool {
+	i := l.pos - 1
+	for _, r := range s {
+		if i >= len(l.runes) || l.runes[i] != r {
+			return false
+		}
+		i++
+	}
+	return true
+}
+
+// advance reads n runes.
+func (l *Lexer) advance(n int) {
+	for range n {
+		l.readChar()
+	}
+}
+
+// slash reads a token at '/': a division after an operand, else a regex. An empty
+// regex is never intended; it is a comment that does not start its line, and would
+// otherwise silently match everything.
+func (l *Lexer) slash() Token {
+	switch {
+	case l.lastType == TokenRParen || l.lastType == TokenRBracket || l.lastType == TokenValue || l.lastType == TokenField:
+		l.readChar()
+		return Token{Type: TokenDivide, Value: "/"}
+	case l.peekChar() == '/':
+		l.advance(2)
+		return Token{Type: TokenError, Value: "//"}
+	}
+	return Token{Type: TokenRegex, Value: l.readRegex()}
+}
+
+// binding reads &name, a let binding. The sigil is kept in the value so a binding
+// and a log field of the same name can never collide.
+func (l *Lexer) binding() Token {
+	l.readChar()
+	if !unicode.IsLetter(l.ch) && l.ch != '_' {
+		l.readChar()
+		return Token{Type: TokenError, Value: "&"}
+	}
+	return Token{Type: TokenBinding, Value: "&" + l.readBindingName()}
+}
+
+// word reads an identifier: a keyword, a function name when '(' follows (case
+// takes '{'), or a field. Its end is taken before the lookahead skips whitespace.
+func (l *Lexer) word() (Token, int) {
+	ident := l.readIdentifier()
+	end := l.pos - 1
+	if typ, ok := keywords[strings.ToUpper(ident)]; ok {
+		return Token{Type: typ, Value: ident}, end
+	}
+	opens := '('
+	if ident == "case" {
+		opens = '{'
+	}
+	l.skipWhitespace()
+	if l.ch == opens {
+		return Token{Type: TokenFunction, Value: ident}, end
+	}
+	return Token{Type: TokenField, Value: ident}, end
 }
 
 func (l *Lexer) Tokenize() ([]Token, error) {
@@ -463,48 +405,32 @@ func lexError(tok Token) error {
 	return newPosError(tok, "unexpected character %q in query", tok.Value)
 }
 
+// tokenNames are the token kinds as a user reads them in an error message: an
+// operator by its spelling, anything else by what it is.
+var tokenNames = func() map[TokenType]string {
+	names := map[TokenType]string{
+		TokenEOF:      "end of query",
+		TokenError:    "invalid character",
+		TokenField:    "field name",
+		TokenValue:    "value",
+		TokenString:   "string",
+		TokenRegex:    "regex",
+		TokenFunction: "function name",
+		TokenBinding:  "binding",
+		TokenDivide:   "'/'",
+	}
+	for _, op := range operators {
+		names[op.typ] = "'" + op.text + "'"
+	}
+	for word, typ := range keywords {
+		names[typ] = word
+	}
+	return names
+}()
+
 // String names the token kind as a user would read it in an error message.
 func (t TokenType) String() string {
-	names := map[TokenType]string{
-		TokenEOF:              "end of query",
-		TokenError:            "invalid character",
-		TokenPipe:             "'|'",
-		TokenField:            "field name",
-		TokenValue:            "value",
-		TokenString:           "string",
-		TokenRegex:            "regex",
-		TokenEqual:            "'='",
-		TokenNotEqual:         "'!='",
-		TokenAssign:           "':='",
-		TokenAnd:              "AND",
-		TokenOr:               "OR",
-		TokenNot:              "NOT",
-		TokenLParen:           "'('",
-		TokenRParen:           "')'",
-		TokenLBracket:         "'['",
-		TokenRBracket:         "']'",
-		TokenLBrace:           "'{'",
-		TokenRBrace:           "'}'",
-		TokenComma:            "','",
-		TokenSemicolon:        "';'",
-		TokenFunction:         "function name",
-		TokenGreater:          "'>'",
-		TokenLess:             "'<'",
-		TokenGreaterEqual:     "'>='",
-		TokenLessEqual:        "'<='",
-		TokenPlus:             "'+'",
-		TokenMinus:            "'-'",
-		TokenMultiply:         "'*'",
-		TokenDivide:           "'/'",
-		TokenContainsAny:      "'=~'",
-		TokenStartsWithAny:    "'=^'",
-		TokenEndsWithAny:      "'=$'",
-		TokenBinding:          "binding",
-		TokenNotContainsAny:   "'!=~'",
-		TokenNotStartsWithAny: "'!=^'",
-		TokenNotEndsWithAny:   "'!=$'",
-	}
-	if name, ok := names[t]; ok {
+	if name, ok := tokenNames[t]; ok {
 		return name
 	}
 	return fmt.Sprintf("token %d", t)

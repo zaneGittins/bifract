@@ -96,7 +96,7 @@ func (h *mitreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: byRef, Alias: alias})
 		source.Layer.groupBy(byRef, alias)
-		ctx.Plan.ChartConfig["byField"] = byField
+		ctx.Plan.chart.config["byField"] = byField
 	}
 
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
@@ -113,9 +113,9 @@ func (h *mitreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.aggregationOutputs["_count"] = "COUNT(*)"
 	ctx.Plan.IsAggregated = true
 
-	ctx.Plan.ChartType = "mitre"
-	ctx.Plan.ChartConfig["tagField"] = tagField
-	ctx.Plan.ChartConfig["limit"] = limit
+	ctx.Plan.chart.kind = "mitre"
+	ctx.Plan.chart.config["tagField"] = tagField
+	ctx.Plan.chart.config["limit"] = limit
 	return nil
 }
 
@@ -125,7 +125,7 @@ func mitreFieldRef(field string, ctx *CommandContext) (string, error) {
 	if _, err := sanitizeIdentifier(field); err != nil {
 		return "", fmt.Errorf("mitre(): %w", err)
 	}
-	return resolveFieldRef(field, ctx.Registry), nil
+	return ctx.Registry.Resolve(field), nil
 }
 
 func init() {
