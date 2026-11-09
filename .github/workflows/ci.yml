@@ -38,7 +38,18 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/caddy" version
 
+      # TestTranslationsResolveInClickHouse (pkg/parser) runs every BQL translation
+      # through ClickHouse's analyzer with clickhouse local, and skips without the
+      # binary. Pulled from the image compose deploys, so it is the server version run.
+      - name: Install ClickHouse
+        run: |
+          docker run --rm --entrypoint cat clickhouse/clickhouse-server:26.8.34.13-alpine /usr/bin/clickhouse > "$HOME/.local/bin/clickhouse"
+          chmod +x "$HOME/.local/bin/clickhouse"
+          "$HOME/.local/bin/clickhouse" local --query "SELECT version()"
+
       - name: Test
+        env:
+          BIFRACT_REQUIRE_CLICKHOUSE: "1"
         run: go test ./... -count=1
 
       - name: Vet
