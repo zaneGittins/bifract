@@ -49,8 +49,19 @@ func TestTranslationsResolveInClickHouse(t *testing.T) {
 	for i := range probes {
 		probes[i].translate()
 	}
-	failures := resolveAll(t, bin, probes)
+	// The canary proves the harness sees a rejection at all: a clickhouse local that
+	// reported none would otherwise pass every query.
+	canary := probe{query: "canary", variant: "plain", sql: "SELECT no_such_column FROM logs"}
+	probes = append(probes, canary)
+	failures := resolveAll(t, bin, probes, func(p probe) bool {
+		_, known := knownUnresolvable[p.query]
+		return !known && p.query != canary.query
+	})
 
+	if _, rejected := failures["canary [plain]"]; !rejected {
+		t.Fatalf("ClickHouse accepted %q: the harness cannot see rejections", canary.sql)
+	}
+	delete(failures, "canary [plain]")
 	var unexpected []string
 	failing := map[string]bool{}
 	for _, p := range probes {
@@ -301,26 +312,30 @@ func probeSchema(t *testing.T) string {
 var probeMarkerRe = regexp.MustCompile(`(?m)^PROBE (\d+)$`)
 var probeErrorRe = regexp.MustCompile(`Code: \d+\. DB::Exception: [^\n]*`)
 
-// resolveAll analyzes every translated probe, split across clickhouse local
-// processes, and returns the error for each that ClickHouse rejects, keyed by query
-// and variant.
-func resolveAll(t *testing.T, bin string, probes []probe) map[string]string {
+// resolveAll analyzes every translated probe and returns the error for each that
+// ClickHouse rejects, keyed by query and variant.
+//
+// The probes run in batches across clickhouse local processes with --ignore-error,
+// which some releases (26.8) honour by printing nothing for a failed statement. So a
+// probe counts as resolved only on positive evidence, its query tree in the batch's
+// output. One that needsReason is run again on its own, without --ignore-error, for
+// the error; any other is reported as rejected without one.
+func resolveAll(t *testing.T, bin string, probes []probe, needsReason func(probe) bool) map[string]string {
 	t.Helper()
 	schema := probeSchema(t)
 	dir := t.TempDir()
+	if _, msg := analyze(bin, dir, "schema", schema); msg != "" {
+		t.Fatalf("the probe schema did not load: %s", msg)
+	}
 	workers := min(runtime.NumCPU(), 8)
-	var (
-		mu       sync.Mutex
-		wg       sync.WaitGroup
-		failures = map[string]string{}
-	)
+	resolved := make([]bool, len(probes))
+	var wg sync.WaitGroup
 	for w := range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			var batch strings.Builder
 			batch.WriteString(schema)
-			batch.WriteString("SELECT 'SCHEMA READY';\n")
 			for i := w; i < len(probes); i += workers {
 				if probes[i].sql != "" {
 					fmt.Fprintf(&batch, "SELECT 'PROBE %d';\nEXPLAIN QUERY TREE %s;\n", i, probes[i].sql)
@@ -332,35 +347,73 @@ func resolveAll(t *testing.T, bin string, probes []probe) map[string]string {
 				return
 			}
 			cmd := exec.Command(bin, "local", "--path", filepath.Join(dir, fmt.Sprint("data", w)), "--multiquery", "--ignore-error", "--queries-file", path)
-			out, _ := cmd.CombinedOutput()
+			out, _ := cmd.Output() // stdout alone, so markers and trees stay in order
 			text := string(out)
-			ready := strings.Index(text, "SCHEMA READY")
-			if ready < 0 {
-				t.Errorf("the probe schema did not load: %s", oneLine(text))
-				return
-			}
-			if e := probeErrorRe.FindString(text[:ready]); e != "" {
-				t.Errorf("the probe schema did not load: %s", e)
-				return
-			}
 			locs := probeMarkerRe.FindAllStringSubmatchIndex(text, -1)
-			mu.Lock()
-			defer mu.Unlock()
 			for k, loc := range locs {
 				end := len(text)
 				if k+1 < len(locs) {
 					end = locs[k+1][0]
 				}
-				if e := probeErrorRe.FindString(text[loc[1]:end]); e != "" {
+				if strings.Contains(text[loc[1]:end], "QUERY id:") {
 					var i int
 					fmt.Sscan(text[loc[2]:loc[3]], &i)
-					failures[probes[i].query+" ["+probes[i].variant+"]"] = e
+					resolved[i] = true // each index belongs to one worker
 				}
 			}
 		}()
 	}
 	wg.Wait()
+
+	var (
+		mu       sync.Mutex
+		failures = map[string]string{}
+		next     = make(chan int)
+	)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				msg := "rejected"
+				if needsReason(probes[i]) {
+					ok, reason := analyze(bin, dir, fmt.Sprint("probe", i), schema+"EXPLAIN QUERY TREE "+probes[i].sql+";\n")
+					msg = reason
+					if ok {
+						msg = "resolved alone but not in its batch"
+					}
+				}
+				mu.Lock()
+				failures[probes[i].query+" ["+probes[i].variant+"]"] = msg
+				mu.Unlock()
+			}
+		}()
+	}
+	for i, p := range probes {
+		if p.sql != "" && !resolved[i] {
+			next <- i
+		}
+	}
+	close(next)
+	wg.Wait()
 	return failures
+}
+
+// analyze runs statements in a clickhouse local process of their own, stopping at the
+// first error, and reports whether the last printed a query tree, or the error.
+func analyze(bin, dir, name, statements string) (bool, string) {
+	path := filepath.Join(dir, name+".sql")
+	if err := os.WriteFile(path, []byte(statements), 0o644); err != nil {
+		return false, err.Error()
+	}
+	out, err := exec.Command(bin, "local", "--path", filepath.Join(dir, name+"-data"), "--multiquery", "--queries-file", path).CombinedOutput()
+	if e := probeErrorRe.FindString(string(out)); e != "" {
+		return false, e
+	}
+	if err != nil {
+		return false, fmt.Sprintf("%v: %s", err, oneLine(string(out)))
+	}
+	return strings.Contains(string(out), "QUERY id:"), ""
 }
 
 func oneLine(s string) string {
