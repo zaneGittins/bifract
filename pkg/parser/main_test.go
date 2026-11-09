@@ -17,7 +17,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 	renderHook = func(p *QueryPlan) {
-		layers := []QueryLayer{{Selects: p.format.selects}, {Selects: p.outer.selects}}
+		layers := []QueryLayer{{Selects: p.format.selects}}
 		for _, st := range p.Stages {
 			layers = append(layers, st.Layer)
 		}

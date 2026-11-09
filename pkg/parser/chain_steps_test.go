@@ -321,23 +321,15 @@ func TestChainPrefilterMatchesAggregateConditions(t *testing.T) {
 	}
 }
 
-// Behind an earlier aggregation the scan feeds that stage, not chain(). Filtering
-// it there would change the earlier stage's own aggregates, so the prefilter must
-// stay off.
-func TestChainPrefilterSkippedBehindEarlierAggregation(t *testing.T) {
+// Behind an aggregation's later stage there are no events for chain() to match, and
+// its scan prefilter would change that stage's own aggregates, so it is refused.
+func TestChainRefusedBehindALaterStage(t *testing.T) {
 	pl, err := ParseQuery(`* | groupby(user) | groupby(user) | chain(user) { a="x"; b="y" }`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := TranslateToSQLWithOrder(pl, QueryOptions{FractalID: "f"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// _chain_done's maxIf carries the same union unwrapped; only the prefilter adds
-	// the outer parens that make it a WHERE conjunct, wherever it were placed.
-	prefilter := "((fields.`a`::String = 'x') OR (fields.`b`::String = 'y'))"
-	if strings.Contains(res.SQL, prefilter) {
-		t.Errorf("prefilter leaked into a scan feeding an earlier aggregation:\n%s", res.SQL)
+	if _, err := TranslateToSQLWithOrder(pl, QueryOptions{FractalID: "f"}); err == nil || !strings.Contains(err.Error(), "chain() matches events") {
+		t.Errorf("want chain() refused behind a later stage, got %v", err)
 	}
 }
 

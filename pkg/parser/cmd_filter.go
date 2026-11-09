@@ -94,6 +94,9 @@ func (h *cidrHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate
 	if err != nil {
 		return predicate{}, fmt.Errorf("cidr(): %w", err)
 	}
+	if name := fieldArg.FieldName(); name != "" {
+		fieldRef = textRef(name, fieldRef, ctx.Registry)
+	}
 	cidrExpr := cidrPredicateSQL(fieldRef, "'"+escapeString(cidrRange)+"'")
 	if cmd.Negate {
 		cidrExpr = "NOT " + cidrExpr

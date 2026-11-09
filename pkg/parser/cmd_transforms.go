@@ -613,7 +613,7 @@ func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.UpsertSelect(SelectExpr{Expr: agg.expr, Alias: agg.alias})
 		ctx.Registry.Register(agg.alias, FieldKindAggregate, agg.alias, ctx.CmdIndex)
 		ctx.Registry.SetResolveExpr(agg.alias, agg.alias)
-		ctx.Plan.aggregationOutputs[agg.alias] = agg.expr
+		ctx.Plan.aggregationOutputs[agg.alias] = true
 		ctx.Plan.IsAggregated = true
 	}
 	return nil

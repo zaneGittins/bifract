@@ -106,7 +106,7 @@ func TestFilterAfterAggregationKeepsItsOutputs(t *testing.T) {
 		`* | groupby(user) | lowercase(user) | user="a"`,
 		`* | chain(user) { a=1; b=2 } | chain_count > 1`,
 		`* | chain(user, host) { a=1; b=2 } | _entity="a"`,
-		`* | groupby(a) | groupby(b) | _count > 1`,
+		`* | groupby(a, b) | groupby(b) | _count > 1`,
 		`* | groupby(user) | head(5) | user="a"`,
 		`* | groupby(user) | sort(_count) | _count > 1`,
 	} {
@@ -194,5 +194,66 @@ func TestBindingBudgetIsSharedAcrossConditions(t *testing.T) {
 	}
 	if _, err := translateAfterAggregation(q.String()); err == nil || !strings.Contains(err.Error(), "too many result-set bindings") {
 		t.Errorf("got %v", err)
+	}
+}
+
+// A row cap before an aggregation bounds what it reads, whatever follows: table()
+// starting a stage after count() made the cap a LIMIT on the count's one row, so it
+// counted every row in the window instead of the capped ones.
+func TestCapBeforeAggregationBoundsItsInput(t *testing.T) {
+	for _, q := range []string{
+		`* | head(50) | count() | table(_count)`,
+		`* | head(50) | groupby(host) | table(host)`,
+		`* | head(50) | groupby(host) | max(_count) | table(_max)`,
+		// mad()'s median is a window over the rows: a cap folded into its SELECT
+		// would run after it, over every row.
+		`* | head(50) | mad(orig_bytes) | table(_mad)`,
+		`* | dedup(user) | mad(orig_bytes) | table(_mad)`,
+	} {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sql, err := TranslateToSQL(pl, serverOpts())
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		if !strings.Contains(sql, "FROM (SELECT * FROM logs WHERE") || strings.Contains(sql, "GROUP BY host ORDER BY timestamp") {
+			t.Errorf("%s: the aggregation must read the capped rows, unordered by a column it lacks:\n%s", q, sql)
+		}
+	}
+}
+
+// A filter on an aggregate after a window score stays in the aggregation's HAVING,
+// inside the display limit: moved above the window it filtered only the groups the
+// limit happened to keep.
+func TestAggregateFilterAfterWindowScoreStaysInHaving(t *testing.T) {
+	pl, err := ParseQuery(`* | groupby(resp_bytes, function=sum(orig_bytes)) | modifiedzscore(_sum) | _sum > 900`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql, err := TranslateToSQL(pl, serverOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, "HAVING _sum > 900") {
+		t.Errorf("want the filter in the aggregation's HAVING:\n%s", sql)
+	}
+}
+
+// timechart() and chain() read events, which a stage after an aggregation no longer
+// has, so they are refused there rather than rendered over columns that are gone.
+func TestEventCommandsRefusedAfterALaterStage(t *testing.T) {
+	for _, q := range []string{
+		`* | groupby(user) | max(_count) | timechart(span=1h)`,
+		`* | groupby(user) | count() | timechart(span=1h)`,
+	} {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := TranslateToSQL(pl, serverOpts()); err == nil || !strings.Contains(err.Error(), "must come before the aggregation") {
+			t.Errorf("%s: want it refused, got %v", q, err)
+		}
 	}
 }

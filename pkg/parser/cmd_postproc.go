@@ -42,6 +42,11 @@ func sortFieldRef(arg Argument, ctx *CommandContext) (string, error) {
 		if ctx.Registry.IsComputed(name) || ctx.Registry.Has(name) {
 			return name, nil
 		}
+		// count, sum and avg name the aggregate's output where one is, as they do in
+		// a filter.
+		if ctx.Registry.bareAggregate(name) && ctx.Registry.Has("_"+name) {
+			return "_" + name, nil
+		}
 		switch name {
 		case "timestamp", "log_id", "normalizer":
 			return name, nil

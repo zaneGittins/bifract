@@ -167,7 +167,8 @@ func (r *aggRenderer) of(agg string, numeric bool, ofTime aggregate, build func(
 	if err != nil {
 		return r.fail(err)
 	}
-	if ofTime != nil && r.opts.operand.FieldName() == "timestamp" {
+	// The event time, or a field that resolves to it, as a copy of it does.
+	if name := r.opts.operand.FieldName(); ofTime != nil && name != "" && r.registry.Resolve(name) == "timestamp" {
 		return r.emit(out, ofTime)
 	}
 	v, err := r.operand(numeric)

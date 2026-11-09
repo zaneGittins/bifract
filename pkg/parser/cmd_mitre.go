@@ -110,7 +110,7 @@ func (h *mitreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Registry.SetResolveExpr(mitreTagAlias, mitreTagAlias)
 	ctx.Registry.Register("_count", FieldKindAggregate, "_count", ctx.CmdIndex)
 	ctx.Registry.SetResolveExpr("_count", "_count")
-	ctx.Plan.aggregationOutputs["_count"] = "COUNT(*)"
+	ctx.Plan.aggregationOutputs["_count"] = true
 	ctx.Plan.IsAggregated = true
 
 	ctx.Plan.chart.kind = "mitre"

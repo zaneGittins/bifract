@@ -175,7 +175,7 @@ func (h *histogramHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// depends on where the field comes from, and only this phase knows: the
 	// window layers run after the registry has been scoped to stage outputs.
 	switch {
-	case ctx.Plan.aggregationOutputs[field] != "":
+	case ctx.Plan.aggregationOutputs[field]:
 		// An aggregate's output column is already numeric.
 		ctx.Plan.histogram.valueExpr = fmt.Sprintf("toFloat64(%s)", field)
 	case computedFields[field]:

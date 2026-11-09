@@ -282,7 +282,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	// The time range and fractal scope come first in the scan's WHERE.
 	addBaseConditions(plan, opts)
 	plan.baseWhereLen = len(plan.SourceStage().Layer.Where)
-	for _, phase := range []func() error{q.declare, q.validate, q.prepare, q.execute, q.planFilters} {
+	for _, phase := range []func() error{q.declare, q.validate, q.prepare, q.execute, q.checkAggregateNames, q.planFilters} {
 		if err := phase(); err != nil {
 			return nil, err
 		}
@@ -412,6 +412,32 @@ func (q *plannedQuery) execute() error {
 	return nil
 }
 
+// checkAggregateNames refuses an aggregate that reads a column named like another
+// aggregate of its stage. ClickHouse reads the name as the aggregate, which cannot
+// be nested: after one aggregation, groupby(country) | sum(_count) would sum the
+// groupby's own count rather than the counts it groups.
+func (q *plannedQuery) checkAggregateNames() error {
+	for _, st := range q.ctx.Plan.Stages {
+		var names []string
+		for _, s := range st.Layer.Selects {
+			if s.agg != nil {
+				names = append(names, s.Name())
+			}
+		}
+		for _, s := range st.Layer.Selects {
+			if s.agg == nil {
+				continue
+			}
+			for _, c := range columnRefs(s.Expr) {
+				if c != s.Name() && slices.Contains(names, c) {
+					return fmt.Errorf("%s reads %s, but this aggregation also computes an aggregate named %s, which is what ClickHouse would read: name one of them with as=, or aggregate in the groupby, e.g. groupby(<keys>, function=sum(%s))", s.Name(), c, c, c)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // planFilters places every filter in the clause its stage owns. It runs after
 // execute so the registry reflects every produced field: aggregate aliases from
 // multi()/function=, and aggregates redefined across groupby stages, which
@@ -461,10 +487,16 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 	// A reference to the field is spliced beside other operators (x = 1, in(x, ...)),
 	// so the registry holds it as one operand.
 	ref := operandSQL(assignment.Expr, sqlExpr)
+	constant := assignment.Expr.Kind == ExprString || assignment.Expr.Kind == ExprNumber || assignment.Expr.Kind == ExprBoolean
 	switch {
+	case hasAggregation && !constant:
+		// Before the aggregation it is inlined, so aggregations, filters and later
+		// assignments referencing it fold in the full expression; it is never
+		// materialized as a column, which the aggregating SELECT could not select.
+		registry.RegisterInlineExpr(safeField, ref, -1)
 	case !isComputedExpr(assignment.Expr):
 		// A bare field or literal has nothing to compute and is materialized
-		// straight away.
+		// straight away; a constant stays a column of the aggregated rows too.
 		q.assignmentFields = append(q.assignmentFields, selectAs(sqlExpr, safeField))
 		registry.Register(safeField, FieldKindAssignment, safeField, -1)
 		registry.SetResolveExpr(safeField, sqlExpr)
@@ -472,11 +504,6 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 			registry.setText(safeField)
 		}
 		return nil
-	case hasAggregation:
-		// Before the aggregation it is inlined, so aggregations, filters and later
-		// assignments referencing it fold in the full expression; it is never
-		// materialized as a column.
-		registry.RegisterInlineExpr(safeField, ref, -1)
 	default:
 		// Without an aggregation it is computed in the outer formatter, and
 		// registered so a filter downstream folds the expression in rather than
@@ -963,9 +990,6 @@ func (q *plannedQuery) finalize() (*TranslationResult, error) {
 	if err := plan.exportDeferredColumns(); err != nil {
 		return nil, err
 	}
-	if len(plan.outer.selects) > 0 {
-		buildChainedAggStages(plan)
-	}
 	fieldOrder := q.wrapLayers(q.formatOutput(active, defaultTimeOrder))
 	sql, err := plan.Render(q.ctx.Opts)
 	if err != nil {
@@ -993,7 +1017,10 @@ func (q *plannedQuery) finalize() (*TranslationResult, error) {
 func (q *plannedQuery) foldCaps() error {
 	plan := q.ctx.Plan
 	layer := &plan.SourceStage().Layer
-	readThrough := plan.IsAggregated || plan.Chain != nil
+	// The scan stage itself, not plan.IsAggregated: a later stage, as table()
+	// starts, resets that while the scan still combines the capped rows.
+	aggregates := plan.IsAggregated || layer.combinesRows()
+	readThrough := aggregates || plan.Chain != nil
 	if n := len(layer.Caps); n > 0 {
 		readThrough = readThrough || plan.readsThroughCap(layer.Caps[n-1])
 	}
@@ -1009,7 +1036,7 @@ func (q *plannedQuery) foldCaps() error {
 	}
 	plan.rowLimitByCommand = true
 	// Shown in the cap's order unless something after it sorts.
-	if last := layer.Caps[len(layer.Caps)-1]; len(layer.OrderBy) == 0 && !plan.IsAggregated {
+	if last := layer.Caps[len(layer.Caps)-1]; len(layer.OrderBy) == 0 && !aggregates {
 		layer.OrderBy = last.OrderBy
 	}
 	return nil
@@ -1049,9 +1076,7 @@ func (q *plannedQuery) orderAndLimit(active *QueryStage) (defaultTimeOrder bool)
 			defaultTimeOrder = true
 		}
 	}
-	// A chained aggregate (groupby | ... | avg(x)) reads every group, so the display
-	// limit belongs on its single result row, not on its input.
-	capRows := opts.MaxRows > 0 && !plan.chart.readsAllRows && len(plan.outer.selects) == 0
+	capRows := opts.MaxRows > 0 && !plan.chart.readsAllRows
 	if layer.Limit == "" {
 		if capRows {
 			layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
@@ -1074,10 +1099,6 @@ func (q *plannedQuery) orderAndLimit(active *QueryStage) (defaultTimeOrder bool)
 // formatOutput builds the outer formatter SELECT and returns the columns shown.
 func (q *plannedQuery) formatOutput(active *QueryStage, defaultTimeOrder bool) []string {
 	plan := q.ctx.Plan
-	// A chained aggregation is not wrapped by a formatter.
-	if len(plan.outer.selects) > 0 {
-		return columnNames(plan.outer.selects)
-	}
 	plan.format.selects = buildFormatters(active.Layer.Selects, q.deferredAssignments)
 	fieldOrder := computeFieldOrder(active.Layer.Selects, q.deferredAssignments)
 	// Columns exported purely to make deferred expressions resolvable are stripped
@@ -1159,8 +1180,7 @@ func pushAggregationStage(ctx *CommandContext) error {
 	ctx.Plan.PushStage()
 	ctx.Plan.CurrentStage().Aggregates = true
 	ctx.Plan.IsAggregated = false
-	ctx.Plan.aggregationOutputs = make(map[string]string)
-	ctx.Plan.outer.selects, ctx.Plan.outer.reads = nil, nil
+	ctx.Plan.aggregationOutputs = make(map[string]bool)
 	ctx.Registry.ScopeToOutputs(prevOutputs)
 	return nil
 }
@@ -1186,8 +1206,7 @@ func pushCarryForwardStage(ctx *CommandContext) ([]string, error) {
 	}
 
 	ctx.Plan.PushStage()
-	ctx.Plan.aggregationOutputs = make(map[string]string)
-	ctx.Plan.outer.selects, ctx.Plan.outer.reads = nil, nil
+	ctx.Plan.aggregationOutputs = make(map[string]bool)
 
 	outputs := make(map[string]bool, len(carried))
 	for _, c := range carried {
@@ -1289,26 +1308,12 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignments
 		}
 	}
 
-	// 3. The aggregates a chained outer aggregation reads.
-	if len(ctx.Plan.outer.selects) > 0 {
-		outer := columnNames(ctx.Plan.outer.selects)
-		for _, name := range slices.Sorted(maps.Keys(ctx.Plan.aggregationOutputs)) {
-			if slices.Contains(outer, name) || added[name] {
-				continue
-			}
-			if slices.Contains(ctx.Plan.outer.reads, name) {
-				add(selectAs(ctx.Plan.aggregationOutputs[name], name))
-				hasExplicitAgg = true
-			}
-		}
-	}
-
-	// 4. COUNT(*) when nothing else aggregates.
-	if !hasExplicitAgg && (!ctx.Plan.IsAggregated || len(ctx.Plan.outer.selects) > 0) {
+	// 3. COUNT(*) when nothing else aggregates.
+	if !hasExplicitAgg && !ctx.Plan.IsAggregated {
 		add(aggSelect(countAll, "_count"))
 	}
 
-	// 5. The assignments.
+	// 4. The assignments.
 	for _, a := range assignments {
 		if !added[a.Name()] {
 			selects = append(selects, a)
@@ -1593,22 +1598,6 @@ func appendJoinedFields(fieldOrder, outputs []string, plan *QueryPlan) []string 
 func isJoinedField(registry *FieldRegistry, name string) bool {
 	entry := registry.Get(strings.Trim(name, "`"))
 	return entry != nil && entry.Kind == FieldKindJoined
-}
-
-// buildChainedAggStages creates additional QueryStages for chained aggregation
-// (e.g., sum/avg/etc. operating on prior aggregation outputs).
-func buildChainedAggStages(plan *QueryPlan) {
-	// If MAD window is needed, insert an intermediate stage for the median computation
-	if plan.outer.madExpr != "" {
-		plan.Stages = append(plan.Stages, QueryStage{
-			Layer: QueryLayer{
-				Selects: []SelectExpr{{Expr: "*"}, selectAs(fmt.Sprintf("median(%s) OVER ()", plan.outer.madExpr), "_median_val")},
-			},
-		})
-	}
-
-	// Add the outer aggregation stage
-	plan.Stages = append(plan.Stages, QueryStage{Layer: QueryLayer{Selects: plan.outer.selects}})
 }
 
 // buildZScoreWindowLayers creates window layers for modified z-score computation:

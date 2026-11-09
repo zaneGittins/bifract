@@ -58,17 +58,19 @@ func (h *correlationHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 
 	// Over a prior aggregation's outputs (one row per group) the correlation is
 	// across groups, computed in an outer stage like any chained aggregate.
-	_, xOut := ctx.Plan.aggregationOutputs[xArg.FieldName()]
-	_, yOut := ctx.Plan.aggregationOutputs[yArg.FieldName()]
+	xOut, yOut := readsAggregateOutputs(ctx, xArg.FieldName()), readsAggregateOutputs(ctx, yArg.FieldName())
 	if xOut != yOut {
 		return fmt.Errorf("%s(): both fields must be outputs of the preceding aggregation, or neither", h.name)
 	}
 	if xOut {
+		stage, err := aggregateOver(ctx)
+		if err != nil {
+			return fmt.Errorf("%s(): %w", h.name, err)
+		}
 		agg := corrAgg{rank: h.name == "rankcorr", x: fmt.Sprintf("toFloat64(%s)", xArg.FieldName()), y: fmt.Sprintf("toFloat64(%s)", yArg.FieldName())}
-		sqlExpr := agg.sql()
-		ctx.Plan.outer.selects = append(ctx.Plan.outer.selects, aggSelect(agg, alias))
-		ctx.Plan.outer.reads = append(ctx.Plan.outer.reads, xArg.FieldName(), yArg.FieldName())
-		ctx.Plan.aggregationOutputs[alias] = sqlExpr
+		stage.Layer.Selects = append(stage.Layer.Selects, aggSelect(agg, alias))
+		ctx.Plan.aggregationOutputs[alias] = true
+		ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
 	} else {
 		x, err := aggOperandNumeric(xArg, ctx.Registry)
 		if err != nil {
@@ -79,13 +81,18 @@ func (h *correlationHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 			return fmt.Errorf("%s(): %w", h.name, err)
 		}
 		source := ctx.Plan.CurrentStage()
+		if overProjection(ctx) {
+			if source, err = aggregateOver(ctx); err != nil {
+				return fmt.Errorf("%s(): %w", h.name, err)
+			}
+		}
 		agg := corrAgg{rank: h.name == "rankcorr", x: x, y: y}
 		sqlExpr := agg.sql()
 		if err := aggAliasClash(source, h.name, alias, sqlExpr); err != nil {
 			return err
 		}
 		source.Layer.Selects = append(source.Layer.Selects, aggSelect(agg, alias))
-		ctx.Plan.aggregationOutputs[alias] = sqlExpr
+		ctx.Plan.aggregationOutputs[alias] = true
 	}
 	ctx.Registry.SetResolveExpr(alias, alias)
 	ctx.Plan.IsAggregated = true

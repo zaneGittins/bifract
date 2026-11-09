@@ -16,7 +16,7 @@ func (h *piechartHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 func (h *piechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
 	if len(source.Layer.GroupBy) == 0 && !ctx.Plan.HasGroupBy {
-		return fmt.Errorf("piechart() needs grouped rows: put it straight after groupby(), e.g. groupby(level) | piechart(). A bare count() in between collapses the groups to a single row.")
+		return fmt.Errorf("piechart() needs grouped rows: put it straight after groupby(), e.g. groupby(level) | piechart(). A count() or other aggregate in between collapses the groups to a single row.")
 	}
 	if !ctx.Plan.IsAggregated {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
@@ -44,7 +44,7 @@ func (h *barchartHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 func (h *barchartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
 	if len(source.Layer.GroupBy) == 0 && !ctx.Plan.HasGroupBy {
-		return fmt.Errorf("barchart() needs grouped rows: put it straight after groupby(), e.g. groupby(level) | barchart(). A bare count() in between collapses the groups to a single row.")
+		return fmt.Errorf("barchart() needs grouped rows: put it straight after groupby(), e.g. groupby(level) | barchart(). A count() or other aggregate in between collapses the groups to a single row.")
 	}
 	if !ctx.Plan.IsAggregated {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
@@ -229,13 +229,11 @@ func (h *singlevalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if !ctx.Plan.IsAggregated {
 		return fmt.Errorf("singleval() requires an aggregation function (e.g. count(), avg(), sum())")
 	}
-	// Only reject if the current stage still has an active GROUP BY with no
-	// outer aggregation wrapping it. When a second stage was pushed (e.g.
-	// groupby(field) | count() | singleval()), the current stage has no
-	// GROUP BY and produces a single row. Similarly, an outer aggregation
-	// collapse grouped results into a single value.
+	// Only reject if the current stage still has an active GROUP BY. When a stage
+	// aggregating the groups was pushed (groupby(field) | count() | singleval(),
+	// or an aggregate of an aggregate's output), it produces a single row.
 	currentStage := ctx.Plan.CurrentStage()
-	if len(currentStage.Layer.GroupBy) > 0 && len(ctx.Plan.outer.selects) == 0 {
+	if len(currentStage.Layer.GroupBy) > 0 {
 		return fmt.Errorf("singleval() cannot be used with groupBy() - it displays a single value only")
 	}
 	ctx.Plan.chart.kind = "singleval"
@@ -260,6 +258,10 @@ func (h *timechartHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
+	// timechart() buckets events by their time, which a later stage no longer has.
+	if !source.IsSource {
+		return fmt.Errorf("timechart() buckets events by time, so it must come before the aggregation it follows")
+	}
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -313,7 +315,7 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			source.Layer.UpsertSelect(SelectExpr{Expr: expr, Alias: safe})
 			ctx.Registry.Register(f, FieldKindAggregate, f, ctx.CmdIndex)
 			ctx.Registry.SetResolveExpr(f, f)
-			ctx.Plan.aggregationOutputs[f] = expr
+			ctx.Plan.aggregationOutputs[f] = true
 			percentFields = append(percentFields, f)
 		}
 		ctx.Plan.IsAggregated = true
