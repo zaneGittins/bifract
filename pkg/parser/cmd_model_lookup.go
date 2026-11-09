@@ -97,6 +97,7 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 // the aggregation reads (aggregated rows JOIN model) on the group columns the keys
 // name, and carries the model's columns on like any column of its own.
 func joinModelAfterAggregation(ctx *CommandContext, keyFields, keyExprs []string) error {
+	readsFrom := ctx.Registry.mark()
 	plan := ctx.Plan
 	// The strict prefilter can still narrow the scan when the stage the lookup reads
 	// aggregates the scan, groups by every key and keeps every group: a group whose
@@ -125,7 +126,7 @@ func joinModelAfterAggregation(ctx *CommandContext, keyFields, keyExprs []string
 		}
 		stage.Layer.Selects = append(stage.Layer.Selects, SelectExpr{Expr: f})
 		ctx.Registry.Register(f, FieldKindAssignment, f, ctx.CmdIndex)
-		ctx.Registry.SetResolveExpr(f, f)
+		ctx.Registry.define(f, f, readsFrom)
 	}
 	stage.Layer.ModelJoin = plan.modelJoinOn(left)
 	stage.Layer.ModelJoinFields = plan.lookup.Fields

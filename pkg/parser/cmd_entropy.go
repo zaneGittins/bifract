@@ -23,6 +23,7 @@ func (h *entropyHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *entropyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	_, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
@@ -30,7 +31,7 @@ func (h *entropyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if !ok {
 		return nil
 	}
-	ref, err := ResolveArg(arg, ctx.Registry)
+	ref, err := textArg(arg, ctx.Registry)
 	if err != nil {
 		return fmt.Errorf("entropy(): %w", err)
 	}
@@ -40,7 +41,7 @@ func (h *entropyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	sqlExpr := entropySQL(ref)
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr, Alias: alias})
-	ctx.Registry.SetResolveExpr(alias, sqlExpr)
+	ctx.Registry.define(alias, sqlExpr, readsFrom)
 	return nil
 }
 

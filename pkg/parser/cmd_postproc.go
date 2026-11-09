@@ -284,6 +284,9 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 	}
 
+	if keyDeps.wrap {
+		return fmt.Errorf("dedup(%s): a key reads a column join() adds, which exists only after the join; dedup before the join, or on the log's own fields", argList(args))
+	}
 	limitBy := fmt.Sprintf("LIMIT 1 BY %s", strings.Join(keys, ", "))
 	scanLimitBy := fmt.Sprintf("LIMIT 1 BY %s", strings.Join(scanKeys, ", "))
 	switch {

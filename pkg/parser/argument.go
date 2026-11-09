@@ -437,6 +437,13 @@ func ResolveArg(a Argument, registry *FieldRegistry) (string, error) {
 	return r.sql, err
 }
 
+// textArg resolves an argument where only a String will do, as a string
+// function's input is: a number is converted.
+func textArg(a Argument, registry *FieldRegistry) (string, error) {
+	r, err := resolveArgRef(a, registry)
+	return r.text(), err
+}
+
 // resolveArgRef is ResolveArg as a reference: a field's own, or an expression
 // reading what its compilation referenced.
 func resolveArgRef(a Argument, registry *FieldRegistry) (sqlRef, error) {
@@ -449,12 +456,13 @@ func resolveArgRef(a Argument, registry *FieldRegistry) (sqlRef, error) {
 			return registry.Ref(a.Expr.Value), nil
 		}
 		var sql string
+		var typ ExprType
 		got, err := registry.track(func() error {
 			var err error
-			sql, _, err = compileExpr(a.Expr, registry)
+			sql, typ, err = compileExpr(a.Expr, registry)
 			return err
 		})
-		return sqlRef{sql: sql, form: refExpr, deps: got.deps()}, err
+		return sqlRef{sql: sql, form: refExpr, deps: got.deps(), cols: got.columns(), typ: typ.valueType()}, err
 	case ArgLiteral, ArgRegex:
 		return registry.Ref(a.Text), nil
 	}

@@ -9,6 +9,7 @@ import (
 // aggregation it must be one of the stage's outputs; before one, a log field is
 // projected by the scan under scanAlias, and scanExpr is the expression behind it.
 func chartColumn(arg Argument, ctx *CommandContext, cmdName, scanAlias string) (col, scanExpr string, err error) {
+	readsFrom := ctx.Registry.mark()
 	field := arg.FieldName()
 	if field == "" {
 		return "", "", fmt.Errorf("%s(): expected a field name, got %s", cmdName, arg)
@@ -34,7 +35,7 @@ func chartColumn(arg Argument, ctx *CommandContext, cmdName, scanAlias string) (
 	}
 	scanExpr = ref
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: scanExpr, Alias: scanAlias})
-	ctx.Registry.SetResolveExpr(scanAlias, ref)
+	ctx.Registry.define(scanAlias, ref, readsFrom)
 	return scanAlias, scanExpr, nil
 }
 

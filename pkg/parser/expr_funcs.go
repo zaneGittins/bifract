@@ -25,6 +25,19 @@ const (
 	TypeNumberField
 )
 
+// valueType is what the expression's SQL is known to be.
+func (t ExprType) valueType() valueType {
+	switch t {
+	case TypeNumber, TypeNumberField:
+		return typeNumber
+	case TypeText:
+		return typeText
+	case TypeString:
+		return typeString
+	}
+	return typeUnknown
+}
+
 // anyType reports whether the type is a field's, coercible to either side.
 func (t ExprType) anyType() bool { return t == TypeAny || t == TypeText || t == TypeNumberField }
 

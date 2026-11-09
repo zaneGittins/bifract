@@ -28,6 +28,7 @@ func (h *strftimeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *strftimeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	p, err := strftimeParams(cmd)
 	if err != nil {
 		return err
@@ -44,7 +45,7 @@ func (h *strftimeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("strftime(): %w", err)
 	}
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: formatted, Alias: safeAlias})
-	ctx.Registry.SetResolveExpr(safeAlias, formatted)
+	ctx.Registry.define(safeAlias, formatted, readsFrom)
 	return nil
 }
 
@@ -118,6 +119,7 @@ func declareCaseFold(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func executeCaseFold(cmd CommandNode, ctx *CommandContext, name, chFunc string) error {
+	readsFrom := ctx.Registry.mark()
 	arg, output, ok := caseFoldOutput(cmd)
 	if !ok {
 		return nil
@@ -130,13 +132,13 @@ func executeCaseFold(cmd CommandNode, ctx *CommandContext, name, chFunc string) 
 	if arg.FieldName() == "timestamp" {
 		ref = "toString(" + ctx.Registry.Column("timestamp").sql + ")"
 	} else {
-		if ref, err = ResolveArg(arg, ctx.Registry); err != nil {
+		if ref, err = textArg(arg, ctx.Registry); err != nil {
 			return fmt.Errorf("%s(): %w", name, err)
 		}
 	}
 	expr := fmt.Sprintf("%s(%s)", chFunc, ref)
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeOutput))
-	ctx.Registry.SetResolveExpr(output, expr)
+	ctx.Registry.define(output, expr, readsFrom)
 	return nil
 }
 
@@ -173,11 +175,13 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if name == "" {
 			continue
 		}
+		// Each assignment reads only what its own expression references.
+		fieldFrom := ctx.Registry.mark()
 		// Assigning a column this stage already computes replaces that SELECT, so
 		// a self-reference would end up pointing at itself. Inline what the column
 		// currently is instead: eval(t = b*2) | eval(t = t*3) is (b*2)*3.
 		if prior := stageSelectExpr(source, name); prior != "" {
-			ctx.Registry.RegisterInlineExpr(name, prior, ctx.CmdIndex)
+			ctx.Registry.inline(name, prior, ctx.CmdIndex)
 		}
 		sqlExpr, exprType, err := evalAssignmentSQL(a, ctx.Registry)
 		if err != nil {
@@ -189,14 +193,9 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		expr := sqlExpr
 		source.Layer.UpsertSelect(selectAs(expr, safeFieldName))
-		ctx.Registry.SetResolveExpr(name, expr)
+		ctx.Registry.define(name, expr, fieldFrom)
 		// A filter coerces text with textToNumber, which rejects a number.
-		switch exprType {
-		case TypeNumber:
-			ctx.Registry.SetNumeric(name)
-		case TypeText:
-			ctx.Registry.setText(name)
-		}
+		ctx.Registry.setType(name, exprType.valueType())
 	}
 	return nil
 }
@@ -273,6 +272,7 @@ func (h *regexHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	p, err := regexParams(cmd)
 	if err != nil {
 		return err
@@ -300,7 +300,7 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			}
 			scalarExpr := fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d]", fieldRef, escapeString(sqlPattern), i+1)
 			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: scalarExpr, Alias: safeName})
-			ctx.Registry.SetResolveExpr(safeName, scalarExpr)
+			ctx.Registry.define(safeName, scalarExpr, readsFrom)
 		}
 	case p.asName != "":
 		// Single unnamed capture group aliased via as=. extract() returns the first
@@ -312,7 +312,7 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		scalarExpr := fmt.Sprintf("extract(%s, '%s')", fieldRef, escapeString(sqlPattern))
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: scalarExpr, Alias: safeName})
-		ctx.Registry.SetResolveExpr(safeName, scalarExpr)
+		ctx.Registry.define(safeName, scalarExpr, readsFrom)
 	default:
 		// extractAllGroups requires at least one capturing group; without a name
 		// or as= there is also nothing to call the output but _regex.
@@ -321,7 +321,7 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		scalarExpr := fmt.Sprintf("extractAllGroups(%s, '%s')", fieldRef, escapeString(sqlPattern))
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: scalarExpr, Alias: regexDefaultColumn})
-		ctx.Registry.SetResolveExpr(regexDefaultColumn, scalarExpr)
+		ctx.Registry.define(regexDefaultColumn, scalarExpr, readsFrom)
 	}
 	return nil
 }
@@ -396,10 +396,11 @@ func contentFieldRef(a Argument, registry *FieldRegistry) (string, error) {
 	case "timestamp":
 		return "toString(" + registry.Column("timestamp").sql + ")", nil
 	}
-	return ResolveArg(a, registry)
+	return textArg(a, registry)
 }
 
 func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -423,7 +424,7 @@ func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	expr := fmt.Sprintf("replaceRegexpAll(%s, '%s', '%s')", fieldRef, escapeString(pattern.Value()), escapeString(replacement.Value()))
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeOutput))
-	ctx.Registry.SetResolveExpr(outputField, expr)
+	ctx.Registry.define(outputField, expr, readsFrom)
 	return nil
 }
 
@@ -435,6 +436,7 @@ func (h *concatHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *concatHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	alias, fields, err := fieldListArgs(cmd, ctx, "concat", "_concat")
 	if err != nil {
 		return err
@@ -445,7 +447,7 @@ func (h *concatHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	expr := fmt.Sprintf("concat(%s)", strings.Join(fields, ", "))
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeOutput))
-	ctx.Registry.SetResolveExpr(alias, expr)
+	ctx.Registry.define(alias, expr, readsFrom)
 	return nil
 }
 
@@ -457,6 +459,7 @@ func (h *hashHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *hashHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	alias, fields, err := fieldListArgs(cmd, ctx, "hash", "_hash")
 	if err != nil {
 		return err
@@ -467,7 +470,7 @@ func (h *hashHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	sqlExpr := fmt.Sprintf("hex(cityHash64(%s))", strings.Join(fields, ", "))
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr, Alias: safeAlias})
-	ctx.Registry.SetResolveExpr(safeAlias, sqlExpr)
+	ctx.Registry.define(safeAlias, sqlExpr, readsFrom)
 	return nil
 }
 
@@ -541,6 +544,7 @@ func (h *nowHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *nowHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -552,7 +556,7 @@ func (h *nowHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	expr := "now()"
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeOutput))
-	ctx.Registry.SetResolveExpr(outputField, expr)
+	ctx.Registry.define(outputField, expr, readsFrom)
 	return nil
 }
 
@@ -583,6 +587,7 @@ func (h *caseHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	outputField := caseOutputColumn
 
 	compiled, err := compileCase(cmd.Branches, ctx.Registry, ctx.Opts)
@@ -594,7 +599,7 @@ func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Per-row field assignments: each becomes a CASE ... END column.
 	for _, col := range compiled.assignments {
 		source.Layer.UpsertSelect(selectAs(col.SQL, col.Field))
-		ctx.Registry.SetResolveExpr(col.Field, col.SQL)
+		ctx.Registry.define(col.Field, col.SQL, readsFrom)
 	}
 
 	// Legacy bare-result form: a single output field.
@@ -607,14 +612,14 @@ func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		caseSQL += " END"
 		source.Layer.UpsertSelect(selectAs(caseSQL, outputField))
-		ctx.Registry.SetResolveExpr(outputField, caseSQL)
+		ctx.Registry.define(outputField, caseSQL, readsFrom)
 	}
 
 	// Conditional aggregations via -If combinators (single-pass, N per branch).
 	for _, agg := range compiled.aggregates {
 		source.Layer.UpsertSelect(SelectExpr{Expr: agg.expr, Alias: agg.alias})
 		ctx.Registry.Register(agg.alias, FieldKindAggregate, agg.alias, ctx.CmdIndex)
-		ctx.Registry.SetResolveExpr(agg.alias, agg.alias)
+		ctx.Registry.define(agg.alias, agg.alias, readsFrom)
 		ctx.Plan.aggregationOutputs[agg.alias] = true
 		ctx.Plan.IsAggregated = true
 	}
@@ -647,9 +652,10 @@ func (h *lenHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *lenHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	field, outName, ok := lenArgs(cmd)
 	if ok && outName != "" {
-		fieldRef, err := ResolveArg(field, ctx.Registry)
+		fieldRef, err := textArg(field, ctx.Registry)
 		if err != nil {
 			return fmt.Errorf("len(): %w", err)
 		}
@@ -659,7 +665,7 @@ func (h *lenHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		expr := fmt.Sprintf("length(%s)", fieldRef)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeName))
-		ctx.Registry.SetResolveExpr(safeName, fmt.Sprintf("length(%s)", fieldRef))
+		ctx.Registry.define(safeName, fmt.Sprintf("length(%s)", fieldRef), readsFrom)
 	}
 	return nil
 }
@@ -696,6 +702,7 @@ func (h *logSizeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *logSizeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	field, outName := logSizeArgs(cmd)
 	if outName == "" {
 		return nil
@@ -711,7 +718,7 @@ func (h *logSizeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// byteSize() returns the estimated uncompressed in-memory byte size per row.
 	expr := fmt.Sprintf("byteSize(%s)", fieldRef)
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeName))
-	ctx.Registry.SetResolveExpr(safeName, fmt.Sprintf("byteSize(%s)", fieldRef))
+	ctx.Registry.define(safeName, fmt.Sprintf("byteSize(%s)", fieldRef), readsFrom)
 	return nil
 }
 
@@ -729,6 +736,7 @@ func (h *levenshteinHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 }
 
 func (h *levenshteinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -750,7 +758,7 @@ func (h *levenshteinHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		}
 		sqlExpr := fmt.Sprintf("damerauLevenshteinDistance(%s, %s)", ref1, ref2)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr, Alias: alias})
-		ctx.Registry.SetResolveExpr(alias, sqlExpr)
+		ctx.Registry.define(alias, sqlExpr, readsFrom)
 	}
 	return nil
 }
@@ -761,7 +769,7 @@ func levenshteinOperand(a Argument, registry *FieldRegistry) (string, error) {
 	if a.Quoted {
 		return fmt.Sprintf("'%s'", escapeString(a.Text)), nil
 	}
-	return ResolveArg(a, registry)
+	return textArg(a, registry)
 }
 
 // base64decodeHandler handles base64decode(field)
@@ -777,12 +785,13 @@ func (h *base64decodeHandler) Declare(cmd CommandNode, ctx *CommandContext) erro
 }
 
 func (h *base64decodeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	_, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
 	}
 	if ok {
-		fieldRef, err := ResolveArg(arg, ctx.Registry)
+		fieldRef, err := textArg(arg, ctx.Registry)
 		if err != nil {
 			return err
 		}
@@ -792,7 +801,7 @@ func (h *base64decodeHandler) Execute(cmd CommandNode, ctx *CommandContext) erro
 		}
 		sqlExpr := fmt.Sprintf("tryBase64Decode(%s)", fieldRef)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr, Alias: alias})
-		ctx.Registry.SetResolveExpr(alias, sqlExpr)
+		ctx.Registry.define(alias, sqlExpr, readsFrom)
 	}
 	return nil
 }
@@ -810,6 +819,7 @@ func (h *splitHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *splitHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
@@ -819,7 +829,7 @@ func (h *splitHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if err != nil {
 			return fmt.Errorf("split(): index must be numeric, got %q", indexStr)
 		}
-		fieldRef, err := ResolveArg(arg, ctx.Registry)
+		fieldRef, err := textArg(arg, ctx.Registry)
 		if err != nil {
 			return fmt.Errorf("split(): %w", err)
 		}
@@ -829,7 +839,7 @@ func (h *splitHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		sqlExpr := fmt.Sprintf("splitByString('%s', %s)[%d]", escapeString(delimiter), fieldRef, index)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr, Alias: alias})
-		ctx.Registry.SetResolveExpr(alias, sqlExpr)
+		ctx.Registry.define(alias, sqlExpr, readsFrom)
 	}
 	return nil
 }
@@ -847,6 +857,7 @@ func (h *substrHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *substrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
@@ -856,7 +867,7 @@ func (h *substrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if err != nil {
 			return fmt.Errorf("substr(): start must be numeric, got %q", startStr)
 		}
-		fieldRef, err := ResolveArg(arg, ctx.Registry)
+		fieldRef, err := textArg(arg, ctx.Registry)
 		if err != nil {
 			return fmt.Errorf("substr(): %w", err)
 		}
@@ -875,7 +886,7 @@ func (h *substrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return err
 		}
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr, Alias: alias})
-		ctx.Registry.SetResolveExpr(alias, sqlExpr)
+		ctx.Registry.define(alias, sqlExpr, readsFrom)
 	}
 	return nil
 }
@@ -893,12 +904,13 @@ func (h *urldecodeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *urldecodeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	_, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
 	}
 	if ok {
-		fieldRef, err := ResolveArg(arg, ctx.Registry)
+		fieldRef, err := textArg(arg, ctx.Registry)
 		if err != nil {
 			return err
 		}
@@ -908,7 +920,7 @@ func (h *urldecodeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		sqlExpr := fmt.Sprintf("decodeURLComponent(%s)", fieldRef)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr, Alias: alias})
-		ctx.Registry.SetResolveExpr(alias, sqlExpr)
+		ctx.Registry.define(alias, sqlExpr, readsFrom)
 	}
 	return nil
 }
@@ -926,6 +938,7 @@ func (h *coalesceHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *coalesceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -933,7 +946,7 @@ func (h *coalesceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if args := b.Flat("fields"); len(args) >= 2 {
 		var conditions []string
 		for _, a := range args {
-			ref, err := ResolveArg(a, ctx.Registry)
+			ref, err := textArg(a, ctx.Registry)
 			if err != nil {
 				return fmt.Errorf("coalesce(): %w", err)
 			}
@@ -945,7 +958,7 @@ func (h *coalesceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		sqlExpr := fmt.Sprintf("multiIf(%s, '')", strings.Join(conditions, ", "))
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr, Alias: alias})
-		ctx.Registry.SetResolveExpr(alias, sqlExpr)
+		ctx.Registry.define(alias, sqlExpr, readsFrom)
 	}
 	return nil
 }
@@ -958,6 +971,7 @@ func (h *sprintfHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -992,7 +1006,7 @@ func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	expr := fmt.Sprintf("printf(%s)", printfArgs)
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeAlias))
-	ctx.Registry.SetResolveExpr(safeAlias, fmt.Sprintf("printf(%s)", printfArgs))
+	ctx.Registry.define(safeAlias, fmt.Sprintf("printf(%s)", printfArgs), readsFrom)
 	return nil
 }
 
@@ -1256,6 +1270,7 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -1304,7 +1319,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		scalarExpr := lk.value(col, keyColumn, probeRef, fieldRef)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: scalarExpr, Alias: safeCol})
-		ctx.Registry.SetResolveExpr(col, scalarExpr)
+		ctx.Registry.define(col, scalarExpr, readsFrom)
 	}
 
 	if strict {
@@ -1397,6 +1412,7 @@ func (h *lookupIPHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -1434,7 +1450,7 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		lookupExpr := geoipLookupExpr(ctx.Opts.DictionaryDatabase, col, fieldRef)
 		expr := lookupExpr
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeCol))
-		ctx.Registry.SetResolveExpr(col, expr)
+		ctx.Registry.define(col, expr, readsFrom)
 	}
 
 	return nil

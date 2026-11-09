@@ -16,6 +16,7 @@ func (h *countHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	source := ctx.Plan.CurrentStage()
 
 	b, err := BindCommand(cmd)
@@ -42,7 +43,7 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		// The outer COUNT(*) is a fresh aggregate of this stage; register its kind
 		// and bare resolve so HAVING _count > N is typed numeric, not coerced.
 		ctx.Registry.Register("_count", FieldKindAggregate, "_count", ctx.CmdIndex)
-		ctx.Registry.SetResolveExpr("_count", "_count")
+		ctx.Registry.define("_count", "_count", readsFrom)
 		return nil
 	}
 
@@ -61,11 +62,11 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if err := aggAliasClash(source, "count", alias, sqlExpr); err != nil {
 			return err
 		}
-		source.Layer.addColumn(aggSelect(agg, alias))
+		source.Layer.addColumn(ctx.Registry.aggSelectFrom(agg, alias, readsFrom))
 		ctx.Plan.IsAggregated = true
 		ctx.Plan.aggregationOutputs[alias] = true
 		ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
-		ctx.Registry.SetResolveExpr(alias, alias)
+		ctx.Registry.define(alias, alias, readsFrom)
 		return nil
 	}
 
@@ -74,7 +75,7 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.IsAggregated = true
 	ctx.Plan.aggregationOutputs[alias] = true
 	ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
-	ctx.Registry.SetResolveExpr(alias, alias)
+	ctx.Registry.define(alias, alias, readsFrom)
 
 	// When count() is used with case statements, GROUP BY the case-produced fields
 	for _, cmd2 := range ctx.Pipeline.Commands() {
@@ -118,6 +119,7 @@ func (h *simpleAggHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *simpleAggHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
@@ -154,10 +156,10 @@ func (h *simpleAggHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err := aggAliasClash(source, h.name, alias, agg.sql()); err != nil {
 		return err
 	}
-	source.Layer.Selects = append(source.Layer.Selects, aggSelect(agg, alias))
+	source.Layer.Selects = append(source.Layer.Selects, ctx.Registry.aggSelectFrom(agg, alias, readsFrom))
 	ctx.Plan.aggregationOutputs[alias] = true
 	ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
-	ctx.Registry.SetResolveExpr(alias, alias)
+	ctx.Registry.define(alias, alias, readsFrom)
 	ctx.Plan.IsAggregated = true
 	return nil
 }
@@ -216,6 +218,7 @@ func (h *frequencyHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *frequencyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	_, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
@@ -240,10 +243,10 @@ func (h *frequencyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.aggregationOutputs["_count"] = true
 	ctx.Plan.aggregationOutputs["_percentage"] = true
 	ctx.Plan.aggregationOutputs["_cumulative_pct"] = true
-	ctx.Registry.SetResolveExpr("_count", "_count")
-	ctx.Registry.SetResolveExpr("_percentage", "_percentage")
-	ctx.Registry.SetResolveExpr("_cumulative_pct", "_cumulative_pct")
-	ctx.Registry.SetResolveExpr("_value", "_value")
+	ctx.Registry.define("_count", "_count", readsFrom)
+	ctx.Registry.define("_percentage", "_percentage", readsFrom)
+	ctx.Registry.define("_cumulative_pct", "_cumulative_pct", readsFrom)
+	ctx.Registry.define("_value", "_value", readsFrom)
 	ctx.Plan.IsAggregated = true
 	return nil
 }
@@ -262,6 +265,7 @@ func (h *iqrHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *iqrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
@@ -289,7 +293,7 @@ func (h *iqrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return err
 	}
 	q1, q3 := aggCall{fn: "quantile", params: "0.25", args: v}, aggCall{fn: "quantile", params: "0.75", args: v}
-	source.Layer.Selects = append(source.Layer.Selects, aggSelect(q1, "_q1"), aggSelect(q3, "_q3"), aggSelect(aggDiff{a: q3, b: q1}, iqrAlias))
+	source.Layer.Selects = append(source.Layer.Selects, ctx.Registry.aggSelectFrom(q1, "_q1", readsFrom), ctx.Registry.aggSelectFrom(q3, "_q3", readsFrom), ctx.Registry.aggSelectFrom(aggDiff{a: q3, b: q1}, iqrAlias, readsFrom))
 	for _, out := range []string{"_q1", "_q3", iqrAlias} {
 		ctx.Plan.aggregationOutputs[out] = true
 		ctx.Registry.Register(out, FieldKindAggregate, out, ctx.CmdIndex)
@@ -314,6 +318,7 @@ func (h *headtailHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *headtailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
@@ -345,11 +350,11 @@ func (h *headtailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.aggregationOutputs["_percentage"] = true
 	ctx.Plan.aggregationOutputs["_cumulative_pct"] = true
 	ctx.Plan.aggregationOutputs["_segment"] = true
-	ctx.Registry.SetResolveExpr("_count", "_count")
-	ctx.Registry.SetResolveExpr("_percentage", "_percentage")
-	ctx.Registry.SetResolveExpr("_cumulative_pct", "_cumulative_pct")
-	ctx.Registry.SetResolveExpr("_segment", "_segment")
-	ctx.Registry.SetResolveExpr("_value", "_value")
+	ctx.Registry.define("_count", "_count", readsFrom)
+	ctx.Registry.define("_percentage", "_percentage", readsFrom)
+	ctx.Registry.define("_cumulative_pct", "_cumulative_pct", readsFrom)
+	ctx.Registry.define("_segment", "_segment", readsFrom)
+	ctx.Registry.define("_value", "_value", readsFrom)
 	ctx.Plan.IsAggregated = true
 	return nil
 }
@@ -373,6 +378,7 @@ func (h *selectEdgeHandler) Declare(cmd CommandNode, ctx *CommandContext) error 
 }
 
 func (h *selectEdgeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
@@ -399,7 +405,7 @@ func (h *selectEdgeHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 	if err := aggAliasClash(source, h.name, alias, agg.sql()); err != nil {
 		return err
 	}
-	source.Layer.Selects = append(source.Layer.Selects, aggSelect(agg, alias))
+	source.Layer.Selects = append(source.Layer.Selects, ctx.Registry.aggSelectFrom(agg, alias, readsFrom))
 	ctx.Plan.IsAggregated = true
 	return nil
 }
@@ -425,6 +431,7 @@ func (h *topHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *topHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	b, arg, ok, err := firstFieldArg(cmd, "field")
 	if err != nil {
 		return err
@@ -450,8 +457,8 @@ func (h *topHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if showPercent {
 		agg = topShare{n: topN, v: fieldRef}
 	}
-	source.Layer.Selects = append(source.Layer.Selects, aggSelect(agg, alias))
-	ctx.Registry.SetResolveExpr(alias, alias)
+	source.Layer.Selects = append(source.Layer.Selects, ctx.Registry.aggSelectFrom(agg, alias, readsFrom))
+	ctx.Registry.define(alias, alias, readsFrom)
 	ctx.Plan.IsAggregated = true
 	return nil
 }
@@ -582,6 +589,7 @@ func countedKeyRef(keyArg Argument, computed map[string]bool, isMultiStage bool,
 }
 
 func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	// After an aggregation the groupby aggregates the rows the pipeline has at this
 	// point: an aggregating stage's groups, or a projection of them (an assignment,
 	// a transform, a model join), whose carried columns are no group keys here.
@@ -642,7 +650,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.addColumn(aggSelect(countAll, "_count"))
 		ctx.Plan.IsAggregated = true
 		ctx.Registry.Register("_count", FieldKindAggregate, "_count", ctx.CmdIndex)
-		ctx.Registry.SetResolveExpr("_count", "_count")
+		ctx.Registry.define("_count", "_count", readsFrom)
 	}
 	// A key and an aggregate of the stage cannot share a name: groupby(_count) after
 	// an aggregation counts its groups, and that count needs a name of its own.
@@ -686,6 +694,7 @@ func projectAggregates(ctx *CommandContext, source *QueryStage, specs []Argument
 // groupByKey groups the stage by one key, a field or an expression, and records
 // the alias it is addressable by after the aggregation.
 func groupByKey(ctx *CommandContext, source *QueryStage, key Argument, computedFields map[string]bool, multiStage bool) error {
+	readsFrom := ctx.Registry.mark()
 	arg := key.Value()
 	// A model column the previous aggregation did not output is gone: the entry
 	// was dropped by ScopeToOutputs, so ask the lookup's outputs directly.
@@ -718,7 +727,7 @@ func groupByKey(ctx *CommandContext, source *QueryStage, key Argument, computedF
 		}
 		source.Layer.UpsertSelect(SelectExpr{Expr: sql, Alias: alias})
 		ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
-		ctx.Registry.SetResolveExpr(alias, alias)
+		ctx.Registry.define(alias, alias, readsFrom)
 		fieldRef, keyAlias = alias, alias
 	} else {
 		safe, err := sanitizeIdentifier(arg)

@@ -52,6 +52,7 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 // With aggregates, an aggregate call (count, sum(bytes)) groups by the others;
 // without, every argument is a column name.
 func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, aggregates bool) error {
+	readsFrom := ctx.Registry.mark()
 	ctx.Plan.table.present = true
 	// modifiedzscore()/madoutlier() window layers wrap this projection and read
 	// their value column from it.
@@ -139,7 +140,7 @@ func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, ag
 				// that exists on no row.
 				alias := strings.Trim(safeAlias, "`")
 				ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
-				ctx.Registry.SetResolveExpr(alias, alias)
+				ctx.Registry.define(alias, alias, readsFrom)
 				nonAggregateFields = append(nonAggregateFields, alias)
 				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: ref, Alias: safeAlias})
 				continue
@@ -248,6 +249,7 @@ func (h *ptgHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *ptgHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	readsFrom := ctx.Registry.mark()
 	mode, _ := ctx.Plan.special.(*processTreeMode)
 	if mode == nil {
 		mode = &processTreeMode{}
@@ -261,8 +263,8 @@ func (h *ptgHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return err
 	}
 	mode.start = p.Start
-	ctx.Registry.SetResolveExpr("_depth", "_depth")
-	ctx.Registry.SetResolveExpr("_path", "_path")
+	ctx.Registry.define("_depth", "_depth", readsFrom)
+	ctx.Registry.define("_path", "_path", readsFrom)
 	return nil
 }
 
@@ -505,6 +507,7 @@ func newChainMatch(steps []string, stepDeps deps, withinSeconds int, ordered boo
 // into one per non-empty value, so an event lands in every entity group it
 // belongs to.
 func groupChainEntities(ctx *CommandContext, chainFields []string, meta *ChainMeta) error {
+	readsFrom := ctx.Registry.mark()
 	source := ctx.Plan.CurrentStage()
 	// ref is the entity's reference, and whether it is the stored field (a String).
 	ref := func(f string) (string, bool) {
@@ -528,7 +531,7 @@ func groupChainEntities(ctx *CommandContext, chainFields []string, meta *ChainMe
 		fieldRef, text := ref(chainField)
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fieldRef, Alias: safeField})
 		source.Layer.groupBy(fieldRef, chainField)
-		ctx.Registry.SetResolveExpr(safeField, fieldRef)
+		ctx.Registry.define(safeField, fieldRef, readsFrom)
 		if text {
 			ctx.Registry.setText(safeField)
 		}
@@ -547,7 +550,7 @@ func groupChainEntities(ctx *CommandContext, chainFields []string, meta *ChainMe
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: entityExpr, Alias: "_entity"})
 	source.Layer.groupBy("_entity", "_entity")
 	ctx.Registry.Register("_entity", FieldKindPerRow, "_entity", ctx.CmdIndex)
-	ctx.Registry.SetResolveExpr("_entity", entityExpr)
+	ctx.Registry.define("_entity", entityExpr, readsFrom)
 	ctx.Registry.AddGroupKeyAlias("_entity", "_entity")
 	meta.EntityColumn, meta.MultiIdentity = "_entity", true
 	return nil
@@ -556,6 +559,7 @@ func groupChainEntities(ctx *CommandContext, chainFields []string, meta *ChainMe
 // projectChainMatch projects a chain's count, anchor and completion columns and
 // keeps only the entities that matched.
 func projectChainMatch(ctx *CommandContext, m chainMatch) {
+	readsFrom := ctx.Registry.mark()
 	source := ctx.Plan.CurrentStage()
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: m.count, Alias: "chain_count"})
 	// Millisecond timestamps of one matching sequence, aligned to the steps. Keys the
@@ -564,7 +568,7 @@ func projectChainMatch(ctx *CommandContext, m chainMatch) {
 	// sequenceMatchEvents on its own also emits partial chains.
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: m.anchor, Alias: chainAnchorColumn})
 	ctx.Registry.Register(chainAnchorColumn, FieldKindAggregate, chainAnchorColumn, ctx.CmdIndex)
-	ctx.Registry.SetResolveExpr(chainAnchorColumn, m.anchor)
+	ctx.Registry.define(chainAnchorColumn, m.anchor, readsFrom)
 	// Completion marker for windowed evaluators, in the same time basis the query
 	// is scoped by, so it is comparable with the window bounds. Latest step-matching
 	// event, which errs toward re-reporting rather than dropping a real match.
@@ -575,10 +579,10 @@ func projectChainMatch(ctx *CommandContext, m chainMatch) {
 	doneExpr := fmt.Sprintf("maxIf(toUnixTimestamp64Milli(%s), %s)", scopeTs, m.union.sql)
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: doneExpr, Alias: chainDoneColumn})
 	ctx.Registry.Register(chainDoneColumn, FieldKindAggregate, chainDoneColumn, ctx.CmdIndex)
-	ctx.Registry.SetResolveExpr(chainDoneColumn, doneExpr)
+	ctx.Registry.define(chainDoneColumn, doneExpr, readsFrom)
 	// Only the groups where the sequence matched.
 	source.Layer.Having = append(source.Layer.Having, m.match)
-	ctx.Registry.SetResolveExpr("chain_count", m.count)
+	ctx.Registry.define("chain_count", m.count, readsFrom)
 	ctx.Registry.setReads("chain_count", m.match.deps) // the steps over timestamp, as the match
 	source.Layer.OrderBy = append(source.Layer.OrderBy, desc("chain_count"))
 }
@@ -626,14 +630,18 @@ func (h *heatmapHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	// Standalone mode: heatmap does its own aggregation
+	xFrom := ctx.Registry.mark()
 	xRef, err := ResolveArg(xArg, ctx.Registry)
 	if err != nil {
 		return fmt.Errorf("heatmap(): %w", err)
 	}
+	xReads := ctx.Registry.since(xFrom)
+	yFrom := ctx.Registry.mark()
 	yRef, err := ResolveArg(yArg, ctx.Registry)
 	if err != nil {
 		return fmt.Errorf("heatmap(): %w", err)
 	}
+	yReads := ctx.Registry.since(yFrom)
 
 	source.Layer.Selects = append(source.Layer.Selects,
 		SelectExpr{Expr: xRef, Alias: "_heatmap_x"},
@@ -670,7 +678,9 @@ func (h *heatmapHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source.Layer.Limit = fmt.Sprintf("LIMIT %d", limit*limit)
 
 	ctx.Registry.SetResolveExpr("_heatmap_x", xRef)
+	ctx.Registry.setRead("_heatmap_x", xReads)
 	ctx.Registry.SetResolveExpr("_heatmap_y", yRef)
+	ctx.Registry.setRead("_heatmap_y", yReads)
 	return nil
 }
 

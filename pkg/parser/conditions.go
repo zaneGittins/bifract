@@ -707,7 +707,7 @@ func buildConditionSQL(cond Condition, registry *FieldRegistry, scope *deferredS
 		return ref
 	})
 	fieldRef := ref.sql
-	p := conditionSQL(cond, registry, scope, fieldRef, isJSONField)
+	p := conditionSQL(cond, registry, scope, ref, isJSONField)
 	onNormLog := fieldRef == normLogColumn
 	if p.empty() || !atScan || !(isJSONField || onNormLog) || !registry.normLogIndexHints {
 		return p
@@ -730,7 +730,7 @@ func resolveConditionField(cond Condition, registry *FieldRegistry) (ref sqlRef,
 	}
 	switch {
 	case registry.bareAggregate(cond.Field):
-		return registry.Column("_" + cond.Field), false
+		return registry.Column("_" + cond.Field).typed(typeNumber), false
 	case cond.Field == normLogColumn, cond.Field == "timestamp", cond.Field == "log_id":
 		return registry.Column(cond.Field), false
 	case cond.Field == "normalizer" || cond.Field == "_normalizer":
@@ -740,12 +740,13 @@ func resolveConditionField(cond Condition, registry *FieldRegistry) (ref sqlRef,
 }
 
 // conditionSQL compiles a single Condition, its field already resolved.
-func conditionSQL(cond Condition, registry *FieldRegistry, scope *deferredScope, fieldRef string, isJSONField bool) predicate {
+func conditionSQL(cond Condition, registry *FieldRegistry, scope *deferredScope, ref sqlRef, isJSONField bool) predicate {
 	if cond.Negate && isOrdering(cond.Operator) {
 		// An ordering is negated whole: a non-number fails both x < n and x >= n.
 		cond.Negate = false
-		return notOf(conditionSQL(cond, registry, scope, fieldRef, isJSONField))
+		return notOf(conditionSQL(cond, registry, scope, ref, isJSONField))
 	}
+	fieldRef := ref.sql
 	entry := registry.Get(cond.Field)
 	mode := sourceModeOf(registry)
 	switch {
@@ -765,29 +766,19 @@ func conditionSQL(cond Condition, registry *FieldRegistry, scope *deferredScope,
 		// * means presence only as the value of = and !=; under =~, =^ and =$ it is a term.
 		return atom(presenceSQL(fieldRef, cond.Operator == "=", isJSONField))
 	case cond.IsRegex:
-		return atom(buildRegexMatchSQL(textRef(cond.Field, fieldRef, registry), cond.Value, cond.LiteralTerm, cond.Operator == "!=", mode))
+		return atom(buildRegexMatchSQL(ref.text(), cond.Value, cond.LiteralTerm, cond.Operator == "!=", mode))
 	case cond.Operator == "=~":
-		return atom(buildContainsAnySQL(textRef(cond.Field, fieldRef, registry), conditionValues(cond), cond.Negate, mode))
+		return atom(buildContainsAnySQL(ref.text(), conditionValues(cond), cond.Negate, mode))
 	case cond.Operator == "=^":
-		return atom(buildStartsWithAnySQL(textRef(cond.Field, fieldRef, registry), conditionValues(cond), cond.Negate, mode))
+		return atom(buildStartsWithAnySQL(ref.text(), conditionValues(cond), cond.Negate, mode))
 	case cond.Operator == "=$":
-		return atom(buildEndsWithAnySQL(textRef(cond.Field, fieldRef, registry), conditionValues(cond), cond.Negate, mode))
+		return atom(buildEndsWithAnySQL(ref.text(), conditionValues(cond), cond.Negate, mode))
 	case cond.Operator == "=" || cond.Operator == "!=":
 		return equalitySQL(cond, registry, fieldRef, isJSONField)
 	case isOrdering(cond.Operator):
-		return atom(orderingSQL(cond, registry, entry, fieldRef))
+		return atom(orderingSQL(cond, ref))
 	}
 	return predicate{}
-}
-
-// textRef is a field's reference where only a String will do, as in text matching
-// and address tests: a value that may be a number is converted, and a stored field
-// or a String is read as it is.
-func textRef(field, ref string, registry *FieldRegistry) string {
-	if registry.isText(field) || !isNumericOperand(field, registry, registry.Get(field)) {
-		return ref
-	}
-	return "toString(" + ref + ")"
 }
 
 // isOrdering reports whether op is a numeric comparison.
@@ -835,30 +826,15 @@ func equalitySQL(cond Condition, registry *FieldRegistry, fieldRef string, isJSO
 // orderingSQL compiles a numeric comparison. Text is read with textToNumber; a
 // value that is already a number needs no coercion, and wrapping one is rejected
 // by the server (illegal type UInt64).
-func orderingSQL(cond Condition, registry *FieldRegistry, entry *FieldEntry, fieldRef string) string {
+func orderingSQL(cond Condition, ref sqlRef) string {
+	fieldRef := ref.sql
 	if err := validateNumeric(cond.Value); err != nil {
 		return fmt.Sprintf("%s %s '%s'", fieldRef, cond.Operator, escapeString(cond.Value))
 	}
-	if !isNumericOperand(cond.Field, registry, entry) {
+	if ref.typ != typeNumber {
 		fieldRef = textToNumber(fieldRef)
 	}
 	return fmt.Sprintf("%s %s %s", fieldRef, cond.Operator, cond.Value)
-}
-
-// isNumericOperand reports whether a field already compiles to a number: a bare
-// aggregate name (count/sum/avg with no registry entry, read as _count/_sum/_avg),
-// an aggregate, assignment, window or join output, or a numeric expression.
-func isNumericOperand(field string, registry *FieldRegistry, entry *FieldEntry) bool {
-	if entry == nil {
-		return registry.bareAggregate(field)
-	}
-	switch entry.Kind {
-	case FieldKindPerRow:
-		return entry.Numeric
-	case FieldKindAggregate, FieldKindAssignment, FieldKindWindow, FieldKindJoined:
-		return true
-	}
-	return entry.Numeric
 }
 
 // conditionValues returns the values a condition compares against, as conditionSQL

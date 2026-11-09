@@ -90,12 +90,13 @@ func (h *cidrHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate
 	if err := validateCIDR(cidrRange); err != nil {
 		return predicate{}, fmt.Errorf("cidr(): %w", err)
 	}
-	fieldRef, err := ResolveArg(fieldArg, ctx.Registry)
+	ref, err := resolveArgRef(fieldArg, ctx.Registry)
 	if err != nil {
 		return predicate{}, fmt.Errorf("cidr(): %w", err)
 	}
-	if name := fieldArg.FieldName(); name != "" {
-		fieldRef = textRef(name, fieldRef, ctx.Registry)
+	fieldRef := ref.sql
+	if fieldArg.FieldName() != "" {
+		fieldRef = ref.text()
 	}
 	cidrExpr := cidrPredicateSQL(fieldRef, "'"+escapeString(cidrRange)+"'")
 	if cmd.Negate {

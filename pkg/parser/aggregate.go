@@ -145,7 +145,33 @@ func operandAggregate(reg *FieldRegistry, name, v string) (aggregate, bool) {
 	return nil, false
 }
 
-// aggSelect is the column an aggregate projects under alias.
+// aggType is the SQL type an aggregate computes: an array for the ones that
+// collect values, the value itself for the ones that pick one, and otherwise a
+// number.
+func aggType(a aggregate) valueType {
+	switch a := a.(type) {
+	case topShare:
+		return typeArray
+	case aggCall:
+		switch a.fn {
+		case "groupArray", "groupUniqArray", "topK", "quantiles", "approx_top_k":
+			return typeArray
+		case "argMin", "argMax", "any", "anyLast":
+			return typeString
+		}
+	}
+	return typeNumber
+}
+
+// aggSelect is the column an aggregate projects under alias. COUNT(*) reads no
+// column; any other aggregate records what it reads where it is built.
 func aggSelect(a aggregate, alias string) SelectExpr {
-	return SelectExpr{Expr: a.sql(), Alias: alias, agg: a}
+	return SelectExpr{Expr: a.sql(), Alias: alias, agg: a, colsKnown: a == aggregate(countAll)}
+}
+
+// aggSelectFrom is aggSelect reading the columns referenced since m.
+func (r *FieldRegistry) aggSelectFrom(a aggregate, alias string, m readMark) SelectExpr {
+	s := aggSelect(a, alias)
+	s.cols, s.colsKnown = r.since(m).columns(), true
+	return s
 }

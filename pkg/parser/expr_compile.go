@@ -72,9 +72,9 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 		// is bracketed unless the registry knows it is one operand already.
 		typ := TypeAny
 		switch {
-		case entry.text:
+		case entry.typ == typeText:
 			typ = TypeText
-		case entry.Numeric:
+		case entry.typ == typeNumber:
 			typ = TypeNumberField
 		}
 		ref := func() sqlRef { return registry.through(ctx.scope, name, func() sqlRef { return registry.Ref(name) }) }

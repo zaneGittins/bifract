@@ -488,6 +488,7 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 	// the earlier expression in.
 	q.assignmentFields = slices.DeleteFunc(q.assignmentFields, func(af SelectExpr) bool { return af.Name() == assignment.Field })
 	q.deferredAssignments = slices.DeleteFunc(q.deferredAssignments, func(da deferredAssignment) bool { return da.Field == assignment.Field })
+	q.ctx.Plan.format.aboveJoin = slices.DeleteFunc(q.ctx.Plan.format.aboveJoin, func(s SelectExpr) bool { return s.Name() == assignment.Field })
 	layer := &ctx.Plan.CurrentStage().Layer
 	layer.Selects = slices.DeleteFunc(layer.Selects, func(sel SelectExpr) bool { return sel.Name() == assignment.Field })
 
@@ -518,17 +519,20 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 		}
 	case !isComputedExpr(assignment.Expr):
 		// A bare field or literal has nothing to compute and is materialized
-		// straight away; a constant stays a column of the aggregated rows too.
-		q.assignmentFields = append(q.assignmentFields, selectAs(sqlExpr, safeField))
+		// straight away; a constant stays a column of the aggregated rows too. A
+		// join() output exists only above the join, where the formatter reads it.
+		if got.deps().wrap {
+			q.deferredAssignments = append(q.deferredAssignments, deferredAssignment{Field: assignment.Field, Alias: safeField, SQL: sqlExpr})
+		} else {
+			q.assignmentFields = append(q.assignmentFields, selectAs(sqlExpr, safeField))
+		}
 		registry.Register(safeField, FieldKindAssignment, safeField, -1)
 		registry.SetResolveExpr(safeField, sqlExpr)
 		registry.setRead(safeField, got)
 		if copiesColumn {
 			registry.setColumn(safeField)
 		}
-		if exprType == TypeText {
-			registry.setText(safeField)
-		}
+		registry.setType(safeField, exprType.valueType())
 		return nil
 	default:
 		// Without an aggregation it is computed in the outer formatter, and
@@ -539,18 +543,14 @@ func (q *plannedQuery) applyAssignment(assignment AssignmentNode, at position) e
 	}
 	registry.setOperand(safeField)
 	registry.setRead(safeField, got)
-	if exprType == TypeText {
-		registry.setText(safeField)
-	}
-	if exprType == TypeNumber {
-		registry.SetNumeric(safeField)
-	}
+	registry.setType(safeField, exprType.valueType())
 	if hasAggregation {
 		return nil
 	}
-	if registry.DependsOnJoin(safeField) {
+	if registry.DependsOnJoin(safeField) && !got.deps().wrap {
 		// The model's columns exist in the SELECT that joins them, which the
-		// formatter only sees as far as that SELECT projects them.
+		// formatter only sees as far as that SELECT projects them. A join()'s
+		// exist only above its wrap, which is the formatter's to read.
 		q.assignmentFields = append(q.assignmentFields, selectAs(sqlExpr, safeField))
 		return nil
 	}
@@ -625,20 +625,69 @@ func runTracked(ctx *CommandContext, cmd CommandNode, before *FieldRegistry) (re
 	// what the command did.
 	for i := range ctx.Plan.Stages {
 		for j := range ctx.Plan.Stages[i].Layer.Selects {
-			if s := &ctx.Plan.Stages[i].Layer.Selects[j]; s.agg != nil && !s.colsKnown {
+			s := &ctx.Plan.Stages[i].Layer.Selects[j]
+			if e := ctx.Registry.Get(s.Name()); s.agg != nil && e != nil && e.Kind == FieldKindAggregate && e.typ == typeUnknown {
+				e.typ = aggType(s.agg)
+			}
+			if s.agg != nil && !s.colsKnown {
+				if unrecordedHook != nil {
+					unrecordedHook(cmd.Name + "() defined " + s.Name() + " without recording its reads")
+				}
 				s.cols, s.colsKnown = got.columns(), true
 			}
 		}
 	}
+	liftAboveJoin(ctx, before)
 	for _, name := range ctx.Registry.changedSince(before) {
 		switch e := ctx.Registry.Get(name); e.Kind {
 		case FieldKindPerRow, FieldKindAssignment, FieldKindJSON:
-			if !e.readsKnown {
+			switch {
+			case e.readsKnown:
+			case e.ResolveAs == "" && e.Expr == name:
+				// Declared but never given SQL: a placeholder computes nothing.
+				ctx.Registry.setReads(name, deps{})
+			default:
+				// Every computed field records its own reads (see define); a
+				// command's whole reads are only a fallback, and tests refuse it.
+				if unrecordedHook != nil {
+					unrecordedHook(cmd.Name + "() defined " + name + " without recording its reads")
+				}
 				ctx.Registry.setRead(name, got)
 			}
 		}
 	}
 	return got, nil
+}
+
+// liftAboveJoin moves the columns a command computed from a join()'s outputs out
+// of the scan, which runs before the join, to the formatter above its wrap.
+func liftAboveJoin(ctx *CommandContext, before *FieldRegistry) {
+	plan := ctx.Plan
+	if plan.join == nil || plan.join.SubSQL == "" || len(plan.Stages) > 1 {
+		return
+	}
+	without := func(name string) {
+		plan.format.aboveJoin = slices.DeleteFunc(plan.format.aboveJoin, func(s SelectExpr) bool { return s.Name() == name })
+	}
+	// A field the command redefined in the scan replaces one computed above.
+	for _, name := range ctx.Registry.changedSince(before) {
+		if e := ctx.Registry.Get(name); e.Kind != FieldKindJoined && !(e.readsKnown && e.reads.wrap) {
+			without(name)
+		}
+	}
+	layer := &plan.CurrentStage().Layer
+	layer.Selects = slices.DeleteFunc(layer.Selects, func(s SelectExpr) bool {
+		e := ctx.Registry.Get(s.Name())
+		if s.agg != nil || e == nil || e.Kind == FieldKindJoined || !e.readsKnown || !e.reads.wrap {
+			return false
+		}
+		// Computed above the wrap instead; a column read by name exists only there.
+		if s.Expr != s.Name() {
+			without(s.Name())
+			plan.format.aboveJoin = append(plan.format.aboveJoin, s)
+		}
+		return true
+	})
 }
 
 // plannedFilters copies the pipeline's filters for planning, each placed where
@@ -1100,6 +1149,11 @@ func (q *plannedQuery) foldCaps() error {
 
 // assembleSelects builds the active stage's SELECT list.
 func (q *plannedQuery) assembleSelects(active *QueryStage) error {
+	// An assignment of a name still computed above a join() came before the
+	// command that computes it there (an assignment drops it), which replaces it.
+	q.assignmentFields = slices.DeleteFunc(q.assignmentFields, func(af SelectExpr) bool {
+		return slices.ContainsFunc(q.ctx.Plan.format.aboveJoin, func(s SelectExpr) bool { return s.Name() == af.Name() })
+	})
 	if len(active.Layer.GroupBy) > 0 {
 		if err := assembleGroupBySelects(q.ctx, active, q.assignmentFields); err != nil {
 			return err
@@ -1107,9 +1161,10 @@ func (q *plannedQuery) assembleSelects(active *QueryStage) error {
 	} else if active.IsSource {
 		assembleNonGroupBySelects(q.ctx, active, q.assignmentFields)
 	}
-	// Deferred assignments run in the formatter's outer SELECT, and the JSON
-	// sub-columns they read need `fields` in the inner one.
-	if len(q.deferredAssignments) > 0 && !q.ctx.Plan.IsAggregated &&
+	// Deferred assignments, and columns computed above a join(), run in the
+	// formatter's outer SELECT, and the JSON sub-columns they read need `fields`
+	// in the inner one.
+	if len(q.deferredAssignments)+len(q.ctx.Plan.format.aboveJoin) > 0 && !q.ctx.Plan.IsAggregated &&
 		!hasSelectAlias(active.Layer.Selects, "fields") {
 		active.Layer.Selects = append(active.Layer.Selects, SelectExpr{Expr: "fields"})
 	}
@@ -1198,8 +1253,13 @@ func (q *plannedQuery) wrapLayers(fieldOrder []string) []string {
 	// shows only the joined outputs it names; the wrap still projects them all,
 	// since a deferred filter or sort may read one that is not displayed.
 	if plan.join != nil && plan.join.SubSQL != "" {
-		plan.format.selects = nil
+		plan.format.selects = joinFormatters(plan.format.selects, q.deferredAssignments, plan.format.aboveJoin)
 		fieldOrder = appendJoinedFields(fieldOrder, joinDisplayNames(plan), plan)
+		for _, s := range plan.format.aboveJoin {
+			if !slices.Contains(fieldOrder, s.Name()) {
+				fieldOrder = append(fieldOrder, s.Name())
+			}
+		}
 	}
 	if plan.window.zScoreExpr != "" {
 		buildZScoreWindowLayers(plan)
@@ -1554,7 +1614,7 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 	var deferredOrder []OrderTerm
 
 	for _, ob := range source.Layer.OrderBy {
-		if ctx.Registry.IsWindow(ob.Expr) || (hasJoinWrap && isJoinedField(ctx.Registry, ob.Expr)) {
+		if ctx.Registry.IsWindow(ob.Expr) || (hasJoinWrap && ob.deps.wrap) {
 			deferredOrder = append(deferredOrder, ob)
 		} else {
 			innerOrder = append(innerOrder, ob)
@@ -1655,13 +1715,6 @@ func appendJoinedFields(fieldOrder, outputs []string, plan *QueryPlan) []string 
 	return fieldOrder
 }
 
-// isJoinedField reports whether a name resolves to a column added by a JOIN wrap,
-// which exists only after that wrap.
-func isJoinedField(registry *FieldRegistry, name string) bool {
-	entry := registry.Get(strings.Trim(name, "`"))
-	return entry != nil && entry.Kind == FieldKindJoined
-}
-
 // buildZScoreWindowLayers creates window layers for modified z-score computation:
 // Layer 1: median(expr) OVER () AS _median
 // Layer 2: median(abs(expr - _median)) OVER () AS _mad
@@ -1760,6 +1813,28 @@ func buildFormatters(selects []SelectExpr, deferredAssignments []deferredAssignm
 		}
 	}
 	return formatters
+}
+
+// joinFormatters is the formatter above a join() wrap: every column passes
+// through, and the columns computed from what the join brought in are added, then
+// the assignments the formatter computes. The raw JSON fields column, kept only
+// for them, is dropped as buildFormatters drops it.
+func joinFormatters(formatters []SelectExpr, deferredAssignments []deferredAssignment, aboveJoin []SelectExpr) []SelectExpr {
+	added := slices.Clone(aboveJoin)
+	// A column computed above the join was defined after any assignment of the
+	// same name still here (an assignment drops it), so it replaces that one.
+	lifted := func(name string) bool {
+		return slices.ContainsFunc(aboveJoin, func(s SelectExpr) bool { return s.Name() == name })
+	}
+	for _, f := range formatters {
+		if !lifted(f.Name()) && slices.ContainsFunc(deferredAssignments, func(da deferredAssignment) bool { return f.Alias == da.Alias && f.Expr == da.SQL }) {
+			added = append(added, f)
+		}
+	}
+	if len(added) == 0 {
+		return nil
+	}
+	return append([]SelectExpr{{Expr: "* EXCEPT (fields)"}}, added...)
 }
 
 // outputRef is how a query over the column's SELECT references it: its alias, or

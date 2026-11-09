@@ -30,10 +30,6 @@ type FieldEntry struct {
 	ProducedBy int    // command index (-1 for base fields)
 	ResolveAs  string // Override for Resolve(); when set, returned instead of Expr
 	Inline     bool   // when true, references are folded in as the expression, never an alias
-	// Numeric marks an expression that already compiles to a number. The string
-	// coercions a filter applies (textToNumber) take a String, so applying one
-	// to an already-numeric expression is rejected by the server.
-	Numeric bool
 	// OriginKind preserves the field's identity BEFORE any stage-scoping downgrade.
 	// ScopeToOutputs re-registers an aggregate/window output as FieldKindAssignment
 	// (a plain column of the new stage) for expression resolution, which loses the
@@ -44,9 +40,11 @@ type FieldEntry struct {
 	// operand marks an expression that is one SQL operand, so a reference folds
 	// it in without brackets. Changing the expression clears it.
 	operand bool
-	// text marks an expression known to be a String, as a stored field is.
-	// Changing the expression clears it.
-	text bool
+	// typ is the SQL type the expression is known to have, recorded where it is
+	// computed: a String, as a stored field is, or a number, which the String
+	// coercions a filter applies (textToNumber) reject. Changing the expression
+	// clears it.
+	typ valueType
 	// reads is what a computed value reads, recorded where it was computed, when
 	// readsKnown says it was.
 	reads      deps
@@ -295,19 +293,22 @@ func (r *FieldRegistry) setReads(name string, d deps) {
 	}
 }
 
-// isText reports whether the name resolves to a String: the stored field, or an
-// expression recorded as one.
+// isText reports whether the name resolves to a String.
 func (r *FieldRegistry) isText(name string) bool {
-	if e, ok := r.fields[name]; ok && e.text {
-		return true
+	return r.typeOf(name) == typeText
+}
+
+// setType records the SQL type a field's expression has, when it is known.
+func (r *FieldRegistry) setType(name string, t valueType) {
+	if entry, ok := r.fields[name]; ok && t != typeUnknown {
+		entry.typ = t
 	}
-	return r.resolvesToStored(name)
 }
 
 // setText records that a field's expression is a String.
 func (r *FieldRegistry) setText(name string) {
 	if entry, ok := r.fields[name]; ok {
-		entry.text = true
+		entry.typ = typeText
 	}
 }
 
@@ -350,11 +351,23 @@ func (r *FieldRegistry) SetResolveExpr(name, expr string) {
 	if entry, ok := r.fields[name]; ok {
 		// A new expression reads what it reads: until that is recorded, nothing
 		// of the old one's is known.
-		entry.ResolveAs, entry.operand, entry.text = expr, false, false
+		entry.ResolveAs, entry.operand, entry.typ = expr, false, typeUnknown
 		entry.readsKnown, entry.column, entry.cols = false, false, ""
 	} else {
 		r.Register(name, FieldKindJSON, expr, -1)
 		r.fields[name].ResolveAs = expr
+	}
+}
+
+// inline folds a field in as expr from here on, keeping what its value reads.
+func (r *FieldRegistry) inline(name, expr string, producedBy int) {
+	var prior FieldEntry
+	if e, ok := r.fields[name]; ok {
+		prior = *e
+	}
+	r.RegisterInlineExpr(name, expr, producedBy)
+	if e := r.fields[name]; prior.readsKnown {
+		e.reads, e.readsKnown, e.cols = prior.reads, true, prior.cols
 	}
 }
 
@@ -380,14 +393,14 @@ func (r *FieldRegistry) setOperand(name string) {
 // SetNumeric records that a field's expression is already a number.
 func (r *FieldRegistry) SetNumeric(name string) {
 	if entry, ok := r.fields[name]; ok {
-		entry.Numeric = true
+		entry.typ = typeNumber
 	}
 }
 
 // IsNumeric reports whether a field's expression needs no numeric coercion.
 func (r *FieldRegistry) IsNumeric(name string) bool {
 	if entry, ok := r.fields[name]; ok {
-		return entry.Numeric
+		return entry.typ == typeNumber
 	}
 	return false
 }
@@ -460,16 +473,6 @@ func (r *FieldRegistry) IsRowLevel(name string) bool {
 	return false
 }
 
-// IsNumericComputed returns true if the field is an assignment-kind computed
-// field that already produces a numeric value (e.g. length(), levenshtein()).
-// These must not be wrapped with toFloat64OrNull (which requires String input).
-func (r *FieldRegistry) IsNumericComputed(name string) bool {
-	if entry, ok := r.fields[name]; ok {
-		return entry.Kind == FieldKindAssignment
-	}
-	return false
-}
-
 // FieldsOfKind returns all field names of a given kind, in registration order.
 func (r *FieldRegistry) FieldsOfKind(kind FieldKind) []string {
 	var result []string
@@ -515,6 +518,10 @@ func (r *FieldRegistry) ScopeToOutputs(outputs map[string]bool) {
 				origin = e.Kind
 			}
 		}
+		var typ valueType
+		if e, ok := prev[name]; ok {
+			typ = e.typ
+		}
 		r.fields[name] = &FieldEntry{
 			Name:       name,
 			Kind:       kind,
@@ -522,6 +529,7 @@ func (r *FieldRegistry) ScopeToOutputs(outputs map[string]bool) {
 			ResolveAs:  name,
 			ProducedBy: -1,
 			OriginKind: origin,
+			typ:        typ,
 			readsKnown: true, // a column of the stage before, which it read itself
 		}
 		r.order = append(r.order, name)
