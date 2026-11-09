@@ -695,7 +695,7 @@ func TestMaybeRunRetention(t *testing.T) {
 // is not an error.
 func TestRecordExecution(t *testing.T) {
 	e, pg, _ := newTestEngine(t)
-	if err := e.recordExecution(context.Background(), "a1", "", "p1", 4, 1, false, "host (2 values)", 12,
+	if err := e.recordExecution(context.Background(), "x", "a1", "", "p1", 4, 1, false, "host (2 values)", 12,
 		[]WebhookResult{{WebhookName: "hook", Success: true}}, nil, []EmailResult{}); err != nil {
 		t.Fatal(err)
 	}
@@ -711,11 +711,11 @@ func TestRecordExecution(t *testing.T) {
 	}
 
 	pg.answer(sqlExecution, fakedb.PGResult{Err: pqErr("23503")})
-	if err := e.recordExecution(context.Background(), "gone", "f1", "", 1, 0, false, "", 1, nil, nil, nil); err != nil {
+	if err := e.recordExecution(context.Background(), "x", "gone", "f1", "", 1, 0, false, "", 1, nil, nil, nil); err != nil {
 		t.Errorf("a deleted alert's execution is dropped quietly, got %v", err)
 	}
 	pg.answer(sqlExecution, fakedb.PGResult{Err: errors.New("disk full")})
-	if err := e.recordExecution(context.Background(), "a1", "f1", "", 1, 0, false, "", 1, nil, nil, nil); err == nil {
+	if err := e.recordExecution(context.Background(), "x", "a1", "f1", "", 1, 0, false, "", 1, nil, nil, nil); err == nil {
 		t.Error("any other failure is reported")
 	}
 }

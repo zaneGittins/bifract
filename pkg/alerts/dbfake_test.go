@@ -99,6 +99,7 @@ type alertSpec struct {
 	ThrottleSecs                    int64
 	ThrottleField                   string
 	Labels                          []string
+	References                      []string
 	// Action aggregates as the json_agg subqueries return them; "" is "[]".
 	Webhooks, Fractals, Dicts, Emails string
 	LastEval                          time.Time
@@ -174,7 +175,7 @@ func (a alertSpec) cacheRow() []driver.Value {
 	a = a.defaults()
 	return []driver.Value{
 		a.ID, a.Name, "desc", a.Query, a.Type, a.Enabled,
-		a.ThrottleSecs, a.ThrottleField, int64(0), pgArray(a.Labels),
+		a.ThrottleSecs, a.ThrottleField, int64(0), pgArray(a.Labels), pgArray(a.References),
 		a.Severity, a.FractalID, a.PrismID,
 		"creator", fixedTime, fixedTime, nil,
 		a.LastEval, "", intOrNil(a.Window), a.Cron, intOrNil(a.QueryWindow),

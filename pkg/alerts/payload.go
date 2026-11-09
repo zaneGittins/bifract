@@ -33,12 +33,17 @@ var errBodyTooLarge = fmt.Errorf("rendered body exceeds %d bytes", maxRenderedBo
 // TemplateContext is the data a body template executes against. Field names are
 // the Go-side equivalents of the envelope JSON keys.
 type TemplateContext struct {
+	FiringID     string
 	AlertName    string
 	OriginalName string
 	AlertID      string
 	Description  string
 	Severity     string
 	Labels       []string
+	Attack       AttackTags
+	References   []string
+	GroupField   string
+	GroupKey     string
 	TriggeredAt  time.Time
 	QueryString  string
 	MatchCount   int
@@ -142,12 +147,17 @@ func templateContext(payload WebhookPayload) TemplateContext {
 		results = []map[string]interface{}{}
 	}
 	return TemplateContext{
+		FiringID:     payload.FiringID,
 		AlertName:    payload.AlertName,
 		OriginalName: payload.OriginalName,
 		AlertID:      payload.AlertID,
 		Description:  payload.Description,
 		Severity:     payload.Severity,
 		Labels:       payload.Labels,
+		Attack:       payload.Attack,
+		References:   payload.References,
+		GroupField:   payload.GroupField,
+		GroupKey:     payload.GroupKey,
 		TriggeredAt:  payload.TriggeredAt,
 		QueryString:  payload.QueryString,
 		MatchCount:   payload.MatchCount,

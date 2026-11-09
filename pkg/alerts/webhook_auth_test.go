@@ -70,7 +70,7 @@ func TestBuildPayloadAlertLink(t *testing.T) {
 	results := []map[string]interface{}{{"user": "x"}, {"user": "y"}}
 
 	wc := NewWebhookClient("https://bifract.example.test/", allowPrivate)
-	payload := wc.BuildPayload(WebhookAction{IncludeAlertLink: true}, alert, "Login x", results, triggered)
+	payload := wc.BuildPayload(WebhookAction{IncludeAlertLink: true}, alert, "Login x", Firing{}, results, triggered)
 
 	if payload.AlertName != "Login x" || payload.OriginalName != "Login {{user}}" {
 		t.Errorf("a resolved name keeps the template as the original: %q / %q", payload.AlertName, payload.OriginalName)
@@ -90,15 +90,15 @@ func TestBuildPayloadAlertLink(t *testing.T) {
 		t.Errorf("link params: %v", q)
 	}
 
-	if p := wc.BuildPayload(WebhookAction{IncludeAlertLink: false}, alert, alert.Name, nil, triggered); p.AlertLink != "" || p.OriginalName != "" {
+	if p := wc.BuildPayload(WebhookAction{IncludeAlertLink: false}, alert, alert.Name, Firing{}, nil, triggered); p.AlertLink != "" || p.OriginalName != "" {
 		t.Errorf("no link requested, and an unresolved name has no original: %+v", p)
 	}
 	unscoped := *alert
 	unscoped.FractalID = ""
-	if p := wc.BuildPayload(WebhookAction{IncludeAlertLink: true}, &unscoped, "n", nil, triggered); p.AlertLink != "" {
+	if p := wc.BuildPayload(WebhookAction{IncludeAlertLink: true}, &unscoped, "n", Firing{}, nil, triggered); p.AlertLink != "" {
 		t.Errorf("an unscoped alert has nowhere to link: %q", p.AlertLink)
 	}
-	if p := NewWebhookClient("", allowPrivate).BuildPayload(WebhookAction{IncludeAlertLink: true}, alert, "n", nil, triggered); p.AlertLink != "" {
+	if p := NewWebhookClient("", allowPrivate).BuildPayload(WebhookAction{IncludeAlertLink: true}, alert, "n", Firing{}, nil, triggered); p.AlertLink != "" {
 		t.Errorf("no base URL, no link: %q", p.AlertLink)
 	}
 	if got := wc.buildAlertLink(alert, triggered); got != payload.AlertLink {
@@ -152,17 +152,17 @@ func TestSendFailsFastOnConfigurationErrors(t *testing.T) {
 	defer srv.Close()
 
 	wc := NewWebhookClient("", allowPrivate)
-	bad := wc.Send(context.Background(), WebhookAction{URL: "gopher://x", RetryCount: 3}, &Alert{}, "n", nil)
+	bad := wc.Send(context.Background(), WebhookAction{URL: "gopher://x", RetryCount: 3}, &Alert{}, "n", Firing{}, nil)
 	if bad.Success || !strings.Contains(bad.Error, "invalid webhook URL") || bad.AttemptCount != 0 {
 		t.Errorf("an invalid URL is reported without an attempt: %+v", bad)
 	}
 
-	tmpl := wc.Send(context.Background(), WebhookAction{URL: srv.URL, BodyMode: BodyModeTemplate, BodyTemplate: "{{ .Nope"}, &Alert{}, "n", nil)
+	tmpl := wc.Send(context.Background(), WebhookAction{URL: srv.URL, BodyMode: BodyModeTemplate, BodyTemplate: "{{ .Nope"}, &Alert{}, "n", Firing{}, nil)
 	if tmpl.Success || tmpl.AttemptCount != 0 || hits.Load() != 0 {
 		t.Errorf("a template that cannot render is reported without sending: %+v", tmpl)
 	}
 
-	auth := wc.Send(context.Background(), WebhookAction{URL: srv.URL, AuthType: "bearer", RetryCount: 1}, &Alert{}, "n", nil)
+	auth := wc.Send(context.Background(), WebhookAction{URL: srv.URL, AuthType: "bearer", RetryCount: 1}, &Alert{}, "n", Firing{}, nil)
 	if auth.Success || !strings.Contains(auth.Error, "authentication error") || hits.Load() != 0 {
 		t.Errorf("a missing credential must not reach the destination: %+v (hits %d)", auth, hits.Load())
 	}
