@@ -172,6 +172,24 @@ items:
       logs: 2083151
       start: 2026-10-27T08:37:53Z
       end: 2026-10-30T13:49:59Z
+  - id: bifract-labs-002
+    kind: dataset
+    name: "Lab 002: Larkspur baselines"
+    description: >-
+      A month of synthetic Sysmon process creation events from a 34 workstation Windows
+      domain, for practicing first seen, rarity and coverage. Includes weekends, joiners and
+      a leaver, leave, Patch Tuesday and staggered software updates. Host names are
+      fictional; do not contact any indicator in it.
+    author: Bifract Labs
+    homepage: https://labs.bifract.io/002/
+    tags: [windows, sysmon, training]
+    dataset:
+      url: https://github.com/zaneGittins/bifract-labs/releases/download/lab-002/bifract-labs-002.jsonl.zst
+      sha256: 66a0c8726ba9ccfac3177e1a732d50e448a79d72e2176189de93541f0634c8c3
+      bytes: 23003055
+      logs: 203705
+      start: 2026-10-04T00:00:00Z
+      end: 2026-11-05T00:00:00Z
 
   # Bundles. Adding one adds each member not already present, requirements first.
   - id: rmm-hunting
