@@ -238,13 +238,14 @@ func resolveModelKeySet(cmd CommandNode, ctx *CommandContext) (*modelKeySet, err
 
 	case "beacon", "long_connection":
 		if info.ModelType == "beacon" {
-			ks.scoringSQL = buildBeaconScoringSQL(info.TableName, fractalIDs)
+			ks.scoringSQL = buildBeaconScoringSQL(info.TableName, fractalIDs, info.ScoredPassAt)
 		} else {
-			ks.scoringSQL = buildLongConnScoringSQL(info.TableName, fractalIDs)
+			ks.scoringSQL = buildLongConnScoringSQL(info.TableName, fractalIDs, info.ScoredPassAt)
 		}
 		// Positional key mapping: key[0]->src_ip, key[1]->dst_ip, key[2]->dst_port.
 		ks.rightCols = []string{"src_ip", "dst_ip", "dst_port"}
-		ks.exact = true // every scored pair is returned
+		ks.rawWhere = NetCurrentPredicate(info.ScoredPassAt, modelPrefilterAlias+".")
+		ks.exact = true // every current pair is returned
 
 	default:
 		return nil, fmt.Errorf("unknown model type %q for model %q", info.ModelType, modelName)
@@ -338,53 +339,21 @@ func fractalIDInClause(fractalIDs []string) string {
 	return "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
 }
 
-// buildBeaconScoringSQL returns the latest scored row per pair from a beacon model's
-// results table. beacon_score is the final (modifier-adjusted) verdict; the subscores
-// explain it.
-//
-// argMax(..., scored_at) rather than FINAL: same newest-scored row, and it guarantees
-// ONE row per pair where FINAL cannot. FINAL collapses per shard (a later scoring pass
-// can land on another one) and never across the member fractals of a prism, either of
-// which would multiply log rows through the join.
-func buildBeaconScoringSQL(tableName string, fractalIDs []string) string {
-	return fmt.Sprintf(`SELECT src_ip, dst_ip, dst_port,
-    argMax(final_score, scored_at) AS beacon_score,
-    argMax(regularity_score, scored_at) AS regularity_score,
-    argMax(ts_score, scored_at) AS ts_score,
-    argMax(ds_score, scored_at) AS ds_score,
-    argMax(dur_score, scored_at) AS dur_score,
-    argMax(hist_score, scored_at) AS hist_score,
-    argMax(prevalence, scored_at) AS prevalence,
-    argMax(prevalence_score, scored_at) AS prevalence_score,
-    argMax(first_seen_score, scored_at) AS first_seen_score,
-    argMax(threat_intel_score, scored_at) AS threat_intel_score,
-    argMax(conn_count, scored_at) AS conn_count
-FROM %s
-WHERE %s
-GROUP BY src_ip, dst_ip, dst_port`,
-		"`"+tableName+"`",
-		fractalIDInClause(fractalIDs),
-	)
+// buildBeaconScoringSQL is one row per pair the latest pass scored, as a
+// duplicate would multiply log rows through the join (see NetLatestSQL).
+func buildBeaconScoringSQL(tableName string, fractalIDs []string, pass *time.Time) string {
+	return NetLatestSQL("`"+tableName+"`", fractalIDInClause(fractalIDs)+" AND "+NetCurrentPredicate(pass, ""), []string{
+		"final_score AS beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score",
+		"prevalence", "prevalence_score", "first_seen_score", "threat_intel_score", "conn_count",
+	})
 }
 
-// buildLongConnScoringSQL returns the latest scored row per pair from a
-// long_connection model's results table. One row per pair, for the reasons given on
-// buildBeaconScoringSQL.
-func buildLongConnScoringSQL(tableName string, fractalIDs []string) string {
-	return fmt.Sprintf(`SELECT src_ip, dst_ip, dst_port,
-    argMax(final_score, scored_at) AS longconn_score,
-    argMax(total_duration, scored_at) AS total_duration,
-    argMax(conn_count, scored_at) AS conn_count,
-    argMax(prevalence, scored_at) AS prevalence,
-    argMax(prevalence_score, scored_at) AS prevalence_score,
-    argMax(first_seen_score, scored_at) AS first_seen_score,
-    argMax(threat_intel_score, scored_at) AS threat_intel_score
-FROM %s
-WHERE %s
-GROUP BY src_ip, dst_ip, dst_port`,
-		"`"+tableName+"`",
-		fractalIDInClause(fractalIDs),
-	)
+// buildLongConnScoringSQL is buildBeaconScoringSQL for a long_connection model.
+func buildLongConnScoringSQL(tableName string, fractalIDs []string, pass *time.Time) string {
+	return NetLatestSQL("`"+tableName+"`", fractalIDInClause(fractalIDs)+" AND "+NetCurrentPredicate(pass, ""), []string{
+		"final_score AS longconn_score", "total_duration", "conn_count",
+		"prevalence", "prevalence_score", "first_seen_score", "threat_intel_score",
+	})
 }
 
 // RarityScoredSQL scores every (partition, value) pair of a rarity model, the one

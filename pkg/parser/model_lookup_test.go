@@ -10,6 +10,8 @@ import (
 
 // mlookupOpts returns QueryOptions with a set of analytics models registered for
 // model_lookup() translation tests.
+var mlookupPass = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
 func mlookupOpts() QueryOptions {
 	return QueryOptions{
 		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -19,7 +21,7 @@ func mlookupOpts() QueryOptions {
 		Models: map[string]AnalyticsModelInfo{
 			"rare":   {ID: "1", TableName: "model_rare", ModelType: "rarity", MinSample: 1, FractalID: "f1", Keys: []string{"image", "hash"}},
 			"fs":     {ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", Keys: []string{"user"}},
-			"beacon": {ID: "3", TableName: "model_beacon", ModelType: "beacon", FractalID: "f1", Keys: []string{"src_ip", "dst_ip", "dst_port"}},
+			"beacon": {ID: "3", TableName: "model_beacon", ModelType: "beacon", FractalID: "f1", Keys: []string{"src_ip", "dst_ip", "dst_port"}, ScoredPassAt: &mlookupPass},
 		},
 	}
 }
@@ -595,7 +597,7 @@ func TestModelLookup_StrictIsDefault(t *testing.T) {
 		t.Errorf("expected an INNER JOIN by default, got:\n%s", sql)
 	}
 	want := "(fields.`src_ip`::String, fields.`dst_ip`::String, fields.`dst_port`::String) IN " +
-		"(SELECT _mlk_src.src_ip, _mlk_src.dst_ip, _mlk_src.dst_port FROM `model_beacon` AS _mlk_src WHERE _mlk_src.fractal_id IN ('f1'))"
+		"(SELECT _mlk_src.src_ip, _mlk_src.dst_ip, _mlk_src.dst_port FROM `model_beacon` AS _mlk_src WHERE _mlk_src.fractal_id IN ('f1') AND _mlk_src.scored_at >= toDateTime64('2026-01-01 12:00:00.000', 3, 'UTC'))"
 	if !strings.Contains(sql, want) {
 		t.Errorf("expected the semi-join prefilter %s, got:\n%s", want, sql)
 	}
@@ -702,7 +704,7 @@ func TestModelLookup_PrefilterCoversPrismMembers(t *testing.T) {
 	sql := translateMLWith(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port])`, opts)
 
 	// The prefilter and the scoring subquery span the members, as the log scan does.
-	if !strings.Contains(sql, "_mlk_src.fractal_id IN ('f1', 'f2')") || !regexp.MustCompile(`WHERE fractal_id IN \('f1', 'f2'\)\s+GROUP BY`).MatchString(sql) {
+	if !strings.Contains(sql, "_mlk_src.fractal_id IN ('f1', 'f2')") || !strings.Contains(sql, "WHERE fractal_id IN ('f1', 'f2') AND ") {
 		t.Errorf("expected the prefilter and the scoring subquery to span the members, got:\n%s", sql)
 	}
 }
@@ -744,7 +746,7 @@ func TestModelLookup_NetworkScoringIsOneRowPerPair(t *testing.T) {
 	if !strings.Contains(sql, "GROUP BY src_ip, dst_ip, dst_port") {
 		t.Errorf("expected the scoring subquery to group by the pair, got:\n%s", sql)
 	}
-	if !strings.Contains(sql, "argMax(final_score, scored_at) AS beacon_score") {
+	if !strings.Contains(sql, "argMax(_r.final_score, _r.scored_at) AS beacon_score") {
 		t.Errorf("expected the newest score per pair via argMax, got:\n%s", sql)
 	}
 }

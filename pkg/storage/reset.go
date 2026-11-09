@@ -271,7 +271,7 @@ func ClearedLogDataPostgresStatements() []string {
 		// stale high ch_count reads as "no gap" for every day already archived.
 		`TRUNCATE archive_completeness`,
 		`UPDATE fractals SET log_count = 0, size_bytes = 0, earliest_log = NULL, latest_log = NULL`,
-		`UPDATE analytics_models SET last_scored_at = NULL`,
+		`UPDATE analytics_models SET last_scored_at = NULL, scored_pass_at = NULL`,
 		// An in-flight restore would resume mid-window against an empty target.
 		`UPDATE archive_restore_jobs SET status = 'canceled' WHERE status IN ('running', 'pending')`,
 		// Dataset fractals are emptied too, so their imports have to run again. A held

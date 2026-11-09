@@ -54,8 +54,7 @@ type ModelHealth struct {
 	// NewestData is the newest event time the model's state holds.
 	NewestData *time.Time `json:"newest_data,omitempty"`
 
-	// ScoredThrough is a network model's newest score time, which Score range
-	// sets to the end of the range it scored.
+	// ScoredThrough is a network model's latest scoring pass, or a range's end.
 	ScoredThrough *time.Time `json:"scored_through,omitempty"`
 
 	// Findings counts what the model surfaced over the last findingsDays days, or
@@ -80,7 +79,7 @@ type stateSummary struct {
 // computed from the model's own aggregate tables, never from raw logs. volumeAsOf
 // is what a volume model scores as of (see volumeAsOf). oldest and newest skip
 // days the model cannot have recorded (see recordedDay); from is its recordStart.
-func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, fractalID, volumeAsOf string, from, today time.Time) string {
+func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, fractalID, volumeAsOf string, from, today time.Time, pass *time.Time) string {
 	fidEsc := storage.EscCHStr(fractalID)
 	fid := fidScope(fidEsc)
 	qt := "`" + table + "`"
@@ -96,7 +95,7 @@ func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, frac
 	}
 	// flagged counts the Findings tab's rows: the same rule over the same scored
 	// rows, so the listing and the tab cannot disagree.
-	rule := findingsRuleFor(mt, def)
+	rule := findingsRuleFor(mt, def, pass)
 	flagged := func(scored string) string {
 		if rule.Where == "" {
 			return ""
@@ -151,7 +150,7 @@ FROM %s WHERE %s AND %s`, epoch("toDateTime(min(bucket), 'UTC')"), epoch("toDate
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest%s,
     toUInt64(ifNull((SELECT %s FROM %s WHERE %s), 0)) AS scored
 FROM %s WHERE %s`, epoch("min(hour)"), epoch("max(last_ts)"),
-			flagged(fmt.Sprintf("SELECT * FROM %s FINAL WHERE %s", qt, fid)), epoch("max(scored_at)"), qt, fid, "`"+stateTable+"`", fid+" AND "+recorded("toDate(hour, 'UTC')"))
+			flagged(networkLatest(qt, fidEsc)), epoch("max(scored_at)"), qt, fid, "`"+stateTable+"`", fid+" AND "+recorded("toDate(hour, 'UTC')"))
 	case ModelTypeTLSH:
 		oldest, newest := keyBounds()
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest FROM %s WHERE %s`, oldest, newest, qt, fid)
@@ -277,7 +276,10 @@ func deriveHealth(m *Model, sum *stateSummary, sumErr error, now time.Time) *Mod
 			t := sum.newest
 			h.NewestData = &t
 		}
-		if !sum.scored.IsZero() {
+		if m.ScoredPassAt != nil {
+			t := m.ScoredPassAt.UTC()
+			h.ScoredThrough = &t
+		} else if !sum.scored.IsZero() {
 			t := sum.scored
 			h.ScoredThrough = &t
 		}
@@ -394,7 +396,7 @@ func learningReason(m *Model) string {
 // findingsBasis says what the count is (the Findings tab's rule) and, where the
 // model keeps one, what the sparkline plots.
 func findingsBasis(m *Model) string {
-	rule := findingsRuleFor(m.ModelType, m.Definition).Text
+	rule := findingsRuleFor(m.ModelType, m.Definition, m.ScoredPassAt).Text
 	if rule == "" {
 		return ""
 	}
@@ -470,7 +472,11 @@ func newHealthCache() *healthCache {
 // healthVersion changes whenever the model's state may have been reset or
 // reseeded, so a summary of the previous state is never served for it.
 func healthVersion(m *Model) string {
-	return fmt.Sprintf("%d|%s|%s|%d", m.UpdatedAt.UnixNano(), m.Status, m.BackfillStatus, m.BackfillDone)
+	pass := int64(0)
+	if m.ScoredPassAt != nil {
+		pass = m.ScoredPassAt.UnixMilli()
+	}
+	return fmt.Sprintf("%d|%s|%s|%d|%d", m.UpdatedAt.UnixNano(), m.Status, m.BackfillStatus, m.BackfillDone, pass)
 }
 
 // errNoStateTable stands in for a summary that cannot be read because the model
@@ -577,7 +583,7 @@ func (m *Manager) readStateSummary(ctx context.Context, mo *Model, now time.Time
 	if mo.ModelType.IsScheduled() {
 		stateTable = m.networkStateReadTable(mo.ID)
 	}
-	q := healthSummarySQL(mo.ModelType, mo.Definition, m.readTableName(mo), stateTable, mo.FractalID, volumeAsOf(mo), recordStart(mo), now)
+	q := healthSummarySQL(mo.ModelType, mo.Definition, m.readTableName(mo), stateTable, mo.FractalID, volumeAsOf(mo), recordStart(mo), now, mo.ScoredPassAt)
 	if q == "" {
 		return nil, fmt.Errorf("no summary for model type %s", mo.ModelType)
 	}

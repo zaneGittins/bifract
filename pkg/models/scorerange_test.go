@@ -42,6 +42,7 @@ func TestScoreRangeWritesPreviewScoresAtRangeEnd(t *testing.T) {
 		statePair("10.1.1.2", "10.0.0.53", 2, []uint32{end - 3600}, []float64{5}, 50000),
 	}})
 
+	before := time.Now()
 	res, err := env.mgr.ScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to})
 	if err != nil {
 		t.Fatal(err)
@@ -82,8 +83,73 @@ func TestScoreRangeWritesPreviewScoresAtRangeEnd(t *testing.T) {
 	if len(env.ch.Executed()) != 0 {
 		t.Errorf("scoring a range ran DDL: %v", env.ch.Executed())
 	}
-	if got, _ := env.db.get(r.id); got.lastScored != nil {
+	got, _ := env.db.get(r.id)
+	if got.lastScored != nil {
 		t.Error("scoring a range moved the live scorer's cursor")
+	}
+	// The range is the model's pass as of its end, so its pairs are the findings.
+	if got.scoredPass == nil || !got.scoredPass.Equal(wantEnd) {
+		t.Errorf("pass %v, want the range end", got.scoredPass)
+	}
+	// Outside a dataset the scores expire like a live pass written now. Either
+	// day is right if the run crossed midnight.
+	if exp := batches[0].Appended[0][20].(time.Time); !exp.Equal(netResultsExpiry(before)) && !exp.Equal(netResultsExpiry(time.Now())) {
+		t.Errorf("expires %v", exp)
+	}
+}
+
+// A dataset's range scores never expire, since no live pass scores its fractal
+// again, and its latest range is its findings even when it ends earlier. In a
+// live fractal a past range never moves the pass back: it is history.
+func TestScoreRangePass(t *testing.T) {
+	end := time.Date(2026, 3, 5, 0, 0, 0, 0, time.UTC)
+	live := time.Now().UTC().Truncate(time.Millisecond)
+	for _, dataset := range []bool{true, false} {
+		env := newEnv(t)
+		if dataset {
+			env.db.fractalEnds = map[string]*time.Time{fracA: &end}
+		}
+		r := seedModel(env, ModelTypeLongConnection, ModelDefinition{}, func(r *modelRow) { r.scoredPass = &live })
+		mo, err := env.mgr.Get(context.Background(), r.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(10)))
+		env.ch.On("AS prev_total", prevalenceRows(map[string]uint64{"203.0.113.5": 1}))
+		env.ch.On("AS ts_list", fakedb.CHResult{Cols: stateCols, Rows: [][]any{
+			statePair("10.1.1.1", "203.0.113.5", 3, []uint32{uint32(end.Unix()) - 7200}, []float64{1}, 28800),
+		}})
+		from, to := end.Add(-48*time.Hour), end
+		if _, err := env.mgr.ScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
+			t.Fatal(err)
+		}
+		exp := env.ch.Batches()[0].Appended[0][20].(time.Time)
+		got, _ := env.db.get(r.id)
+		if dataset && (!exp.Equal(netResultsNever) || !got.scoredPass.Equal(end)) {
+			t.Errorf("dataset: expires %v, pass %v, want never and the range end", exp, got.scoredPass)
+		}
+		if !dataset && (exp.Equal(netResultsNever) || !got.scoredPass.Equal(live)) {
+			t.Errorf("live: expires %v, pass %v, want the live pass kept", exp, got.scoredPass)
+		}
+	}
+}
+
+// A range ending in the current hour scores to the next one, but the pass is
+// never later than now, or it would hide every live pair until then.
+func TestScoreRangePassIsNeverInTheFuture(t *testing.T) {
+	env, mo, r := scoreRangeModel(t, ModelTypeLongConnection)
+	now := time.Now().UTC()
+	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(10)))
+	env.ch.On("AS prev_total", prevalenceRows(map[string]uint64{"203.0.113.5": 1}))
+	env.ch.On("AS ts_list", fakedb.CHResult{Cols: stateCols, Rows: [][]any{
+		statePair("10.1.1.1", "203.0.113.5", 3, []uint32{uint32(now.Unix()) - 60}, []float64{1}, 28800),
+	}})
+	from, to := now.Add(-time.Minute), now
+	if _, err := env.mgr.ScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := env.db.get(r.id); got.scoredPass == nil || got.scoredPass.After(time.Now()) {
+		t.Errorf("pass %v is in the future", got.scoredPass)
 	}
 }
 

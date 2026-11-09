@@ -53,7 +53,7 @@ func (m *Manager) ResetFractal(ctx context.Context, fractalID string) error {
 			`UPDATE analytics_models
 			    SET backfill_status = 'none', backfill_window = '', backfill_total = 0, backfill_done = 0,
 			        backfill_started_at = NULL, backfill_from = NULL, backfill_to = NULL, backfill_error = '',
-			        updated_at = NOW()
+			        scored_pass_at = NULL, updated_at = NOW()
 			  WHERE id = $1`, mo.ID); err != nil {
 			return fmt.Errorf("reset model %s: %w", mo.Name, err)
 		}

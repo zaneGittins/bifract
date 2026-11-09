@@ -90,7 +90,7 @@ func TestGetDataOtherTypes(t *testing.T) {
 	}{
 		{ModelTypeTLSH, ModelDefinition{KeyFields: []string{"tlsh"}}, []string{"GROUP BY digest", "ORDER BY first_seen DESC"}},
 		{ModelTypeVolumeBaseline, ModelDefinition{KeyFields: []string{"host"}}, []string{"ORDER BY abs(z_score) DESC", "entity_val ILIKE '%db%'"}},
-		{ModelTypeBeacon, ModelDefinition{}, []string{"round(final_score,3) AS final_score", "src_ip ILIKE '%db%' OR dst_ip ILIKE '%db%'", "ORDER BY final_score DESC"}},
+		{ModelTypeBeacon, ModelDefinition{}, []string{"round(final_score,3) AS final_score", "toUInt8(0) AS current", "src_ip ILIKE '%db%' OR dst_ip ILIKE '%db%'", "ORDER BY final_score DESC"}},
 	}
 	for _, c := range cases {
 		env := newEnv(t)
@@ -203,8 +203,15 @@ func TestGetStatsOtherTypes(t *testing.T) {
 	env.ch.On("AS total_pairs", fakedb.CHResult{Cols: cols("total_pairs", "UInt64", "flagged", "UInt64", "critical", "UInt64", "max_score", "Float64", "scored_at", "String"),
 		Rows: [][]any{{uint64(9), uint64(3), uint64(1), 0.91, "2026-10-14 00:00:00"}}})
 	st, err = env.mgr.GetStats(ctx, net, fracA)
-	if err != nil || st["findings"] != uint64(3) || st["critical"] != uint64(1) || st["findings_rule"] != "score > 0.5" {
+	if err != nil || st["findings"] != uint64(3) || st["critical"] != uint64(1) || st["findings_rule"] != "score > 0.5 in the latest scoring pass" || st["history_days"] != 30 {
 		t.Errorf("network: %v %v", st, err)
+	}
+
+	// A dataset's scores never expire, so it states no retention.
+	end := time.Now()
+	net.DatasetEnd = &end
+	if st, err = env.mgr.GetStats(ctx, net, fracA); err != nil || st["history_days"] != nil {
+		t.Errorf("dataset network: %v %v", st, err)
 	}
 
 	idx := clusterModel(env, ModelTypeTLSH, ModelDefinition{KeyFields: []string{"tlsh"}})
@@ -324,5 +331,24 @@ func TestReadStateSummaryFromRecordStart(t *testing.T) {
 	}
 	if q := env.ch.Queried(); len(q) != 1 || !strings.Contains(q[0], "toDate(bucket, 'UTC') >= toDate('2026-10-02')") {
 		t.Errorf("summary is not bounded by the record start: %v", q)
+	}
+}
+
+// The findings page filters the raw scores, as the alert and the counts do, and
+// rounds only what it shows: 0.8004 is a finding at 0.8 though it shows as 0.8.
+func TestNetworkFindingsFilterRawScores(t *testing.T) {
+	env := newEnv(t)
+	mo := clusterModel(env, ModelTypeBeacon, ModelDefinition{})
+	env.ch.On("SELECT count() FROM (", fakedb.Count(0))
+	if _, _, err := env.mgr.GetData(context.Background(), mo, fracA, DataQuery{View: DataViewFindings}); err != nil {
+		t.Fatal(err)
+	}
+	page := env.ch.QueriedMatching(" LIMIT 50 OFFSET 0")
+	if len(page) != 1 {
+		t.Fatalf("%v", env.ch.Queried())
+	}
+	// pageSQL's own filter wraps the rounded columns, so it must not carry the rule.
+	if !strings.Contains(page[0], "WHERE final_score > 0.8") || strings.Contains(page[0], "\nWHERE final_score") {
+		t.Errorf("the rule must filter inside the rounding:\n%s", page[0])
 	}
 }

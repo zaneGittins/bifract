@@ -695,8 +695,37 @@ TTL hour + INTERVAL %d DAY
 SETTINGS index_granularity = 8192`, stateTable, netStatePointsType, ttlDays)
 }
 
+// netResultsRetentionDays is how long a pair no pass scores again stays in a
+// network model's history. Older traffic is rescored from raw logs by a preview.
+const netResultsRetentionDays = 30
+
+// Partitioned by expiry day, so the TTL drops whole parts instead of rewriting
+// them. Both are as system.tables renders them.
+const (
+	netResultsPartitionKey = "expires_on"
+	netResultsTTL          = "TTL expires_on SETTINGS ttl_only_drop_parts = 1"
+)
+
+// netResultsNever is the expiry of a row kept for good: the last Date.
+var netResultsNever = time.Date(2149, 6, 6, 0, 0, 0, 0, time.UTC)
+
+// netResultsExpiry is the expiry of a row written at t.
+func netResultsExpiry(t time.Time) time.Time {
+	return t.UTC().Truncate(24*time.Hour).AddDate(0, 0, netResultsRetentionDays)
+}
+
+// netResultsWrittenExpiry is netResultsExpiry, except in a dataset's fractal,
+// whose scores never expire since no live pass scores it again.
+func netResultsWrittenExpiry(dataset bool, t time.Time) time.Time {
+	if dataset {
+		return netResultsNever
+	}
+	return netResultsExpiry(t)
+}
+
 // BuildNetResultsTableDDL returns the ReplacingMergeTree results table DDL. The
-// scorer inserts fresh rows each pass; reads take the latest via FINAL/argMax. The
+// scorer inserts fresh rows each pass; reads take each pair's latest via argMax
+// (see parser.NetLatestSQL), and a pair no pass rescores expires. The
 // modifier columns (prevalence/first_seen/threat_intel) carry the full breakdown so
 // the reviewer can see why a pair scored high; first_seen/threat_intel are 0 unless
 // the model links a first_seen model or a lookup.
@@ -721,10 +750,12 @@ func BuildNetResultsTableDDL(resultsTable string) string {
     total_duration     Float64,
     first_seen         DateTime64(3, 'UTC'),
     last_seen          DateTime64(3, 'UTC'),
-    scored_at          DateTime64(3, 'UTC')
+    scored_at          DateTime64(3, 'UTC'),
+    expires_on         Date
 ) ENGINE = ReplacingMergeTree(scored_at)
+PARTITION BY %s
 ORDER BY (fractal_id, src_ip, dst_ip, dst_port)
-SETTINGS index_granularity = 8192`, resultsTable)
+%s, index_granularity = 8192`, resultsTable, netResultsPartitionKey, netResultsTTL)
 }
 
 // netFieldMap resolves the model's network field map with defaults applied.

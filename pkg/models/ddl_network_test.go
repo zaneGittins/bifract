@@ -25,6 +25,8 @@ func TestNetStateTableTTLFollowsWindow(t *testing.T) {
 	res := BuildNetResultsTableDDL("`r`")
 	mustContain(t, res, "ReplacingMergeTree(scored_at)", "results keep the latest score")
 	mustContain(t, res, "ORDER BY (fractal_id, src_ip, dst_ip, dst_port)", "results key")
+	mustContain(t, res, "PARTITION BY expires_on\n", "rows are kept in parts by their expiry day")
+	mustContain(t, res, "\nTTL expires_on SETTINGS ttl_only_drop_parts = 1, index_granularity = 8192", "history expires a whole part at a time")
 }
 
 // The scorer's read merges the parametric groupArraySorted state, and ClickHouse

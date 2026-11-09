@@ -110,7 +110,7 @@ Network models score their rolling window, so they have no backfill. To score ol
 2. Keep the prefilled range (the fractal's dataset range when it has one) or enter another, up to 90 days.
 3. Click **Score range**.
 
-The range is scored as the editor's preview scores it and the scores are kept, dated at the range's end. For each pair the newest date wins: a live score replaces a range score, and a range that ends later replaces one that ends earlier. Scoring runs within the request, about a minute; if a range is too large it writes nothing and asks for a shorter one.
+The range is scored as the editor's preview scores it and the scores are kept, dated at the range's end. For each pair the newest date wins: a live score replaces a range score, and a range that ends later replaces one that ends earlier. The range counts as a scoring pass as of its end. On a dataset fractal the latest range sets the findings and its scores never expire; elsewhere a range that ends before the latest pass only adds to **History**. Scoring runs within the request, about a minute; if a range is too large it writes nothing and asks for a shorter one.
 
 API: `POST /models/{id}/score-range` with `from` and `to` (RFC 3339).
 
@@ -122,7 +122,7 @@ Click a model name to open it.
 
 ![Model findings](../images/features/models-data.png)
 
-- **Findings** lists what the alert would raise, most unusual first. **All rows** lists everything the model scored, with sorting, search and paging.
+- **Findings** lists what the alert would raise, most unusual first. **All rows** lists everything the model scored, with sorting, search and paging. Beacon and Long Connection call it **History**: see [Current pairs and history](#current-pairs-and-history).
 - The summary line counts findings and, for Rarity and First / Last Seen, what was new this week.
 - Rarity and First / Last Seen add a line of [estimates](#will-this-work-here) under the summary. Rarity with a group adds a sortable **Group days** column (`model_total`).
 - The **Why** column and row details give the facts behind each row (days seen, group coverage, latest against typical volume, regularity). Click a fact that names activity to search for it. **All columns** in the row details shows every stored column.
@@ -132,9 +132,15 @@ Click a model name to open it.
 | Rarity | A value meeting the coverage and share-of-days thresholds | Share of days, then coverage |
 | Volume Baseline | An entity whose `z_score` is above the threshold | `z_score`, highest first |
 | First / Last Seen | An entity first recorded in the last 7 days | Newest first |
-| Beacon, Long Connection | A pair whose score is above the threshold | Score, highest first |
+| Beacon, Long Connection | A pair the latest scoring pass scored above the threshold | Score, highest first |
 
 TLSH Index has no findings. API: `GET /models/{id}/data?view=findings`.
+
+### Current pairs and history
+
+Each scoring pass rescores every pair with traffic in the rolling window. Findings, the alert and `modelLookup()` read only the pairs the latest completed pass scored, so a pair that stops talking drops out once its traffic leaves the window. Its alert history stays on the Alerts page. A window with no traffic at all records no pass, so the last pass's findings stay until traffic returns.
+
+**History** keeps each pair at its newest score, with its **Last scored** time, for 30 days after that score was written. Pairs the latest pass did not score show without a severity mark. Older rows are dropped a whole day at a time. To hunt further back, open **Edit** and preview a custom range of up to 90 days, which scores the raw logs again.
 
 ## Model health
 

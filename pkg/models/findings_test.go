@@ -45,7 +45,7 @@ func TestFindingsRuleMatchesAlert(t *testing.T) {
 			name:  "beacon",
 			mt:    ModelTypeBeacon,
 			def:   ModelDefinition{Beacon: &BeaconParams{ScoreThreshold: 0.7}},
-			where: "final_score > 0.7",
+			where: "final_score > 0.7 AND scored_at >= toDateTime64('2026-03-01 06:00:00.000', 3, 'UTC')",
 			order: "final_score DESC, src_ip, dst_ip, dst_port",
 			alert: "| beacon_score > 0.70",
 		},
@@ -53,14 +53,15 @@ func TestFindingsRuleMatchesAlert(t *testing.T) {
 			name:  "long connection default threshold",
 			mt:    ModelTypeLongConnection,
 			def:   ModelDefinition{},
-			where: "final_score > 0.5",
+			where: "final_score > 0.5 AND scored_at >= toDateTime64('2026-03-01 06:00:00.000', 3, 'UTC')",
 			order: "final_score DESC, src_ip, dst_ip, dst_port",
 			alert: "| longconn_score > 0.50",
 		},
 	}
+	pass := time.Date(2026, 3, 1, 6, 0, 0, 0, time.UTC)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := findingsRuleFor(c.mt, c.def)
+			r := findingsRuleFor(c.mt, c.def, &pass)
 			if r.Where != c.where {
 				t.Errorf("where = %q, want %q", r.Where, c.where)
 			}
@@ -80,7 +81,7 @@ func TestFindingsRuleMatchesAlert(t *testing.T) {
 // The findings count above the table and the rarity flag count share one rule.
 func TestRarityFindingsUsesFlagPredicates(t *testing.T) {
 	def := ModelDefinition{MinSample: 2, Alert: &AlertConfig{CoverageThreshold: 0.9, PercentThreshold: 10}}
-	if got, want := findingsRuleFor(ModelTypeRarity, def).Where, rarityFlagPredicates(def).SQL(); got != want {
+	if got, want := findingsRuleFor(ModelTypeRarity, def, nil).Where, rarityFlagPredicates(def).SQL(); got != want {
 		t.Fatalf("findings %q != flag predicate %q", got, want)
 	}
 }
@@ -96,7 +97,7 @@ func TestFindingsWithoutRule(t *testing.T) {
 		{ModelTypeRarity, ModelDefinition{MinSample: 4, Alert: &AlertConfig{AlertOnNew: true}}},
 		{ModelTypeTLSH, ModelDefinition{KeyFields: []string{"tlsh"}}},
 	} {
-		r := findingsRuleFor(c.mt, c.def)
+		r := findingsRuleFor(c.mt, c.def, nil)
 		if r.Where != "" || r.Text != "" {
 			t.Errorf("%s: want no rule, got %+v", c.mt, r)
 		}
@@ -108,7 +109,7 @@ func TestFindingsWithoutRule(t *testing.T) {
 }
 
 func TestFirstSeenFindingsAreNewToModel(t *testing.T) {
-	r := findingsRuleFor(ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"host"}})
+	r := findingsRuleFor(ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"host"}}, nil)
 	// recorded_at, not first_seen: a backfill seeds history with an old event time
 	// and the epoch recorded_at, and must never read as new.
 	if r.Where != "recorded_at >= now() - INTERVAL 7 DAY" {
@@ -116,6 +117,17 @@ func TestFirstSeenFindingsAreNewToModel(t *testing.T) {
 	}
 	if !strings.HasPrefix(r.Order, "recorded_at DESC") {
 		t.Errorf("newest first, got %q", r.Order)
+	}
+}
+
+// A network model's findings are the pairs its latest completed pass scored
+// above the threshold. Before its first pass it has none, whatever older rows hold.
+func TestNetworkFindingsAreTheCurrentPass(t *testing.T) {
+	if got := findingsRuleFor(ModelTypeBeacon, ModelDefinition{}, nil).Where; got != "final_score > 0.8 AND 0" {
+		t.Errorf("no pass: %q", got)
+	}
+	if got := findingsRuleFor(ModelTypeBeacon, ModelDefinition{}, nil).Text; got != "score > 0.8 in the latest scoring pass" {
+		t.Errorf("text: %q", got)
 	}
 }
 
@@ -134,7 +146,7 @@ func TestDataPlanBreaksTiesOnTheRowKey(t *testing.T) {
 		{ModelTypeTLSH, "first_seen", "first_seen DESC, digest"},
 	}
 	for _, c := range cases {
-		_, order, _ := dataPlan(DataQuery{View: DataViewAll}, map[string]bool{}, c.sort, findingsRuleFor(c.mt, ModelDefinition{}), plainSort)
+		_, order, _ := dataPlan(DataQuery{View: DataViewAll}, map[string]bool{}, c.sort, findingsRuleFor(c.mt, ModelDefinition{}, nil), plainSort)
 		if order != c.want {
 			t.Errorf("%s: order %q, want %q", c.mt, order, c.want)
 		}

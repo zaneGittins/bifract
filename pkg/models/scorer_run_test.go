@@ -105,6 +105,19 @@ func TestScorerLongConnectionEndToEnd(t *testing.T) {
 	if got.lastScored == nil {
 		t.Error("cursor not advanced after a successful pass")
 	}
+	// The pass is recorded as the scored_at its rows carry, which is what the
+	// findings and the lookup compare against.
+	for _, row := range rows {
+		if got.scoredPass == nil || !row[19].(time.Time).Equal(*got.scoredPass) {
+			t.Fatalf("row scored_at %v, recorded pass %v", row[19], got.scoredPass)
+		}
+	}
+	if exp := rows[0][20].(time.Time); !exp.Equal(netResultsExpiry(*got.scoredPass)) {
+		t.Errorf("rows expire %v, want %d days after their pass", exp, netResultsRetentionDays)
+	}
+	if got.scoredPass.Nanosecond()%int(time.Millisecond) != 0 {
+		t.Errorf("pass %v is finer than the column's milliseconds, so its own rows compare below it", got.scoredPass)
+	}
 	for _, q := range env.ch.Queried() {
 		if strings.Contains(q, "FROM "+chModelStateName(r.id)) && !strings.Contains(q, "fractal_id = '"+fracA+"'") {
 			t.Errorf("state read not scoped to the model's fractal: %s", q)
@@ -160,8 +173,10 @@ func TestScorerRespectsCadence(t *testing.T) {
 	}
 }
 
-// Nothing is advanced on a pass that did not complete: with no state yet, a failed
-// read or a failed write, the cursor stays so the next tick retries.
+// Nothing is advanced on a pass that did not complete: on a failed read or write
+// neither the cursor nor the pass moves, so the next tick retries and the
+// findings keep the last complete pass. With no state yet (a model warming up,
+// or a dataset's fractal, whose range scores are its findings) neither moves.
 func TestScorerCursorOnlyAdvancesOnSuccess(t *testing.T) {
 	pair := fakedb.CHResult{Cols: stateCols, Rows: [][]any{
 		statePair("10.1.1.1", "203.0.113.5", 1, []uint32{uint32(time.Now().Unix() - 60)}, []float64{1}, 30000),
@@ -197,8 +212,12 @@ func TestScorerCursorOnlyAdvancesOnSuccess(t *testing.T) {
 			env, e, r := scorerEnv(t, false, ModelTypeLongConnection, ModelDefinition{})
 			script(env)
 			e.scoreCycle()
-			if got, _ := env.db.get(r.id); got.lastScored != nil {
+			got, _ := env.db.get(r.id)
+			if got.lastScored != nil {
 				t.Error("cursor advanced")
+			}
+			if got.scoredPass != nil {
+				t.Error("an incomplete pass was recorded")
 			}
 		})
 	}
@@ -242,8 +261,8 @@ func TestScorerPairCap(t *testing.T) {
 	if total != scorerPerModelPairCap {
 		t.Errorf("%d pairs scored, want the cap %d", total, scorerPerModelPairCap)
 	}
-	if got, _ := env.db.get(r.id); got.lastScored == nil {
-		t.Error("a capped pass must still advance the cursor")
+	if got, _ := env.db.get(r.id); got.lastScored == nil || got.scoredPass == nil {
+		t.Error("a capped pass must still advance the cursor and the pass")
 	}
 }
 
@@ -335,5 +354,21 @@ func TestLayoutChecksAreAdminReads(t *testing.T) {
 		if !admin {
 			t.Errorf("layout read %d not admin", i)
 		}
+	}
+}
+
+// In a dataset's fractal live scores never expire either: once its window moves
+// past the data no pass replaces them.
+func TestScorerKeepsDatasetScores(t *testing.T) {
+	env, e, _ := scorerEnv(t, false, ModelTypeLongConnection, ModelDefinition{})
+	end := time.Now()
+	env.db.fractalEnds = map[string]*time.Time{fracA: &end}
+	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(5)))
+	env.ch.On("groupArraySortedMerge", fakedb.CHResult{Cols: stateCols, Rows: [][]any{
+		statePair("10.1.1.1", "203.0.113.5", 1, []uint32{uint32(time.Now().Unix() - 60)}, []float64{1}, 30000),
+	}})
+	e.scoreCycle()
+	if b := env.ch.Batches(); len(b) != 1 || !b[0].Appended[0][20].(time.Time).Equal(netResultsNever) {
+		t.Errorf("batches: %+v", b)
 	}
 }

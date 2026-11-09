@@ -40,7 +40,7 @@ type modelRow struct {
 	bfFrom, bfTo          *time.Time
 	bfError               string
 
-	watermark, lastScored *time.Time
+	watermark, lastScored, scoredPass *time.Time
 }
 
 // alertRow is the part of an alerts row the model columns subselect.
@@ -184,7 +184,7 @@ func (db *modelDB) columns(r *modelRow) []driver.Value {
 		r.id, r.fractalID, r.prismID, r.name, r.description, r.modelType, []byte(r.definition),
 		r.chTable, r.chMV, r.status, r.alertMode, r.linkedAlertID, r.errorMessage, r.createdBy,
 		r.createdAt, r.updatedAt, r.bfStatus, r.bfWindow, r.bfTotal, r.bfDone,
-		tval(r.bfStartedAt), tval(r.bfFrom), tval(r.bfTo), r.bfError, tval(r.watermark), enabled, last, tval(db.fractalEnds[r.fractalID]),
+		tval(r.bfStartedAt), tval(r.bfFrom), tval(r.bfTo), r.bfError, tval(r.watermark), tval(r.scoredPass), enabled, last, tval(db.fractalEnds[r.fractalID]),
 	}
 }
 
@@ -283,20 +283,20 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 		}
 		return fakedb.PGResult{}, true
 
-	case "SELECT id, name, model_type, definition FROM analytics_models WHERE fractal_id = $1 AND status = 'active'":
+	case "SELECT id, name, model_type, definition, scored_pass_at FROM analytics_models WHERE fractal_id = $1 AND status = 'active'":
 		var res fakedb.PGResult
 		for _, r := range db.sorted(nil) {
 			if r.fractalID == arg(0) && r.status == "active" {
-				res.Rows = append(res.Rows, []driver.Value{r.id, r.name, r.modelType, []byte(r.definition)})
+				res.Rows = append(res.Rows, []driver.Value{r.id, r.name, r.modelType, []byte(r.definition), tval(r.scoredPass)})
 			}
 		}
 		return res, true
-	case "SELECT id, name, model_type, definition, fractal_id FROM analytics_models WHERE fractal_id = ANY($1) AND status = 'active' ORDER BY created_at ASC, id ASC":
+	case "SELECT id, name, model_type, definition, fractal_id, scored_pass_at FROM analytics_models WHERE fractal_id = ANY($1) AND status = 'active' ORDER BY created_at ASC, id ASC":
 		in := setOf(pqArray(args[0]))
 		var res fakedb.PGResult
 		for _, r := range db.sorted(byCreated) {
 			if in[r.fractalID] && r.status == "active" {
-				res.Rows = append(res.Rows, []driver.Value{r.id, r.name, r.modelType, []byte(r.definition), r.fractalID})
+				res.Rows = append(res.Rows, []driver.Value{r.id, r.name, r.modelType, []byte(r.definition), r.fractalID, tval(r.scoredPass)})
 			}
 		}
 		return res, true
@@ -337,11 +337,11 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 		return db.update(row(3), func(r *modelRow) {
 			r.name, r.description, r.definition, r.updatedAt = arg(0), arg(1), arg(2), now
 		}), true
-	case "UPDATE analytics_models SET backfill_status = 'none', backfill_window = '', backfill_total = 0, backfill_done = 0, backfill_started_at = NULL, backfill_from = NULL, backfill_to = NULL, backfill_error = '', updated_at = NOW() WHERE id = $1":
+	case "UPDATE analytics_models SET backfill_status = 'none', backfill_window = '', backfill_total = 0, backfill_done = 0, backfill_started_at = NULL, backfill_from = NULL, backfill_to = NULL, backfill_error = '', scored_pass_at = NULL, updated_at = NOW() WHERE id = $1":
 		if r, ok := db.rows[arg(0)]; ok {
 			return db.update(r, func(r *modelRow) {
 				r.bfStatus, r.bfWindow, r.bfTotal, r.bfDone, r.bfError = "none", "", 0, 0, ""
-				r.bfStartedAt, r.bfFrom, r.bfTo = nil, nil, nil
+				r.bfStartedAt, r.bfFrom, r.bfTo, r.scoredPass = nil, nil, nil, nil
 				r.updatedAt = time.Now()
 			}), true
 		}
@@ -361,11 +361,12 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 			r.bfStatus, r.bfWindow, r.bfTotal, r.bfDone, r.bfStartedAt, r.bfError = "none", "", 0, 0, nil, ""
 			r.bfFrom, r.bfTo = nil, nil
 		}), true
-	case "UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()) WHERE id = $1":
+	case "UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()), scored_pass_at = NULL WHERE id = $1":
 		return db.update(row(0), func(r *modelRow) {
 			if r.watermark == nil {
 				r.watermark = tptr(now)
 			}
+			r.scoredPass = nil
 		}), true
 	case "SELECT id, COALESCE(fractal_id::text,''), model_type, definition, ch_table_name, ch_mv_name FROM analytics_models":
 		var res fakedb.PGResult
@@ -443,16 +444,30 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 	case "UPDATE analytics_models SET state_watermark = $1 WHERE id = $2":
 		return db.update(row(1), func(r *modelRow) { r.watermark = tptr(args[0].(time.Time)) }), true
 
-	case "SELECT id, COALESCE(fractal_id::text,''), model_type, definition, ch_table_name, last_scored_at FROM analytics_models WHERE status = 'active' AND model_type IN ('beacon','long_connection')":
+	case "SELECT id, COALESCE(fractal_id::text,''), model_type, definition, ch_table_name, last_scored_at, COALESCE((SELECT f.default_range_end IS NOT NULL FROM fractals f WHERE f.id = analytics_models.fractal_id), false) FROM analytics_models WHERE status = 'active' AND model_type IN ('beacon','long_connection')":
 		var res fakedb.PGResult
 		for _, r := range db.sorted(nil) {
 			if r.status == "active" && (r.modelType == string(ModelTypeBeacon) || r.modelType == string(ModelTypeLongConnection)) {
-				res.Rows = append(res.Rows, []driver.Value{r.id, r.fractalID, r.modelType, []byte(r.definition), r.chTable, tval(r.lastScored)})
+				res.Rows = append(res.Rows, []driver.Value{r.id, r.fractalID, r.modelType, []byte(r.definition), r.chTable, tval(r.lastScored), db.fractalEnds[r.fractalID] != nil})
 			}
 		}
 		return res, true
-	case "UPDATE analytics_models SET last_scored_at = NOW() WHERE id = $1":
-		return db.update(row(0), func(r *modelRow) { r.lastScored = tptr(now) }), true
+	case "UPDATE analytics_models SET last_scored_at = NOW(), scored_pass_at = $2 WHERE id = $1":
+		return db.update(row(0), func(r *modelRow) { r.lastScored, r.scoredPass = tptr(now), tptr(args[1].(time.Time)) }), true
+	case "UPDATE analytics_models SET scored_pass_at = GREATEST(COALESCE(scored_pass_at, $2), $2) WHERE id = $1":
+		return db.update(row(0), func(r *modelRow) {
+			if p := args[1].(time.Time); r.scoredPass == nil || p.After(*r.scoredPass) {
+				r.scoredPass = tptr(p)
+			}
+		}), true
+	case "UPDATE analytics_models SET scored_pass_at = $2 WHERE id = $1":
+		return db.update(row(0), func(r *modelRow) { r.scoredPass = tptr(args[1].(time.Time)) }), true
+	case "UPDATE analytics_models SET scored_pass_at = $2 WHERE id = $1 AND scored_pass_at IS NULL":
+		return db.update(row(0), func(r *modelRow) {
+			if r.scoredPass == nil {
+				r.scoredPass = tptr(args[1].(time.Time))
+			}
+		}), true
 	}
 	db.unknown = append(db.unknown, n)
 	return fakedb.PGResult{Err: fmt.Errorf("modelDB: unmodelled statement")}, true
@@ -493,6 +508,8 @@ type chFake struct {
 	existing map[string]bool
 	// oldNetState are network state tables in an older layout until dropped.
 	oldNetState map[string]bool
+	// oldNetResults are network results tables in an older layout until recreated.
+	oldNetResults map[string]bool
 }
 
 var (
@@ -523,7 +540,7 @@ func newClusterCH(t testing.TB) *chFake {
 }
 
 func wireCH(client *storage.ClickHouseClient, ch *fakedb.CH) *chFake {
-	f := &chFake{CH: ch, client: client, columns: map[string][]string{}, existing: map[string]bool{}, oldNetState: map[string]bool{}}
+	f := &chFake{CH: ch, client: client, columns: map[string][]string{}, existing: map[string]bool{}, oldNetState: map[string]bool{}, oldNetResults: map[string]bool{}}
 	ch.Respond(f.respond)
 	return f
 }
@@ -569,6 +586,17 @@ func (f *chFake) hasColumn(table, col string) bool {
 
 func (f *chFake) respond(q string, args []any) (fakedb.CHResult, bool) {
 	switch {
+	case strings.Contains(q, "AND (partition_key != "):
+		// A results table in the old layout until the test recreates it.
+		var old uint64
+		f.mu.Lock()
+		for tbl := range f.oldNetResults {
+			if strings.Contains(q, "name = '"+tbl+"'") && len(f.ExecutedMatching("EXCHANGE TABLES `"+tbl+"`")) == 0 {
+				old++
+			}
+		}
+		f.mu.Unlock()
+		return fakedb.Count(old), true
 	case strings.Contains(q, "FROM system.tables WHERE database = currentDatabase() AND name = ?"):
 		if f.tables()[fmt.Sprint(args[0])] {
 			return fakedb.Count(1), true

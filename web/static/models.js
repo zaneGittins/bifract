@@ -565,7 +565,7 @@ const AnalyticsModels = {
         },
         beacon: {
             sortDefault: 'final_score',
-            sortable: ['final_score', 'regularity_score', 'conn_count', 'total_duration', 'prevalence', 'last_seen'],
+            sortable: ['final_score', 'regularity_score', 'conn_count', 'total_duration', 'prevalence', 'last_seen', 'scored_at'],
             score: { col: 'final_score', threshold: d => d.beacon?.score_threshold || 0.8 },
             cols: [
                 { col: 'final_score', label: 'Score', fmt: 'score', align: 'num' },
@@ -577,11 +577,12 @@ const AnalyticsModels = {
                 { col: 'conn_count', label: 'Connections', fmt: 'int', align: 'num' },
                 { col: 'prevalence', label: 'Prevalence', fmt: 'pct1', align: 'num' },
                 { col: 'last_seen', label: 'Last seen', fmt: 'ts' },
+                { col: 'scored_at', label: 'Last scored', fmt: 'ts', when: (d, view) => view === 'all' },
             ],
         },
         long_connection: {
             sortDefault: 'final_score',
-            sortable: ['final_score', 'regularity_score', 'conn_count', 'total_duration', 'prevalence', 'last_seen'],
+            sortable: ['final_score', 'regularity_score', 'conn_count', 'total_duration', 'prevalence', 'last_seen', 'scored_at'],
             score: { col: 'final_score', threshold: d => d.long_conn?.score_threshold || 0.5 },
             cols: [
                 { col: 'final_score', label: 'Score', fmt: 'score', align: 'num' },
@@ -593,6 +594,7 @@ const AnalyticsModels = {
                 { col: 'conn_count', label: 'Connections', fmt: 'int', align: 'num' },
                 { col: 'prevalence', label: 'Prevalence', fmt: 'pct1', align: 'num' },
                 { col: 'last_seen', label: 'Last seen', fmt: 'ts' },
+                { col: 'scored_at', label: 'Last scored', fmt: 'ts', when: (d, view) => view === 'all' },
             ],
         },
     },
@@ -609,7 +611,7 @@ const AnalyticsModels = {
         const def = model?.definition || {};
         const out = [];
         for (const c of spec.cols) {
-            if (c.when && !c.when(def)) continue;
+            if (c.when && !c.when(def, this.viewer.view)) continue;
             if (c.why) {
                 out.push({ why: true, col: '_why', label: 'Why', sortable: false });
                 continue;
@@ -667,6 +669,8 @@ const AnalyticsModels = {
     // at 0.95 coverage and still be 97% of its partition, which no percent
     // threshold admits.
     _meetsOtherConditions(row, model) {
+        // A network pair the latest pass did not score is history, not a finding.
+        if (model && this._isNetworkType(model.model_type)) return Number(row.current) === 1;
         if (!model || model.model_type !== 'rarity') return true;
         const def = model.definition || {};
         const pct = Number(def.alert?.percent_threshold);
@@ -835,6 +839,7 @@ const AnalyticsModels = {
                     <span class="mv-toolbar-spacer"></span>
                     <span class="mv-range" id="modelsDataRange"></span>
                 </div>
+                <div class="mv-note" id="modelsViewNote" hidden></div>
                 <div class="model-data-table-wrap" id="modelsDataTableWrap">
                     <div class="models-empty">Loading...</div>
                 </div>
@@ -1038,7 +1043,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             case 'long_connection': {
                 const scored = st.scored_at && !this._isEpochZero(st.scored_at)
                     ? { label: 'scored ' + (Utils.timeAgo(st.scored_at) || ''), tone: 'muted', title: Utils.timestampTitle(st.scored_at) } : null;
-                return { facts: [lead, { value: n(st.total_pairs), label: 'pairs scored', tone: 'muted' }, scored], rule };
+                return { facts: [lead, { value: n(st.total_pairs), label: 'pairs in history', tone: 'muted' }, scored], rule };
             }
         }
         return { facts: [] };
@@ -1074,7 +1079,17 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
         const allKey = { rarity: 'total_rows', first_seen: 'total_entities', volume_baseline: 'total_entities', beacon: 'total_pairs', long_connection: 'total_pairs' }[v.model.model_type];
         const count = (k, hot) => st && st[k] != null
             ? `<span class="mv-tab-n${hot && Number(st[k]) > 0 ? ' hot' : ''}">${_esc(this._fmtNum(st[k]))}</span>` : '';
-        el.innerHTML = [['findings', 'Findings', count('findings', true)], ['all', 'All rows', count(allKey)]].map(([k, label, c]) =>
+        // A network model keeps each pair's newest score for a while after the
+        // pair stops, so its other tab is history rather than the current pairs.
+        const network = this._isNetworkType(v.model.model_type);
+        const note = document.getElementById('modelsViewNote');
+        if (note) {
+            note.hidden = !(network && v.view === 'all');
+            const days = v.stats?.history_days;
+            const kept = days ? `, kept for ${days} days after it was written` : '';
+            note.textContent = note.hidden ? '' : `Each pair at its newest score${kept}. Findings hold only the pairs the latest pass scored. To score older traffic, open Edit and preview a custom range.`;
+        }
+        el.innerHTML = [['findings', 'Findings', count('findings', true)], ['all', network ? 'History' : 'All rows', count(allKey)]].map(([k, label, c]) =>
             `<button type="button" role="tab" class="mv-tab${v.view === k ? ' active' : ''}" aria-selected="${v.view === k}" data-view="${k}">${label}${c}</button>`
         ).join('');
         el.querySelectorAll('.mv-tab').forEach(b => b.addEventListener('click', () => this._setView(b.dataset.view)));

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"bifract/pkg/parser"
 )
 
 // Data views: every scored row, or only the rows the model's alert would raise.
@@ -44,7 +46,8 @@ type findingsRule struct {
 	Tiebreak string
 }
 
-func findingsRuleFor(mt ModelType, def ModelDefinition) findingsRule {
+// pass is a network model's latest completed scoring pass, nil before its first.
+func findingsRuleFor(mt ModelType, def ModelDefinition, pass *time.Time) findingsRule {
 	switch mt {
 	case ModelTypeRarity:
 		r := findingsRule{Order: "percent ASC, coverage DESC, partition_val, value_val", Tiebreak: "percent ASC, partition_val, value_val"}
@@ -68,11 +71,13 @@ func findingsRuleFor(mt ModelType, def ModelDefinition) findingsRule {
 			Tiebreak: "entity_key",
 		}
 	case ModelTypeBeacon, ModelTypeLongConnection:
+		// Only pairs still scored count: one that went quiet keeps its last row as
+		// history until it expires.
 		t := networkScoreThreshold(def, mt)
 		return findingsRule{
-			Where:    fmt.Sprintf("final_score > %g", t),
+			Where:    fmt.Sprintf("final_score > %g AND %s", t, parser.NetCurrentPredicate(pass, "")),
 			Order:    "final_score DESC, src_ip, dst_ip, dst_port",
-			Text:     fmt.Sprintf("score > %g", t),
+			Text:     fmt.Sprintf("score > %g in the latest scoring pass", t),
 			Tiebreak: "src_ip, dst_ip, dst_port",
 		}
 	case ModelTypeTLSH:

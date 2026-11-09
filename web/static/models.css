@@ -543,6 +543,14 @@
 
 .mv-toolbar-spacer { flex: 1; }
 
+.mv-note {
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border-color);
+}
+.mv-note[hidden] { display: none; }
+
 .mv-range {
     font-size: 12px;
     color: var(--text-muted);

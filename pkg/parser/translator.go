@@ -27,6 +27,9 @@ type AnalyticsModelInfo struct {
 	// subquery over a Distributed table inside a query that already reads
 	// logs_distributed is rejected outright (distributed_product_mode='deny').
 	Distributed bool
+	// ScoredPassAt is a network model's latest completed scoring pass, nil before
+	// its first. Its lookup reads only the pairs scored since.
+	ScoredPassAt *time.Time
 }
 
 type QueryOptions struct {

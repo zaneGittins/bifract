@@ -517,6 +517,29 @@ func TestListModelInfos(t *testing.T) {
 	}
 }
 
+// A network model's lookup is bounded by its latest pass, so the pass reaches
+// the parser with the rest of the model.
+func TestListModelInfosCarryTheScoringPass(t *testing.T) {
+	env := newEnv(t)
+	pass := time.Date(2026, 10, 1, 6, 0, 0, 0, time.UTC)
+	seedModel(env, ModelTypeBeacon, ModelDefinition{}, func(r *modelRow) { r.name, r.scoredPass = "b", &pass })
+	for name, list := range map[string]func() (map[string]ModelInfo, error){
+		"fractal": func() (map[string]ModelInfo, error) { return env.mgr.ListModelInfos(context.Background(), fracA) },
+		"prism": func() (map[string]ModelInfo, error) {
+			return env.mgr.ListModelInfosForFractals(context.Background(), []string{fracA})
+		},
+	} {
+		infos, err := list()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := ParserInfos(infos)["b"].ScoredPassAt
+		if got == nil || !got.Equal(pass) {
+			t.Errorf("%s: pass %v, want %v", name, got, pass)
+		}
+	}
+}
+
 // Across a prism's member fractals the oldest same-named model wins, every time,
 // and carries the fractal that owns it.
 func TestListModelInfosForFractalsOldestWins(t *testing.T) {
@@ -671,6 +694,91 @@ func TestReconcileCHObjectsRebuildsOldNetState(t *testing.T) {
 	}
 }
 
+// Startup moves a network results table from before its expiry partitions,
+// which its TTL drops whole, into a staged table holding each pair's newest row
+// and swaps them. A dataset's rows are kept for good, a live model's expire as
+// if just written. A current table is left alone.
+func TestReconcileCHObjectsRepartitionsNetResults(t *testing.T) {
+	for _, c := range []struct {
+		name             string
+		cluster, dataset bool
+		expires          string
+	}{
+		{"live", false, false, netResultsExpiry(time.Now()).Format("2006-01-02")},
+		{"live on a cluster", true, false, netResultsExpiry(time.Now()).Format("2006-01-02")},
+		{"dataset", false, true, "2149-06-06"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env := newEnv(t)
+			if c.cluster {
+				env = newClusterEnv(t)
+			}
+			if c.dataset {
+				end := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+				env.db.fractalEnds = map[string]*time.Time{fracA: &end}
+			}
+			r := seedModel(env, ModelTypeBeacon, ModelDefinition{}, nil)
+			current := seedModel(env, ModelTypeBeacon, ModelDefinition{}, nil)
+			env.ch.existing[r.chTable], env.ch.existing[current.chTable] = true, true
+			env.ch.oldNetResults[r.chTable] = true
+			stage := r.chTable + "_v2"
+
+			env.mgr.ReconcileCHObjects(context.Background())
+			var steps []string
+			for _, s := range env.ch.Executed() {
+				if strings.Contains(s, "`"+stage+"`") {
+					steps = append(steps, s)
+				}
+			}
+			want := []string{"DROP TABLE IF EXISTS `" + stage + "`", "CREATE TABLE IF NOT EXISTS `" + stage + "`",
+				"INSERT INTO `" + stage + "` (fractal_id, src_ip", "EXCHANGE TABLES `" + r.chTable + "` AND `" + stage + "`", "DROP TABLE IF EXISTS `" + stage + "`"}
+			if len(steps) != len(want) {
+				t.Fatalf("steps %v", steps)
+			}
+			for i, w := range want {
+				if !strings.HasPrefix(steps[i], w) {
+					t.Errorf("step %d is %q, want %q", i, steps[i], w)
+				}
+			}
+			if !strings.Contains(steps[1], "PARTITION BY expires_on") || !strings.Contains(steps[2], "toDate('"+c.expires+"')") {
+				t.Errorf("stage or copy: %s\n%s", steps[1], steps[2])
+			}
+			if c.cluster && (!strings.Contains(steps[1], "ON CLUSTER") || !strings.Contains(steps[3], "ON CLUSTER") || !strings.Contains(steps[2], "model_dist_")) {
+				t.Errorf("cluster steps: %v", steps)
+			}
+			if n := len(env.ch.ExecutedMatching(current.chTable + "_v2")); n != 0 {
+				t.Errorf("a current results table was moved: %v", env.ch.Executed())
+			}
+			before := len(steps)
+			env.mgr.ReconcileCHObjects(context.Background())
+			if n := len(env.ch.ExecutedMatching("`" + stage + "`")); n != before {
+				t.Errorf("not idempotent: %d statements on %s", n, stage)
+			}
+		})
+	}
+}
+
+// A model scored before passes were recorded takes its newest scores as its
+// pass at startup, so its findings hold until its next pass; one with a pass
+// keeps it.
+func TestReconcileCHObjectsSeedsTheScoringPass(t *testing.T) {
+	env := newEnv(t)
+	newest := time.Date(2026, 10, 1, 6, 0, 0, 123_000_000, time.UTC)
+	kept := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	r := seedModel(env, ModelTypeBeacon, ModelDefinition{}, nil)
+	has := seedModel(env, ModelTypeBeacon, ModelDefinition{}, func(r *modelRow) { r.scoredPass = &kept })
+	env.ch.existing[r.chTable], env.ch.existing[has.chTable] = true, true
+	env.ch.On("toUnixTimestamp64Milli(max(scored_at))", fakedb.One("ms", "UInt64", uint64(newest.UnixMilli())))
+
+	env.mgr.ReconcileCHObjects(context.Background())
+	if got, _ := env.db.get(r.id); got.scoredPass == nil || !got.scoredPass.Equal(newest) {
+		t.Errorf("seeded pass %v, want %v", got.scoredPass, newest)
+	}
+	if got, _ := env.db.get(has.id); !got.scoredPass.Equal(kept) {
+		t.Errorf("a recorded pass was replaced: %v", got.scoredPass)
+	}
+}
+
 // On a cluster, startup reissues every model's Distributed companions ON CLUSTER,
 // including those of a model whose table the probe found: an older release created
 // them on one node only, and the probe goes through the load-balanced connection,
@@ -756,7 +864,7 @@ func TestReconcileCHObjectsDeletesBlankFirstSeenEntity(t *testing.T) {
 	}
 }
 
-// Single node has no companions: a model whose table exists sends nothing.
+// Single node has no companions: a current model whose table exists sends nothing.
 func TestReconcileCHObjectsSingleNodeSendsNoCompanions(t *testing.T) {
 	env := newEnv(t)
 	r := seedModel(env, ModelTypeBeacon, ModelDefinition{Window: "7d"}, nil)
@@ -885,5 +993,19 @@ func TestRowCount(t *testing.T) {
 	env.ch.On("`model_bad`", fakedb.CHResult{Err: errors.New("unknown table")})
 	if _, err := env.mgr.RowCount(context.Background(), "model_bad"); err == nil {
 		t.Error("error swallowed")
+	}
+}
+
+// Rebuilding a network model empties its results, so it has no pass until the
+// next: a kept one would hide every score a later, earlier-ending range writes.
+func TestRebuildClearsTheScoringPass(t *testing.T) {
+	env := newEnv(t)
+	pass := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	r := seedModel(env, ModelTypeBeacon, ModelDefinition{Window: "1d"}, func(r *modelRow) { r.scoredPass = &pass })
+	if _, err := env.mgr.Update(context.Background(), r.id, UpdateRequest{Name: "m", Definition: ModelDefinition{Window: "7d"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := env.db.get(r.id); got.scoredPass != nil {
+		t.Errorf("pass %v kept across a rebuild", got.scoredPass)
 	}
 }
