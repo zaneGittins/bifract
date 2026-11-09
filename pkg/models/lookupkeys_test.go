@@ -79,7 +79,7 @@ func TestGenerateQueryRarityWithoutGroup(t *testing.T) {
 // The query paths hand modelLookup() the keys a model was built on, so it can
 // refuse a lookup naming a different number of fields.
 func TestParserInfosCarryLookupKeys(t *testing.T) {
-	infos := map[string]ModelInfo{"m": newModelInfo("id1", ModelTypeRarity, ModelDefinition{ValueKey: "v", MinSample: 3}, "f1", "model_id1", false)}
+	infos := map[string]ModelInfo{"m": newModelInfo("id1", ModelTypeRarity, ModelDefinition{ValueKey: "v", MinSample: 3}, "f1", "model_id1", false, nil)}
 	got := ParserInfos(infos)["m"]
 	if !reflect.DeepEqual(got.Keys, []string{"v"}) || got.ModelType != "rarity" || got.MinSample != 3 || got.TableName != "model_id1" {
 		t.Errorf("unexpected parser info %+v", got)

@@ -445,6 +445,10 @@ type Model struct {
 	// been maintained. Nil means it has never run.
 	StateWatermark *time.Time `json:"state_watermark,omitempty"`
 
+	// ScoredPassAt is a network model's latest completed scoring pass, nil before
+	// its first. Its findings are the pairs scored since; older rows are history.
+	ScoredPassAt *time.Time `json:"scored_pass_at,omitempty"`
+
 	// SourceQuery is the derived BQL source query (filter + extraction) for the
 	// model builder editor. It is computed on read, never persisted.
 	SourceQuery string `json:"source_query,omitempty"`
@@ -502,19 +506,22 @@ type ModelInfo struct {
 	// Distributed is true when TableName is the cluster-mode Distributed table, which
 	// a query joining against it must reach with GLOBAL.
 	Distributed bool
+	// ScoredPassAt is a network model's latest completed scoring pass.
+	ScoredPassAt *time.Time
 }
 
-func newModelInfo(id string, mt ModelType, def ModelDefinition, fractalID, tableName string, distributed bool) ModelInfo {
+func newModelInfo(id string, mt ModelType, def ModelDefinition, fractalID, tableName string, distributed bool, pass *time.Time) ModelInfo {
 	return ModelInfo{
-		ID:          id,
-		TableName:   tableName,
-		ModelType:   mt,
-		Keys:        def.LookupKeys(mt),
-		MinSample:   def.MinSample,
-		TimeBucket:  def.TimeBucket,
-		HistoryDays: def.HistoryDaysFor(mt),
-		FractalID:   fractalID,
-		Distributed: distributed,
+		ScoredPassAt: pass,
+		ID:           id,
+		TableName:    tableName,
+		ModelType:    mt,
+		Keys:         def.LookupKeys(mt),
+		MinSample:    def.MinSample,
+		TimeBucket:   def.TimeBucket,
+		HistoryDays:  def.HistoryDaysFor(mt),
+		FractalID:    fractalID,
+		Distributed:  distributed,
 	}
 }
 
@@ -523,15 +530,16 @@ func ParserInfos(infos map[string]ModelInfo) map[string]parser.AnalyticsModelInf
 	out := make(map[string]parser.AnalyticsModelInfo, len(infos))
 	for name, mi := range infos {
 		out[name] = parser.AnalyticsModelInfo{
-			ID:          mi.ID,
-			TableName:   mi.TableName,
-			ModelType:   string(mi.ModelType),
-			Keys:        mi.Keys,
-			MinSample:   mi.MinSample,
-			TimeBucket:  mi.TimeBucket,
-			HistoryDays: mi.HistoryDays,
-			FractalID:   mi.FractalID,
-			Distributed: mi.Distributed,
+			ID:           mi.ID,
+			TableName:    mi.TableName,
+			ModelType:    string(mi.ModelType),
+			Keys:         mi.Keys,
+			MinSample:    mi.MinSample,
+			TimeBucket:   mi.TimeBucket,
+			HistoryDays:  mi.HistoryDays,
+			FractalID:    mi.FractalID,
+			Distributed:  mi.Distributed,
+			ScoredPassAt: mi.ScoredPassAt,
 		}
 	}
 	return out

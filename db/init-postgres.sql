@@ -2138,6 +2138,8 @@ UPDATE analytics_models
    AND backfill_window IN ('24h', '7d', '30d', '90d');
 -- Scheduled (network) models: the background scorer's per-model rescore cursor.
 ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS last_scored_at      TIMESTAMPTZ;
+-- The latest completed scoring pass; findings read only the pairs scored since.
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS scored_pass_at      TIMESTAMPTZ;
 -- How far into logs.ingest_timestamp a model's state has been maintained. The
 -- scheduled maintainer reads (state_watermark, cutoff] each cycle; NULL means the
 -- model has never run and starts from its creation time.

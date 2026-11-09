@@ -100,10 +100,11 @@ func (e *testEnv) answerPG(q string, args []driver.Value) (fakedb.PGResult, bool
 		withOwner := strings.Contains(q, "fractal_id = ANY")
 		var rows [][]driver.Value
 		for _, r := range e.modelRows {
+			// Both end with scored_pass_at, never set here.
 			if withOwner {
-				rows = append(rows, r)
+				rows = append(rows, append(append([]driver.Value{}, r...), nil))
 			} else {
-				rows = append(rows, r[:4])
+				rows = append(rows, append(append([]driver.Value{}, r[:4]...), nil))
 			}
 		}
 		return fakedb.RowsOf(rows...), true

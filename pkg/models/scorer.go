@@ -148,6 +148,8 @@ type scheduledModelRow struct {
 	def        ModelDefinition
 	tableName  string
 	lastScored *time.Time
+	// dataset is a dataset's fractal, whose scores never expire.
+	dataset bool
 }
 
 // rescoreInterval returns the model's per-model cadence, derived from its window.
@@ -232,7 +234,8 @@ func (e *ScorerEngine) scoreCycle() {
 // listScheduledModels returns all active network models with their rescore cursor.
 func (e *ScorerEngine) listScheduledModels(ctx context.Context) ([]scheduledModelRow, error) {
 	rows, err := e.pg.Query(ctx,
-		`SELECT id, COALESCE(fractal_id::text,''), model_type, definition, ch_table_name, last_scored_at
+		`SELECT id, COALESCE(fractal_id::text,''), model_type, definition, ch_table_name, last_scored_at,
+		        COALESCE((SELECT f.default_range_end IS NOT NULL FROM fractals f WHERE f.id = analytics_models.fractal_id), false)
 		 FROM analytics_models
 		 WHERE status = 'active' AND model_type IN ('beacon','long_connection')`)
 	if err != nil {
@@ -245,14 +248,15 @@ func (e *ScorerEngine) listScheduledModels(ctx context.Context) ([]scheduledMode
 		var id, fid, mt, tbl string
 		var defRaw []byte
 		var last *time.Time
-		if err := rows.Scan(&id, &fid, &mt, &defRaw, &tbl, &last); err != nil {
+		var dataset bool
+		if err := rows.Scan(&id, &fid, &mt, &defRaw, &tbl, &last, &dataset); err != nil {
 			return nil, err
 		}
 		var def ModelDefinition
 		_ = json.Unmarshal(defRaw, &def)
 		out = append(out, scheduledModelRow{
 			id: id, fractalID: fid, modelType: ModelType(mt), def: def,
-			tableName: tbl, lastScored: last,
+			tableName: tbl, lastScored: last, dataset: dataset,
 		})
 	}
 	return out, rows.Err()
@@ -264,7 +268,8 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 	windowDays := m.def.WindowDays()
 	windowSecs := int64(windowDays) * 86400
 	stateRead := e.mgr.networkStateReadTable(m.id)
-	now := time.Now()
+	// The pass's rows and its record share this instant, at the column's precision.
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	win := netWindowAt(now, windowDays)
 	readCtx := scoringReadContext(ctx, m.fractalID)
 
@@ -275,7 +280,8 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 		return fmt.Errorf("network size: %w", err)
 	}
 	if networkSize == 0 {
-		return nil // warming up: no state yet
+		// Warming up, or a dataset's fractal, whose range scores must stay current.
+		return nil
 	}
 	prevalence, err := e.readPrevalence(readCtx, stateRead, m.fractalID, win)
 	if err != nil {
@@ -300,7 +306,7 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 			return errPairCapReached
 		}
 		count++
-		buf.add(sc.score(pairFromRow(row)).row(m.fractalID, now))
+		buf.add(sc.score(pairFromRow(row)).row(m.fractalID, now, netResultsWrittenExpiry(m.dataset, now)))
 		if buf.len() >= scorerResultFlushRows {
 			return buf.flush(ctx)
 		}
@@ -317,9 +323,10 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 		log.Printf("[Model Scorer] model %s: pair cap %d reached; results truncated", m.id, scorerPerModelPairCap)
 	}
 
-	// Advance the cursor only after a successful pass.
+	// Advance the cursor and the pass only after a successful pass, so a partial
+	// one never narrows the findings.
 	if _, err := e.pg.Exec(ctx,
-		`UPDATE analytics_models SET last_scored_at = NOW() WHERE id = $1`, m.id); err != nil {
+		`UPDATE analytics_models SET last_scored_at = NOW(), scored_pass_at = $2 WHERE id = $1`, m.id, now); err != nil {
 		return fmt.Errorf("update cursor: %w", err)
 	}
 	return nil
@@ -390,8 +397,9 @@ func (sc pairScorer) score(p PairAgg) netScored {
 }
 
 // row is the results-table row for a scored pair.
-func (s netScored) row(fractalID string, scoredAt time.Time) resultRow {
+func (s netScored) row(fractalID string, scoredAt, expiresOn time.Time) resultRow {
 	return resultRow{
+		expiresOn: expiresOn,
 		fractalID: fractalID, src: s.p.Src, dst: s.p.Dst, port: s.p.Port,
 		rs: s.rs, prevalence: round3(s.prevRatio), prevalenceTotal: s.prevTotal,
 		mods: s.mods, final: s.final, connCount: s.p.Count, totalDuration: s.p.TotalDuration,
@@ -412,6 +420,7 @@ type resultRow struct {
 	totalDuration             float64
 	firstSeen, lastSeen       time.Time
 	scoredAt                  time.Time
+	expiresOn                 time.Time
 }
 
 type resultBuffer struct {
@@ -436,7 +445,7 @@ func (b *resultBuffer) flush(ctx context.Context) error {
 		"INSERT INTO `%s` (fractal_id, src_ip, dst_ip, dst_port, "+
 			"regularity_score, ts_score, ds_score, dur_score, hist_score, "+
 			"prevalence, prevalence_total, prevalence_score, first_seen_score, threat_intel_score, "+
-			"final_score, conn_count, total_duration, first_seen, last_seen, scored_at)", b.table))
+			"final_score, conn_count, total_duration, first_seen, last_seen, scored_at, expires_on)", b.table))
 	if err != nil {
 		return err
 	}
@@ -445,7 +454,7 @@ func (b *resultBuffer) flush(ctx context.Context) error {
 			r.fractalID, r.src, r.dst, r.port,
 			r.rs.Score, r.rs.TsScore, r.rs.DsScore, r.rs.DurScore, r.rs.HistScore,
 			r.prevalence, r.prevalenceTotal, r.mods.PrevalenceScore, r.mods.FirstSeenScore, r.mods.ThreatIntelScore,
-			r.final, r.connCount, r.totalDuration, r.firstSeen, r.lastSeen, r.scoredAt,
+			r.final, r.connCount, r.totalDuration, r.firstSeen, r.lastSeen, r.scoredAt, r.expiresOn,
 		); err != nil {
 			return err
 		}

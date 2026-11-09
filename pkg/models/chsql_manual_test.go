@@ -290,7 +290,7 @@ func TestCHNetHealthSummary(t *testing.T) {
 	d.netState(ModelDefinition{}, 1)
 	d.exec(BuildNetResultsTableDDL("r"))
 	for _, mt := range []ModelType{ModelTypeBeacon, ModelTypeLongConnection} {
-		rows := d.rows(healthSummarySQL(mt, ModelDefinition{}, "r", "s", "f1", "", time.Time{}, time.Now()))
+		rows := d.rows(healthSummarySQL(mt, ModelDefinition{}, "r", "s", "f1", "", time.Time{}, time.Now(), nil))
 		if len(rows) != 1 {
 			t.Fatalf("%s: %v", mt, rows)
 		}
@@ -355,7 +355,7 @@ SELECT 'f1', v, ` + day + `, 1 FROM (` + pairs + `)`, 9},
 				t.Fatal(err)
 			}
 			d.exec(ddl, c.insert)
-			rows := d.rows(healthSummarySQL(c.mt, c.def, "t", "", "f1", "", from, time.Now()))
+			rows := d.rows(healthSummarySQL(c.mt, c.def, "t", "", "f1", "", from, time.Now(), nil))
 			sum := parseStateSummary(c.mt, rows)
 			if got := historySpan(sum.oldest, sum.newest, c.mt); got != c.span {
 				t.Errorf("history %d (%v to %v), want %d", got, sum.oldest, sum.newest, c.span)

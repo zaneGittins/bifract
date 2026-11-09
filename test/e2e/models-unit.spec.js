@@ -289,3 +289,20 @@ test('Group days is a sortable column on a grouped rarity model only', () => {
   expect(col).toMatchObject({ label: 'Group days', sortable: true });
   expect(M._viewColumns({ model_type: 'rarity', definition: {} }).some(c => c.col === 'model_total')).toBe(false);
 });
+
+test('a network pair the latest pass did not score is history, not a finding', () => {
+  const M = load();
+  for (const model_type of ['beacon', 'long_connection']) {
+    expect(M._meetsOtherConditions({ current: 1 }, { model_type })).toBe(true);
+    expect(M._meetsOtherConditions({ current: 0 }, { model_type })).toBe(false);
+  }
+});
+
+test('a network model shows when each pair was last scored in its history only', () => {
+  const M = load();
+  const model = { model_type: 'beacon', definition: {} };
+  M.viewer = { view: 'all' };
+  expect(M._viewColumns(model).some(c => c.col === 'scored_at' && c.sortable)).toBe(true);
+  M.viewer = { view: 'findings' };
+  expect(M._viewColumns(model).some(c => c.col === 'scored_at')).toBe(false);
+});

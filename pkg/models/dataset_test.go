@@ -32,7 +32,8 @@ func TestResetFractalEmptiesItsModels(t *testing.T) {
 	done := seedModel(env, ModelTypeRarity, rarityDef, func(r *modelRow) {
 		r.bfStatus, r.bfDone, r.bfTotal, r.watermark, r.updatedAt = "completed", 8, 8, &wm, old
 	})
-	net := seedModel(env, ModelTypeBeacon, ModelDefinition{}, func(r *modelRow) { r.name = "net" })
+	pass := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	net := seedModel(env, ModelTypeBeacon, ModelDefinition{}, func(r *modelRow) { r.name, r.scoredPass = "net", &pass })
 	broken := seedModel(env, ModelTypeRarity, rarityDef, func(r *modelRow) { r.name, r.status = "broken", "error" })
 	other := seedIn(env, fracB, "other", ModelTypeRarity, rarityDef)
 	running, cancel := context.WithCancel(context.Background())
@@ -62,6 +63,11 @@ func TestResetFractalEmptiesItsModels(t *testing.T) {
 	}
 	if !got.updatedAt.After(old) {
 		t.Error("updated_at must move, or a Score range running across the reset writes old scores")
+	}
+	// The emptied table has no pass, so the next import's range becomes it,
+	// even one that ends before the last.
+	if got, _ := env.db.get(net.id); got.scoredPass != nil {
+		t.Errorf("pass %v kept after the reset", got.scoredPass)
 	}
 }
 

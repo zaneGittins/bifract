@@ -38299,6 +38299,10 @@
           "prism_id": {
             "type": "string"
           },
+          "scored_pass_at": {
+            "type": "string",
+            "format": "date-time"
+          },
           "source_query": {
             "type": "string"
           },
@@ -38500,6 +38504,10 @@
           },
           "row_count": {
             "type": "integer"
+          },
+          "scored_pass_at": {
+            "type": "string",
+            "format": "date-time"
           },
           "source_query": {
             "type": "string"

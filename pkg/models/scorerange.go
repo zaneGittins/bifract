@@ -100,7 +100,8 @@ type ScoreRangeResult struct {
 // how a fractal holding an imported or replayed dataset gets scores: the
 // scheduled scorer reads only the rolling state, which covers recent ingest.
 // The state table and the scorer's cursor are left alone. Per pair the newest
-// scored_at wins, so a live score outranks any range score.
+// scored_at wins, so a live score outranks any range score. In a dataset's
+// fractal the scores never expire.
 //
 // It runs within the caller's deadline and writes every score in one insert
 // once the read has finished, so a run cut short writes nothing.
@@ -147,13 +148,14 @@ func (m *Manager) ScoreRange(ctx context.Context, model *Model, req ScoreRangeRe
 	defer cancel()
 
 	res := &ScoreRangeResult{Start: w.Start, End: w.End}
+	expires := netResultsWrittenExpiry(model.DatasetEnd != nil, time.Now())
 	var rows []resultRow
 	pass, err := m.scoreNetRaw(ctx, model.FractalID, model.ModelType, def, w, rng.End, m.bfCfg.settings(max(1, int(budget/time.Second))), func(s netScored) error {
 		if len(rows) >= scorerPerModelPairCap {
 			res.Truncated = true
 			return errPairCapReached
 		}
-		rows = append(rows, s.row(model.FractalID, w.End))
+		rows = append(rows, s.row(model.FractalID, w.End, expires))
 		return nil
 	})
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -175,6 +177,20 @@ func (m *Manager) ScoreRange(ctx context.Context, model *Model, req ScoreRangeRe
 	buf.rows = rows
 	if err := buf.flush(ctx); err != nil {
 		return nil, fmt.Errorf("write scores: %w", err)
+	}
+	// The range is a pass as of its end, never later than now. A dataset's is its
+	// findings; in a live fractal it never moves the pass back, so a past range
+	// lands in history.
+	passAt := w.End
+	if now := time.Now().UTC().Truncate(time.Millisecond); passAt.After(now) {
+		passAt = now
+	}
+	q := `UPDATE analytics_models SET scored_pass_at = GREATEST(COALESCE(scored_pass_at, $2), $2) WHERE id = $1`
+	if model.DatasetEnd != nil {
+		q = `UPDATE analytics_models SET scored_pass_at = $2 WHERE id = $1`
+	}
+	if _, err := m.pg.Exec(ctx, q, model.ID, passAt); err != nil {
+		return nil, fmt.Errorf("record pass: %w", err)
 	}
 	return res, nil
 }

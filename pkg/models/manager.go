@@ -142,7 +142,7 @@ func (m *Manager) Get(ctx context.Context, id string) (*Model, error) {
 // Used by the query handler and alert engine to populate QueryOptions.Models.
 func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[string]ModelInfo, error) {
 	rows, err := m.pg.Query(ctx,
-		`SELECT id, name, model_type, definition FROM analytics_models
+		`SELECT id, name, model_type, definition, scored_pass_at FROM analytics_models
 		 WHERE fractal_id = $1 AND status = 'active'`, fractalID)
 	if err != nil {
 		return nil, fmt.Errorf("list model infos: %w", err)
@@ -153,7 +153,8 @@ func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[str
 	for rows.Next() {
 		var id, name, modelType string
 		var defRaw []byte
-		if err := rows.Scan(&id, &name, &modelType, &defRaw); err != nil {
+		var pass *time.Time
+		if err := rows.Scan(&id, &name, &modelType, &defRaw, &pass); err != nil {
 			return nil, fmt.Errorf("scan model info: %w", err)
 		}
 		var def ModelDefinition
@@ -164,7 +165,7 @@ func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[str
 		if distributed {
 			tableName = chModelDistName(id)
 		}
-		result[name] = newModelInfo(id, ModelType(modelType), def, fractalID, tableName, distributed)
+		result[name] = newModelInfo(id, ModelType(modelType), def, fractalID, tableName, distributed, pass)
 	}
 	return result, rows.Err()
 }
@@ -184,7 +185,7 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 		return result, nil
 	}
 	rows, err := m.pg.Query(ctx,
-		`SELECT id, name, model_type, definition, fractal_id FROM analytics_models
+		`SELECT id, name, model_type, definition, fractal_id, scored_pass_at FROM analytics_models
 		 WHERE fractal_id = ANY($1) AND status = 'active'
 		 ORDER BY created_at ASC, id ASC`, pq.Array(fractalIDs))
 	if err != nil {
@@ -195,7 +196,8 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 	for rows.Next() {
 		var id, name, modelType, ownerFractalID string
 		var defRaw []byte
-		if err := rows.Scan(&id, &name, &modelType, &defRaw, &ownerFractalID); err != nil {
+		var pass *time.Time
+		if err := rows.Scan(&id, &name, &modelType, &defRaw, &ownerFractalID, &pass); err != nil {
 			return nil, fmt.Errorf("scan model info: %w", err)
 		}
 		var def ModelDefinition
@@ -210,7 +212,7 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 		if distributed {
 			tableName = chModelDistName(id)
 		}
-		result[name] = newModelInfo(id, ModelType(modelType), def, ownerFractalID, tableName, distributed)
+		result[name] = newModelInfo(id, ModelType(modelType), def, ownerFractalID, tableName, distributed, pass)
 	}
 	return result, rows.Err()
 }
@@ -760,6 +762,76 @@ func (m *Manager) ensureNetStateLayout(ctx context.Context, id string, windowDay
 	return nil
 }
 
+// netResultsLayoutOK reports whether every copy of a network results table is
+// partitioned by expiry with the TTL that drops whole parts.
+func (m *Manager) netResultsLayoutOK(ctx context.Context, table string) (bool, error) {
+	q := fmt.Sprintf(`SELECT count() FROM %s
+WHERE database = currentDatabase() AND name = '%s'
+  AND (partition_key != '%s' OR position(engine_full, '%s') = 0)`,
+		m.systemTable("tables"), storage.EscCHStr(table), storage.EscCHStr(netResultsPartitionKey), storage.EscCHStr(netResultsTTL))
+	var wrong uint64
+	if err := m.ch.QueryRow(storage.AdminReadContext(ctx), q).Scan(&wrong); err != nil {
+		return false, err
+	}
+	return wrong == 0, nil
+}
+
+// ensureNetResultsLayout moves a network results table from before its expiry
+// partitions, which ClickHouse cannot add in place, into a new table holding each
+// pair's newest row, then swaps the two. A failed step leaves the old table for
+// the next startup to retry; the scorer cannot write to it meanwhile.
+func (m *Manager) ensureNetResultsLayout(ctx context.Context, mo *Model) error {
+	table := mo.CHTableName
+	ok, err := m.netResultsLayoutOK(ctx, table)
+	if err != nil || ok {
+		return err
+	}
+	stage := table + "_v2"
+	log.Printf("model %s: results table %s has an older layout; moving it to the current one", mo.ID, table)
+	ddl := func(what, sql string) error {
+		if err := m.ch.ExecSchema(ctx, sql); err != nil && !isCHDDLTimeout(err) {
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		return nil
+	}
+	if err := ddl("drop stage", m.ch.InjectOnCluster(dropModelTableSQL(stage))); err != nil {
+		return err
+	}
+	if err := ddl("create stage", m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL("`"+stage+"`")))); err != nil {
+		return err
+	}
+	cols := "src_ip, dst_ip, dst_port, regularity_score, ts_score, ds_score, dur_score, hist_score, " +
+		"prevalence, prevalence_total, prevalence_score, first_seen_score, threat_intel_score, " +
+		"final_score, conn_count, total_duration, first_seen, last_seen, scored_at"
+	fid := storage.EscCHStr(mo.FractalID)
+	expires := netResultsWrittenExpiry(mo.DatasetEnd != nil, time.Now()).Format("2006-01-02")
+	insert := fmt.Sprintf("INSERT INTO `%s` (fractal_id, %s, expires_on) SELECT '%s', %s, toDate('%s') FROM (%s)",
+		stage, cols, fid, cols, expires, networkLatest("`"+m.readTableName(mo)+"`", fid))
+	if err := m.ch.ExecSchema(ctx, insert); err != nil {
+		return fmt.Errorf("copy results: %w", err)
+	}
+	if err := ddl("swap", fmt.Sprintf("EXCHANGE TABLES `%s` AND `%s`%s", table, stage, m.ch.OnClusterSQL())); err != nil {
+		return err
+	}
+	return ddl("drop old results", m.ch.InjectOnCluster(dropModelTableSQL(stage)))
+}
+
+// seedScoredPass gives a network model scored before passes were recorded its
+// newest scores as its pass, so its findings hold until the next one.
+func (m *Manager) seedScoredPass(ctx context.Context, mo *Model) error {
+	if mo.ScoredPassAt != nil {
+		return nil
+	}
+	var ms uint64
+	q := fmt.Sprintf("SELECT toUInt64(toUnixTimestamp64Milli(max(scored_at))) FROM `%s` WHERE %s",
+		m.readTableName(mo), fidScope(storage.EscCHStr(mo.FractalID)))
+	if err := m.ch.QueryRow(storage.AdminReadContext(ctx), q).Scan(&ms); err != nil || ms == 0 {
+		return err
+	}
+	_, err := m.pg.Exec(ctx, `UPDATE analytics_models SET scored_pass_at = $2 WHERE id = $1 AND scored_pass_at IS NULL`, mo.ID, time.UnixMilli(int64(ms)).UTC())
+	return err
+}
+
 // deleteBlankEntity removes the entity a first_seen model recorded for keyless logs
 // before those were skipped: one blank key, the separators alone, that every
 // keyless log joined.
@@ -817,7 +889,7 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 	// StateMaintainer, which keeps the dictionary lookups a source may carry out
 	// of the ingest path.
 	if _, err := m.pg.Exec(ctx,
-		`UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()) WHERE id = $1`, id); err != nil {
+		`UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()), scored_pass_at = NULL WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("seed state watermark: %w", err)
 	}
 	if err := m.dropStateMV(ctx, mvName); err != nil {
@@ -966,7 +1038,7 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID string, q
 	}
 
 	tableName := m.readTableName(model)
-	rule := findingsRuleFor(model.ModelType, model.Definition)
+	rule := findingsRuleFor(model.ModelType, model.Definition, model.ScoredPassAt)
 	switch model.ModelType {
 	case ModelTypeRarity:
 		return m.getRarityData(ctx, tableName, fractalID, q, rule, model.Definition.HistoryDaysFor(model.ModelType))
@@ -977,7 +1049,7 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID string, q
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, volumeAsOf(model), q, rule)
 	case ModelTypeBeacon, ModelTypeLongConnection:
-		return m.getNetworkData(ctx, tableName, fractalID, q, rule)
+		return m.getNetworkData(ctx, tableName, fractalID, q, rule, model.ScoredPassAt)
 	default:
 		return nil, 0, fmt.Errorf("unknown model type: %s", model.ModelType)
 	}
@@ -1074,6 +1146,16 @@ const networkResultCols = "src_ip, dst_ip, dst_port, " +
 	"round(first_seen_score,3) AS first_seen_score, round(threat_intel_score,3) AS threat_intel_score, " +
 	"conn_count, round(total_duration,1) AS total_duration, first_seen, last_seen, scored_at"
 
+// networkLatest is each pair's newest scored row in a network model's history,
+// one per pair across shards, with every result column.
+func networkLatest(qt, fid string) string {
+	return parser.NetLatestSQL(qt, fidScope(fid), []string{
+		"regularity_score", "ts_score", "ds_score", "dur_score", "hist_score",
+		"prevalence", "prevalence_total", "prevalence_score", "first_seen_score", "threat_intel_score",
+		"final_score", "conn_count", "total_duration", "first_seen", "last_seen", "scored_at",
+	})
+}
+
 // networkScoreThreshold returns the model's final-score flag threshold.
 func networkScoreThreshold(def ModelDefinition, mt ModelType) float64 {
 	if mt == ModelTypeLongConnection {
@@ -1085,29 +1167,33 @@ func networkScoreThreshold(def ModelDefinition, mt ModelType) float64 {
 // getNetworkData returns scored pairs from a network model's results table, ranked
 // by final_score (severity order) by default. Both beacon and long_connection share
 // this table.
-func (m *Manager) getNetworkData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule) ([]map[string]interface{}, uint64, error) {
-	allowed := map[string]bool{"final_score": true, "regularity_score": true, "conn_count": true, "total_duration": true, "prevalence": true, "last_seen": true}
+// Each row's current is 1 when the latest pass scored it.
+func (m *Manager) getNetworkData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule, pass *time.Time) ([]map[string]interface{}, uint64, error) {
+	allowed := map[string]bool{"final_score": true, "regularity_score": true, "conn_count": true, "total_duration": true, "prevalence": true, "last_seen": true, "scored_at": true}
 	where, order, none := dataPlan(q, allowed, "final_score", rule, plainSort)
 	if none {
 		return nil, 0, nil
 	}
 	fid := storage.EscCHStr(fractalID)
-	scope := fidScope(fid)
+	// The rule reads raw scores, as the alert and the counts do; only the page rounds.
+	rows := networkLatest("`"+tableName+"`", fid)
+	if where != "" {
+		rows = fmt.Sprintf("SELECT * FROM (%s) WHERE %s", rows, where)
+	}
+	base := fmt.Sprintf("SELECT %s, toUInt8(%s) AS current FROM (%s)", networkResultCols, parser.NetCurrentPredicate(pass, ""), rows)
 	if q.Search != "" {
 		s := storage.EscCHStr(q.Search)
-		scope += fmt.Sprintf(" AND (src_ip ILIKE '%%%s%%' OR dst_ip ILIKE '%%%s%%')", s, s)
+		base += fmt.Sprintf(" WHERE src_ip ILIKE '%%%s%%' OR dst_ip ILIKE '%%%s%%'", s, s)
 	}
-	base := fmt.Sprintf("SELECT %s FROM `%s` FINAL WHERE %s", networkResultCols, tableName, scope)
-	return m.runPage(ctx, "network", base, where, order, q.Limit, q.Offset)
+	return m.runPage(ctx, "network", base, "", order, q.Limit, q.Offset)
 }
 
 func (m *Manager) getNetworkStats(ctx context.Context, qt, fid string, rule findingsRule) (map[string]interface{}, error) {
 	q := fmt.Sprintf(`SELECT count() AS total_pairs,
        countIf(%s) AS flagged,
        countIf(final_score > 0.8) AS critical,
-       round(max(final_score), 3) AS max_score,
-       max(scored_at) AS scored_at
-FROM %s FINAL WHERE %s`, rule.Where, qt, fidScope(fid))
+       round(max(final_score), 3) AS max_score
+FROM (%s)`, rule.Where, networkLatest(qt, fid))
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("network stats: %w", err)
@@ -1119,13 +1205,12 @@ FROM %s FINAL WHERE %s`, rule.Where, qt, fidScope(fid))
 		result["findings"] = rows[0]["flagged"]
 		result["critical"] = rows[0]["critical"]
 		result["max_score"] = rows[0]["max_score"]
-		result["scored_at"] = rows[0]["scored_at"]
 	}
 	return result, nil
 }
 
 func (m *Manager) getNetworkHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
-	inner := fmt.Sprintf("SELECT final_score FROM %s FINAL WHERE %s", qt, fidScope(fid))
+	inner := fmt.Sprintf("SELECT final_score FROM (%s)", networkLatest(qt, fid))
 	buckets, err := m.runHistogram(ctx, inner, "least(toUInt64(floor(final_score * 10)), 9)", rarityHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("network histogram: %w", err)
@@ -1140,7 +1225,7 @@ func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) 
 	tableName := m.readTableName(model)
 	qt := "`" + tableName + "`"
 	fid := storage.EscCHStr(fractalID)
-	rule := findingsRuleFor(model.ModelType, model.Definition)
+	rule := findingsRuleFor(model.ModelType, model.Definition, model.ScoredPassAt)
 	now := time.Now().UTC()
 	hist := model.Definition.HistoryDaysFor(model.ModelType)
 
@@ -1166,6 +1251,14 @@ func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) 
 		result, err = m.getVolumeBaselineStats(ctx, tableName, model.Definition, fid, volumeAsOf(model), rule)
 	case ModelTypeBeacon, ModelTypeLongConnection:
 		result, err = m.getNetworkStats(ctx, qt, fid, rule)
+		if err == nil {
+			if model.DatasetEnd == nil {
+				result["history_days"] = netResultsRetentionDays
+			}
+			if model.ScoredPassAt != nil {
+				result["scored_at"] = model.ScoredPassAt.UTC()
+			}
+		}
 	default:
 		return nil, fmt.Errorf("unknown model type: %s", model.ModelType)
 	}
@@ -1603,7 +1696,7 @@ const modelColumns = `id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text
 	       status, alert_mode, COALESCE(linked_alert_id::text,''), error_message,
 	       COALESCE(created_by,''), created_at, updated_at,
 	       backfill_status, backfill_window, backfill_total, backfill_done,
-	       backfill_started_at, backfill_from, backfill_to, backfill_error, state_watermark,
+	       backfill_started_at, backfill_from, backfill_to, backfill_error, state_watermark, scored_pass_at,
 	       (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id),
 	       (SELECT al.last_triggered FROM alerts al WHERE al.id = analytics_models.linked_alert_id),
 	       (SELECT f.default_range_end FROM fractals f WHERE f.id = analytics_models.fractal_id)`
@@ -1621,7 +1714,7 @@ func scanModelRow(row modelScannable) (*Model, error) {
 		&mo.CreatedBy, &mo.CreatedAt, &mo.UpdatedAt,
 		&mo.BackfillStatus, &mo.BackfillWindow, &mo.BackfillTotal, &mo.BackfillDone,
 		&mo.BackfillStartedAt, &mo.BackfillFrom, &mo.BackfillTo, &mo.BackfillError,
-		&mo.StateWatermark,
+		&mo.StateWatermark, &mo.ScoredPassAt,
 		&alertEnabled,
 		&lastTriggered,
 		&mo.DatasetEnd,
@@ -1921,6 +2014,16 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 			if t.mt.IsScheduled() {
 				if err := m.ensureNetStateLayout(ctx, t.id, t.def.WindowDays()); err != nil {
 					log.Printf("models: reconcile CH objects: %s: %v", chModelStateName(t.id), err)
+				}
+				if mo, err := m.Get(ctx, t.id); err != nil {
+					log.Printf("models: reconcile CH objects: %s: %v", t.id, err)
+				} else {
+					if err := m.ensureNetResultsLayout(ctx, mo); err != nil {
+						log.Printf("models: reconcile CH objects: %s: %v", t.table, err)
+					}
+					if err := m.seedScoredPass(ctx, mo); err != nil {
+						log.Printf("models: reconcile CH objects: seed pass of %s: %v", t.id, err)
+					}
 				}
 			}
 			// The probe saw this table on one node, so its Distributed companions are
