@@ -1355,8 +1355,9 @@ const Alerts = {
                         <textarea id="webhookBodyTemplate" class="webhook-template-input" rows="10" spellcheck="false"
                             placeholder="Go text/template rendered per delivery"></textarea>
                         <div class="webhook-template-help">
-                            Fields: <code>.AlertName</code> <code>.Severity</code> <code>.AlertID</code> <code>.Description</code>
+                            Fields: <code>.FiringID</code> <code>.AlertName</code> <code>.Severity</code> <code>.AlertID</code> <code>.Description</code>
                             <code>.QueryString</code> <code>.MatchCount</code> <code>.TriggeredAt</code> <code>.Labels</code>
+                            <code>.Attack</code> <code>.References</code> <code>.GroupField</code> <code>.GroupKey</code>
                             <code>.AlertLink</code> <code>.Results</code>.
                             Functions: <code>toJSON</code> <code>field</code> <code>unixSeconds</code> <code>unixMillis</code>
                             <code>rfc3339</code> <code>join</code> <code>lower</code> <code>upper</code> <code>default</code>.

@@ -39,12 +39,23 @@ The same operations are in the API under `/api/v1/webhooks` ([All Operations](re
 
 ```json
 {
+  "firing_id": "7c1e2a40-5b7d-4c55-9a51-0f3e6c2d9b18",
   "alert_name": "Security Alert for 10.0.0.5",
   "original_name": "Security Alert for {{src_ip}}",
   "alert_id": "uuid",
   "description": "Detects suspicious login patterns",
   "severity": "high",
-  "labels": ["sigma:high", "product:windows"],
+  "labels": ["sigma:high", "product:windows", "attack.credential-access", "attack.t1110.001"],
+  "attack": {
+    "tactics": [{"id": "TA0006", "name": "Credential Access"}],
+    "techniques": [{"id": "T1110.001", "name": "Password Guessing"}],
+    "groups": [],
+    "software": [],
+    "campaigns": []
+  },
+  "references": ["https://attack.mitre.org/techniques/T1110/001/"],
+  "group_field": "src_ip",
+  "group_key": "10.0.0.5",
   "triggered_at": "2026-03-01T12:34:56Z",
   "query_string": "event_id=4625 | count() > 10",
   "match_count": 15,
@@ -57,8 +68,13 @@ The same operations are in the API under `/api/v1/webhooks` ([All Operations](re
 
 | Field | Description |
 |-------|-------------|
+| `firing_id` | One ID per firing, the same on every retry and every action of that firing. Use it as the idempotency key so a retried delivery does not open a second case. It is also the execution's `id` in the alert's history (`/api/v1/alerts/{id}/executions`) |
 | `alert_name` | Name with `{{field}}` templates filled from the first result |
 | `original_name` | Present only when the name had templates |
+| `attack` | The alert's `attack.*` labels resolved against the ATT&CK matrix. Revoked technique IDs map to their replacement; a retired one keeps its ID with no name |
+| `references` | The alert's reference links |
+| `group_field` | The alert's throttle field, or `""` when it has none |
+| `group_key` | The value of `group_field` when every delivered result shares one (e.g. a single host), so receivers can group firings per host or user. `""` when results span several values or there is no throttle field |
 | `results` | The matching records |
 | `match_count` | Number of results |
 | `alert_link` | Link to the results in Bifract, when `include_alert_link` is on. Built from `BIFRACT_BASE_URL`, else `https://` + `BIFRACT_DOMAIN` |
@@ -69,8 +85,9 @@ Set `body_mode` to `template` when the destination wants its own format. The tem
 
 | Data | Description |
 |------|-------------|
-| `.AlertName`, `.OriginalName`, `.AlertID`, `.Description`, `.Severity` | Same as the envelope |
-| `.Labels`, `.QueryString`, `.MatchCount`, `.AlertLink` | Same as the envelope |
+| `.FiringID`, `.AlertName`, `.OriginalName`, `.AlertID`, `.Description`, `.Severity` | Same as the envelope |
+| `.Labels`, `.References`, `.GroupField`, `.GroupKey`, `.QueryString`, `.MatchCount`, `.AlertLink` | Same as the envelope |
+| `.Attack` | `.Tactics` and `.Techniques` (each with `.ID` and `.Name`), `.Groups`, `.Software`, `.Campaigns` |
 | `.TriggeredAt` | Trigger time (Go `time.Time`) |
 | `.Results` | Matching records, each a map of field name to value |
 

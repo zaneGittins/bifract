@@ -39,7 +39,7 @@ func TestSendDeliversTemplateBody(t *testing.T) {
 	alert := &Alert{ID: "a1", Name: "Test", Severity: "high"}
 	results := []map[string]interface{}{{"user": "alice"}}
 
-	result := NewWebhookClient("", allowPrivate).Send(context.Background(), webhook, alert, alert.Name, results)
+	result := NewWebhookClient("", allowPrivate).Send(context.Background(), webhook, alert, alert.Name, Firing{}, results)
 
 	if !result.Success {
 		t.Fatalf("send failed: %+v", result)
@@ -67,7 +67,7 @@ func TestSendCapturesErrorResponseBody(t *testing.T) {
 	defer srv.Close()
 
 	webhook := WebhookAction{Name: "hec", URL: srv.URL, RetryCount: 1}
-	result := NewWebhookClient("", allowPrivate).Send(context.Background(), webhook, &Alert{ID: "a1", Name: "T"}, "T", nil)
+	result := NewWebhookClient("", allowPrivate).Send(context.Background(), webhook, &Alert{ID: "a1", Name: "T"}, "T", Firing{}, nil)
 
 	if result.Success {
 		t.Fatal("expected failure")
@@ -97,7 +97,7 @@ func TestSendDoesNotRetryRenderErrors(t *testing.T) {
 		BodyMode:     BodyModeTemplate,
 		BodyTemplate: `{{.Nope.Missing}}`,
 	}
-	result := NewWebhookClient("", allowPrivate).Send(context.Background(), webhook, &Alert{ID: "a1", Name: "T"}, "T", nil)
+	result := NewWebhookClient("", allowPrivate).Send(context.Background(), webhook, &Alert{ID: "a1", Name: "T"}, "T", Firing{}, nil)
 
 	if result.Success {
 		t.Fatal("expected failure")
@@ -126,7 +126,7 @@ func TestSendEnvelopeUnchanged(t *testing.T) {
 	alert := &Alert{ID: "a1", Name: "Test Alert", Severity: "low", QueryString: "x=1"}
 	results := []map[string]interface{}{{"user": "alice"}}
 
-	result := NewWebhookClient("", allowPrivate).Send(context.Background(), webhook, alert, alert.Name, results)
+	result := NewWebhookClient("", allowPrivate).Send(context.Background(), webhook, alert, alert.Name, Firing{}, results)
 	if !result.Success {
 		t.Fatalf("send failed: %+v", result)
 	}
@@ -155,7 +155,7 @@ func TestSendClearsErrorAfterRetrySucceeds(t *testing.T) {
 	defer srv.Close()
 
 	webhook := WebhookAction{Name: "flaky", URL: srv.URL, RetryCount: 2}
-	result := NewWebhookClient("", allowPrivate).Send(context.Background(), webhook, &Alert{ID: "a1", Name: "T"}, "T", nil)
+	result := NewWebhookClient("", allowPrivate).Send(context.Background(), webhook, &Alert{ID: "a1", Name: "T"}, "T", Firing{}, nil)
 
 	if !result.Success {
 		t.Fatalf("expected success on the second attempt: %+v", result)

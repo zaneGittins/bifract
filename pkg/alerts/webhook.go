@@ -47,12 +47,17 @@ type WebhookAction struct {
 
 // WebhookPayload is the JSON structure sent to webhook endpoints
 type WebhookPayload struct {
+	FiringID     string                   `json:"firing_id"`
 	AlertName    string                   `json:"alert_name"`
 	OriginalName string                   `json:"original_name,omitempty"`
 	AlertID      string                   `json:"alert_id"`
 	Description  string                   `json:"description"`
 	Severity     string                   `json:"severity"`
 	Labels       []string                 `json:"labels"`
+	Attack       AttackTags               `json:"attack"`
+	References   []string                 `json:"references"`
+	GroupField   string                   `json:"group_field"`
+	GroupKey     string                   `json:"group_key"`
 	TriggeredAt  time.Time                `json:"triggered_at"`
 	QueryString  string                   `json:"query_string"`
 	MatchCount   int                      `json:"match_count"`
@@ -184,13 +189,22 @@ func (wc *WebhookClient) buildAlertLink(alert *Alert, triggeredAt time.Time) str
 
 // BuildPayload assembles the envelope payload describing one alert trigger.
 // It is the data both delivery and the config preview render from.
-func (wc *WebhookClient) BuildPayload(webhook WebhookAction, alert *Alert, resolvedName string, results []map[string]interface{}, triggeredAt time.Time) WebhookPayload {
+func (wc *WebhookClient) BuildPayload(webhook WebhookAction, alert *Alert, resolvedName string, firing Firing, results []map[string]interface{}, triggeredAt time.Time) WebhookPayload {
+	references := alert.References
+	if references == nil {
+		references = []string{}
+	}
 	payload := WebhookPayload{
+		FiringID:    firing.ID,
 		AlertName:   resolvedName,
 		AlertID:     alert.ID,
 		Description: alert.Description,
 		Severity:    alert.Severity,
 		Labels:      alert.Labels,
+		Attack:      attackTags(alert.Labels),
+		References:  references,
+		GroupField:  firing.GroupField,
+		GroupKey:    firing.GroupKey,
 		TriggeredAt: triggeredAt,
 		QueryString: alert.QueryString,
 		MatchCount:  len(results),
@@ -206,9 +220,10 @@ func (wc *WebhookClient) BuildPayload(webhook WebhookAction, alert *Alert, resol
 }
 
 // Send delivers a webhook payload to the configured endpoint with retry logic.
-// resolvedName is the alert name with any {{field}} templates replaced.
-func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert *Alert, resolvedName string, results []map[string]interface{}) WebhookResult {
-	payload := wc.BuildPayload(webhook, alert, resolvedName, results, time.Now())
+// resolvedName is the alert name with any {{field}} templates replaced. The body
+// is rendered once, so every retry carries the same firing ID.
+func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert *Alert, resolvedName string, firing Firing, results []map[string]interface{}) WebhookResult {
+	payload := wc.BuildPayload(webhook, alert, resolvedName, firing, results, time.Now())
 
 	result := WebhookResult{
 		WebhookID:   webhook.ID,
