@@ -1871,7 +1871,8 @@ func sampleTestPayload() (*Alert, []map[string]interface{}) {
 		Description: "Test alert used to verify webhook configuration",
 		Severity:    "medium",
 		QueryString: "test=true",
-		Labels:      []string{"test"},
+		Labels:      []string{"test", "attack.execution", "attack.t1059.001"},
+		References:  []string{"https://attack.mitre.org/techniques/T1059/001/"},
 	}
 	now := time.Now().UTC()
 	results := []map[string]interface{}{
@@ -1906,7 +1907,7 @@ func (m *Manager) TestWebhookConfig(ctx context.Context, webhook WebhookAction, 
 	if m.engine != nil && m.engine.webhookClient != nil {
 		client = m.engine.webhookClient
 	}
-	payload := client.BuildPayload(webhook, testAlert, testAlert.Name, testResults, time.Now())
+	payload := client.BuildPayload(webhook, testAlert, testAlert.Name, newFiring(testAlert, testResults), testResults, time.Now())
 
 	out := &WebhookTestResult{}
 	body, contentType, err := RenderWebhookBody(webhook, payload)
