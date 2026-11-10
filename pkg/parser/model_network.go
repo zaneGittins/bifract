@@ -17,7 +17,7 @@ func NetCurrentPredicate(pass *time.Time, qual string) string {
 	if pass == nil {
 		return "0"
 	}
-	return fmt.Sprintf("%sscored_at >= toDateTime64('%s', 3, 'UTC')", qual, pass.UTC().Format("2006-01-02 15:04:05.000"))
+	return fmt.Sprintf("%sscored_at >= toDateTime64(%s, 3, 'UTC')", qual, sqlString(pass.UTC().Format("2006-01-02 15:04:05.000")))
 }
 
 // NetLatestSQL reads each pair's newest row under scope; each column is "col" or

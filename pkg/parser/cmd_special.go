@@ -496,7 +496,7 @@ func newChainMatch(steps []string, stepDeps deps, withinSeconds int, ordered boo
 		}
 		fmt.Fprintf(&pattern, "(?%d)", i+1)
 	}
-	args := fmt.Sprintf("('%s')(%s, %s)", pattern.String(), tsExpr, strings.Join(steps, ", "))
+	args := fmt.Sprintf("(%s)(%s, %s)", sqlString(pattern.String()), tsExpr, strings.Join(steps, ", "))
 	m.count, m.match, m.anchor = "sequenceCount"+args, atom("sequenceMatch"+args+" = 1"), "sequenceMatchEvents"+args
 	m.match.deps = matchDeps
 	return m

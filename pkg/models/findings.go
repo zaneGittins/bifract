@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 )
 
 // Data views: every scored row, or only the rows the model's alert would raise.
@@ -203,13 +204,13 @@ GROUP BY first_day`, flagSQL, scored)
 // each of the series' days, with how many of those fall in the findings window
 // and the last hour (what the alert fires on). Seeded history carries the epoch
 // and never counts, nor does a windowed model's entity that never left.
-func firstSeenDiscoverySQL(qt, fidEsc string, since time.Time, historyDays int) string {
-	agg := firstSeenAgg(qt, fidScope(fidEsc), "entity_key", historyDays, true, false)
+func firstSeenDiscoverySQL(qt, fid string, since time.Time, historyDays int) string {
+	agg := firstSeenAgg(qt, fidScope(fid), "entity_key", historyDays, true, false)
 	return fmt.Sprintf(`SELECT toString(toDate(recorded_at)) AS day, toUInt64(count()) AS n,
     toUInt64(countIf(recorded_at >= now() - INTERVAL %d DAY)) AS week,
     toUInt64(countIf(recorded_at >= now() - INTERVAL 1 HOUR)) AS hour
 FROM (%s
 )
-WHERE recorded_at >= toDateTime64('%s', 3, 'UTC')
-GROUP BY day`, findingsNewDays, agg, since.UTC().Format("2006-01-02 15:04:05"))
+WHERE recorded_at >= toDateTime64(%s, 3, 'UTC')
+GROUP BY day`, findingsNewDays, agg, sqlquote.String(since.UTC().Format("2006-01-02 15:04:05")))
 }

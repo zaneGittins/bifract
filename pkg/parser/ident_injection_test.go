@@ -44,7 +44,7 @@ func TestBacktickIdentifierNoBreakout(t *testing.T) {
 	}
 }
 
-func TestEscapeCHBacktickIdent(t *testing.T) {
+func TestBacktickIdentEscapes(t *testing.T) {
 	cases := map[string]string{
 		"plain":   "plain",
 		"a`b":     "a``b",
@@ -53,8 +53,8 @@ func TestEscapeCHBacktickIdent(t *testing.T) {
 		"a\\\\`b": "a\\\\\\\\``b",
 	}
 	for in, want := range cases {
-		if got := EscapeCHBacktickIdent(in); got != want {
-			t.Errorf("EscapeCHBacktickIdent(%q) = %q, want %q", in, got, want)
+		if got := backtickIdent(in); got != "`"+want+"`" {
+			t.Errorf("backtickIdent(%q) = %q, want %q", in, got, "`"+want+"`")
 		}
 	}
 }

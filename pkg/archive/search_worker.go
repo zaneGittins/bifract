@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -418,7 +419,7 @@ func (w *SearchWorker) killQuery(queryID string) {
 	}
 	kctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := w.ch.Exec(kctx, fmt.Sprintf("KILL QUERY WHERE query_id = '%s'", queryID)); err != nil {
+	if err := w.ch.Exec(kctx, fmt.Sprintf("KILL QUERY WHERE query_id = %s", sqlquote.String(queryID))); err != nil {
 		log.Printf("[Recall] kill %s: %v", queryID, err)
 	}
 }
@@ -434,7 +435,7 @@ func (w *SearchWorker) reapStale(ctx context.Context) {
 		UPDATE archive_search_jobs
 		SET status = 'failed', error = 'search worker stopped responding (restarted or crashed)',
 		    finished_at = NOW(), updated_at = NOW()
-		WHERE status = 'running' AND updated_at < NOW() - INTERVAL '%d seconds'`, int(searchStaleAfter.Seconds())))
+		WHERE status = 'running' AND updated_at < NOW() - INTERVAL %s`, sqlquote.PGString(fmt.Sprint(int(searchStaleAfter.Seconds()))+" seconds")))
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("[Recall] reap error: %v", err)

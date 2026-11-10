@@ -11,6 +11,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"bifract/pkg/sqlquote"
 )
 
 // provenanceProjections are the lookup projections migration 019 adds, by table.
@@ -149,7 +151,7 @@ func fillProvenanceSummary(ctx context.Context, conn driver.Conn) error {
 // raced it.
 func fillFractalSummary(ctx context.Context, conn driver.Conn, f string, selects []string) error {
 	// The views' SELECTs stay verbatim; the filter scopes their reads to one partition.
-	cond := "'" + escCHLiteral("fractal_id = '"+escCHLiteral(f)+"'") + "'"
+	cond := sqlquote.String("fractal_id = " + sqlquote.String(f))
 	filters := "{'proc_lineage': " + cond + ", 'proc_freq': " + cond + "}"
 	for range provenanceFillAttempts {
 		var start time.Time
@@ -310,7 +312,7 @@ func (r *projectionRun) next(ctx context.Context, conn driver.Conn, node string)
 		}
 		cmds := make([]string, len(t.missing))
 		for i, name := range t.missing {
-			cmds[i] = "MATERIALIZE PROJECTION " + name + " IN PARTITION ID '" + escCHLiteral(t.part) + "'"
+			cmds[i] = "MATERIALIZE PROJECTION " + name + " IN PARTITION ID " + sqlquote.String(t.part)
 		}
 		if err := conn.Exec(ctx, "ALTER TABLE "+t.table+" "+strings.Join(cmds, ", ")); err != nil {
 			return 0, fmt.Errorf("materialize %v on %s partition %s on %s: %w", t.missing, t.table, t.part, node, err)
@@ -372,7 +374,7 @@ func (r *projectionRun) watchRunning(ctx context.Context, conn driver.Conn, node
 		if time.Since(since) < provenanceMutationFailLimit {
 			continue
 		}
-		if err := conn.Exec(ctx, "KILL MUTATION WHERE database = currentDatabase() AND table = '"+escCHLiteral(m.table)+"' AND mutation_id = '"+escCHLiteral(m.id)+"'"); err != nil {
+		if err := conn.Exec(ctx, "KILL MUTATION WHERE database = currentDatabase() AND table = "+sqlquote.String(m.table)+" AND mutation_id = "+sqlquote.String(m.id)); err != nil {
 			return 0, fmt.Errorf("kill failing mutation %s on %s on %s: %w", m.id, m.table, node, err)
 		}
 		delete(r.failing, key)

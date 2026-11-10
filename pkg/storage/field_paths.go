@@ -14,6 +14,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"bifract/pkg/sqlquote"
 )
 
 // FieldPathCap bounds the distinct paths kept per fractal and ingest day: per insert
@@ -179,7 +181,7 @@ func sliceBounds(qs []time.Time) []string {
 	sort.Slice(qs, func(i, j int) bool { return qs[i].Before(qs[j]) })
 	var out []string
 	for _, q := range qs {
-		b := fmt.Sprintf("toDateTime64('%s', 3, 'UTC')", q.UTC().Format("2006-01-02 15:04:05.000"))
+		b := fmt.Sprintf("toDateTime64(%s, 3, 'UTC')", sqlquote.String(q.UTC().Format("2006-01-02 15:04:05.000")))
 		if len(out) == 0 || out[len(out)-1] != b {
 			out = append(out, b)
 		}
@@ -246,7 +248,7 @@ const observedFieldsMemory = 256 << 20
 func (c *ClickHouseClient) ObservedFields(ctx context.Context, fractalIDs []string, includeEmpty bool) (ObservedFieldSet, error) {
 	ids := make([]string, 0, len(fractalIDs)+1)
 	for _, id := range fractalIDs {
-		ids = append(ids, "'"+EscCHStr(id)+"'")
+		ids = append(ids, sqlquote.String(id))
 	}
 	if includeEmpty {
 		ids = append(ids, "''")
@@ -502,7 +504,7 @@ func compactFieldPaths(ctx context.Context, conn driver.Conn, p fieldPathPartiti
 		return err
 	}
 	if len(top) <= FieldPathCap {
-		return conn.Exec(ctx, "OPTIMIZE TABLE logs_field_paths PARTITION ID '"+p.RollupID+"' FINAL")
+		return conn.Exec(ctx, "OPTIMIZE TABLE logs_field_paths PARTITION ID "+sqlquote.String(p.RollupID)+" FINAL")
 	}
 	if err := stageRows(ctx, conn, p.Partition, top[:FieldPathCap]); err != nil {
 		return err
@@ -571,7 +573,7 @@ func swapInStage(ctx context.Context, conn driver.Conn, partition string) error 
 		return fmt.Errorf("swap in recount: nothing staged for %s", partition)
 	}
 	for _, id := range ids {
-		if err := conn.Exec(ctx, "ALTER TABLE logs_field_paths REPLACE PARTITION ID '"+id+"' FROM "+fieldPathsStage); err != nil {
+		if err := conn.Exec(ctx, "ALTER TABLE logs_field_paths REPLACE PARTITION ID "+sqlquote.String(id)+" FROM "+fieldPathsStage); err != nil {
 			return fmt.Errorf("swap in recount: %w", err)
 		}
 	}
@@ -599,7 +601,7 @@ func dropPartitionsOf(ctx context.Context, conn driver.Conn, table, partition st
 }
 
 func dropPartitionID(ctx context.Context, conn driver.Conn, table, id string) error {
-	if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(table)+" DROP PARTITION ID '"+id+"'"+dropPartitionSettings); err != nil {
+	if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(table)+" DROP PARTITION ID "+sqlquote.String(id)+dropPartitionSettings); err != nil {
 		return fmt.Errorf("drop %s partition %s: %w", table, id, err)
 	}
 	return nil

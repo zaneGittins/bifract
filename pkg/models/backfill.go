@@ -2,6 +2,7 @@ package models
 
 import (
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 	"context"
 	"database/sql"
 	"fmt"
@@ -355,8 +356,8 @@ func (m *Manager) runBackfill(ctx context.Context, run *backfillRun) {
 	// Cluster-aware tables: read all shards via the distributed logs table, write
 	// the distributed model table so rows balance across shards. Single-node uses
 	// the plain local tables. Both targets already exist (created with the model).
-	sourceTable := "`" + m.ch.ReadTable() + "`"
-	targetTable := "`" + m.readTableName(model) + "`"
+	sourceTable := sqlquote.Ident(m.ch.ReadTable())
+	targetTable := sqlquote.Ident(m.readTableName(model))
 
 	// os_thread_priority sets the OS nice() of the chunk's query threads so the
 	// Linux scheduler hands CPU to interactive (priority-0) query threads first;
@@ -376,10 +377,10 @@ func (m *Manager) runBackfill(ctx context.Context, run *backfillRun) {
 		}
 
 		whereExtra := fmt.Sprintf(
-			"timestamp >= '%s' AND timestamp < '%s' AND ingest_timestamp < '%s'",
-			ch.start.UTC().Format("2006-01-02 15:04:05"),
-			ch.end.UTC().Format("2006-01-02 15:04:05"),
-			anchorLit)
+			"timestamp >= %s AND timestamp < %s AND ingest_timestamp < %s",
+			sqlquote.String(ch.start.UTC().Format("2006-01-02 15:04:05")),
+			sqlquote.String(ch.end.UTC().Format("2006-01-02 15:04:05")),
+			sqlquote.String(anchorLit))
 
 		sqlStr, err := BuildBackfillInsert(def, model.ModelType, targetTable, sourceTable, whereExtra, model.FractalID)
 		if err != nil {

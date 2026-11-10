@@ -2,6 +2,7 @@ package models
 
 import (
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 	"fmt"
 	"math"
 	"regexp"
@@ -512,7 +513,7 @@ func chFieldRef(field string) string {
 		// reaches here from a model definition and, via the tlsh() fallback probe,
 		// straight from a user's query, so an unescaped backtick or backslash would
 		// close the identifier and let the rest of the name run as SQL.
-		return "fields.`" + parser.EscapeCHBacktickIdent(field) + "`::String"
+		return "fields." + sqlquote.Ident(field) + "::String"
 	}
 }
 
@@ -603,9 +604,7 @@ func cidrExpr(fieldRef, subnet string) string {
 
 // chStringLiteral escapes a string for use in ClickHouse SQL as a single-quoted literal.
 func chStringLiteral(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `'`, `\'`)
-	return "'" + s + "'"
+	return sqlquote.String(s)
 }
 
 // ---------------------------------------------------------------------------
@@ -659,14 +658,14 @@ func (w NetWindow) hours() int { return int(w.End.Sub(w.Start) / time.Hour) }
 // hourSQL bounds a state read to the window.
 func (w NetWindow) hourSQL() string {
 	const layout = "2006-01-02 15:04:05"
-	return fmt.Sprintf("hour >= toDateTime('%s', 'UTC') AND hour < toDateTime('%s', 'UTC')",
-		w.Start.UTC().Format(layout), w.End.UTC().Format(layout))
+	return fmt.Sprintf("hour >= toDateTime(%s, 'UTC') AND hour < toDateTime(%s, 'UTC')",
+		sqlquote.String(w.Start.UTC().Format(layout)), sqlquote.String(w.End.UTC().Format(layout)))
 }
 
 // timestampSQL bounds a raw log read to the window.
 func (w NetWindow) timestampSQL() string {
-	return fmt.Sprintf("timestamp >= toDateTime64('%s', 3, 'UTC') AND timestamp < toDateTime64('%s', 3, 'UTC')",
-		w.Start.UTC().Format(chTimeLayout), w.End.UTC().Format(chTimeLayout))
+	return fmt.Sprintf("timestamp >= toDateTime64(%s, 3, 'UTC') AND timestamp < toDateTime64(%s, 3, 'UTC')",
+		sqlquote.String(w.Start.UTC().Format(chTimeLayout)), sqlquote.String(w.End.UTC().Format(chTimeLayout)))
 }
 
 // netReadBlockRows keeps a block of wide pair rows small, since the driver decodes

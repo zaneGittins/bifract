@@ -29,6 +29,7 @@ import (
 	"github.com/google/uuid"
 
 	dbsql "bifract/db"
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/watermark"
 )
 
@@ -36,7 +37,10 @@ type ClickHouseClient struct {
 	// fieldPathSplits tracks partitions whose rebuild slices time out.
 	fieldPathSplits fieldPathSplits
 
-	conn     driver.Conn
+	conn driver.Conn
+	// readOnly is conn's credentials with every query read-only, for user reads
+	// whose class has no identity (see readOnlyConn).
+	readOnly readOnlyFallback
 	addrs    []string // host:port addresses
 	User     string
 	Password string
@@ -163,22 +167,6 @@ func (c *ClickHouseClient) logsDatabase() string {
 // this rather than rely on the executing node's current database.
 func (c *ClickHouseClient) LogsDatabase() string { return c.logsDatabase() }
 
-// EscCHIdent escapes a name for use as a ClickHouse backtick-quoted identifier. It is
-// the same rule as escapeCHBacktickIdent, exported for callers that build a grant or a
-// qualified object name. Database names come from configuration, so this is the
-// guarantee rather than a fix.
-func EscCHIdent(s string) string { return escapeCHBacktickIdent(s) }
-
-// OnClusterSQL returns the ON CLUSTER clause for DDL statements, or an empty
-// string when the deployment has no DDL cluster.
-func (c *ClickHouseClient) OnClusterSQL() string { return c.topo.OnClusterSQL() }
-
-// ReadTable returns the table name for read queries. In cluster mode this is
-// "logs_distributed" for cross-shard reads; otherwise it is "logs".
-func (c *ClickHouseClient) ReadTable() string {
-	return c.topo.Table("logs")
-}
-
 // WriteTable returns the table name for insert queries. In cluster mode this is
 // "logs_distributed" so the Distributed engine shards writes across all nodes;
 // otherwise it is "logs".
@@ -204,6 +192,16 @@ func (c *ClickHouseClient) RawReadTable() string {
 // In cluster mode this fans out to all shards via logs_histogram_distributed.
 func (c *ClickHouseClient) HistogramReadTable() string {
 	return c.topo.Table("logs_histogram")
+}
+
+// OnClusterSQL returns the ON CLUSTER clause for DDL statements, or an empty
+// string when the deployment has no DDL cluster.
+func (c *ClickHouseClient) OnClusterSQL() string { return c.topo.OnClusterSQL() }
+
+// ReadTable returns the table name for read queries. In cluster mode this is
+// "logs_distributed" for cross-shard reads; otherwise it is "logs".
+func (c *ClickHouseClient) ReadTable() string {
+	return c.topo.Table("logs")
 }
 
 // HotReadTable returns the table name for hot-path alert queries (recent cursor).
@@ -765,8 +763,8 @@ func createMigrationBookkeeping(ctx context.Context, conn driver.Conn, transform
 
 // recordCompletedStep marks one statement of a migration file as applied.
 func recordCompletedStep(ctx context.Context, conn driver.Conn, number, statementIndex int, name string) error {
-	record := fmt.Sprintf("INSERT INTO logs._bifract_migration_steps (number, statement_index, name) VALUES (%d, %d, '%s')",
-		number, statementIndex, strings.ReplaceAll(name, "'", "''"))
+	record := fmt.Sprintf("INSERT INTO logs._bifract_migration_steps (number, statement_index, name) VALUES (%d, %d, %s)",
+		number, statementIndex, sqlquote.String(name))
 	return conn.Exec(ctx, record)
 }
 
@@ -848,8 +846,8 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 				return applied, fmt.Errorf("record migration step %s: %w", m.name, err)
 			}
 		}
-		record := fmt.Sprintf("INSERT INTO logs._bifract_migrations (number, name) VALUES (%d, '%s')",
-			m.number, strings.ReplaceAll(m.name, "'", "''"))
+		record := fmt.Sprintf("INSERT INTO logs._bifract_migrations (number, name) VALUES (%d, %s)",
+			m.number, sqlquote.String(m.name))
 		if err := conn.Exec(ctx, record); err != nil {
 			return applied, fmt.Errorf("record migration %s: %w", m.name, err)
 		}
@@ -878,8 +876,8 @@ func setClickHouseMigrationsBaseline(ctx context.Context, conn driver.Conn, tran
 		if upTo > 0 && uint32(m.number) > upTo {
 			continue
 		}
-		record := fmt.Sprintf("INSERT INTO logs._bifract_migrations (number, name) VALUES (%d, '%s')",
-			m.number, strings.ReplaceAll(m.name, "'", "''"))
+		record := fmt.Sprintf("INSERT INTO logs._bifract_migrations (number, name) VALUES (%d, %s)",
+			m.number, sqlquote.String(m.name))
 		if err := conn.Exec(ctx, record); err != nil {
 			return fmt.Errorf("record baseline migration %s: %w", m.name, err)
 		}
@@ -1064,6 +1062,9 @@ type ConnOptions struct {
 	Password string
 	TLS      TLSConfig
 	Pool     ClickHousePoolConfig
+	// ReadOnly runs every query on the connection with readonly=2: settings may
+	// change, but nothing may be written or created, and no query can lift it.
+	ReadOnly bool
 }
 
 // ClientRole says what the client is allowed to provision. It gates privileged
@@ -1183,7 +1184,7 @@ func ensureDatabase(o ConnOptions, topo Topology) error {
 			targets = append(targets, []string{addr})
 		}
 	}
-	stmt := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", EscCHStr(o.Database))
+	stmt := "CREATE DATABASE IF NOT EXISTS " + sqlquote.Ident(o.Database)
 	for _, addrs := range targets {
 		bo := o
 		bo.Addrs = addrs
@@ -1201,6 +1202,14 @@ func ensureDatabase(o ConnOptions, topo Topology) error {
 	return nil
 }
 
+// connSettings is what every query on a connection carries.
+func connSettings(o ConnOptions, s clickhouse.Settings) clickhouse.Settings {
+	if o.ReadOnly {
+		s["readonly"] = 2
+	}
+	return s
+}
+
 // openClickHouseConn opens a connection to ClickHouse with the given options.
 func openClickHouseConn(o ConnOptions) (driver.Conn, error) {
 	tlsCfg, err := o.TLS.tlsConfig()
@@ -1216,7 +1225,7 @@ func openClickHouseConn(o ConnOptions) (driver.Conn, error) {
 			Username: o.User,
 			Password: o.Password,
 		},
-		Settings: clickhouse.Settings{
+		Settings: connSettings(o, clickhouse.Settings{
 			"output_format_native_use_flattened_dynamic_and_json_serialization": 1,
 			// pgr() re-emits its materialized rows as a literal source and scopes its baseline by
 			// literal edge-key lists, so a midsize graph legitimately exceeds ClickHouse's 256KB
@@ -1230,7 +1239,7 @@ func openClickHouseConn(o ConnOptions) (driver.Conn, error) {
 			// IN-subquery prefilter collapses its row estimate, and then hashes every
 			// scanned log instead (measured: 2.4x the memory and time on 20M rows).
 			"query_plan_join_swap_table": "false",
-		},
+		}),
 		DialTimeout:     o.Pool.DialTimeout,
 		ReadTimeout:     0,
 		MaxOpenConns:    o.Pool.MaxOpenConns,
@@ -1313,22 +1322,6 @@ func QueryConn(ctx context.Context, conn driver.Conn, query string) ([]map[strin
 	return results, nil
 }
 
-// EscCHStr escapes a value for safe use inside single-quoted ClickHouse strings.
-func EscCHStr(s string) string {
-	out := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '\'':
-			out = append(out, '\\', '\'')
-		case '\\':
-			out = append(out, '\\', '\\')
-		default:
-			out = append(out, s[i])
-		}
-	}
-	return string(out)
-}
-
 func (c *ClickHouseClient) HealthCheck(ctx context.Context) error {
 	return c.conn.Ping(ctx)
 }
@@ -1345,9 +1338,9 @@ func (c *ClickHouseClient) ShardHealth(ctx context.Context) (total, healthy int,
 		FROM (
 			SELECT shard_num, min(estimated_recovery_time) AS estimated_recovery_time
 			FROM system.clusters
-			WHERE cluster = '%s'
+			WHERE cluster = %s
 			GROUP BY shard_num
-		)`, EscCHStr(c.topo.FanoutCluster)))
+		)`, sqlquote.String(c.topo.FanoutCluster)))
 	if err != nil || len(rows) == 0 {
 		return 0, 0, err
 	}
@@ -1376,7 +1369,7 @@ func (c *ClickHouseClient) ClusterServerStats(ctx context.Context) (*ClusterServ
 	if c.topo.FanoutCluster == "" {
 		return nil, nil
 	}
-	cl := EscCHStr(c.topo.FanoutCluster)
+	cl := sqlquote.String(c.topo.FanoutCluster)
 	stats := &ClusterServerStats{}
 
 	total, healthy, err := c.ShardHealth(ctx)
@@ -1392,7 +1385,7 @@ func (c *ClickHouseClient) ClusterServerStats(ctx context.Context) (*ClusterServ
 		SELECT
 			sumIf(value, metric = 'Query') AS active_queries,
 			sumIf(value, metric = 'Merge') AS active_merges
-		FROM clusterAllReplicas('%s', system.metrics)
+		FROM clusterAllReplicas(%s, system.metrics)
 		WHERE metric IN ('Query', 'Merge')
 		SETTINGS skip_unavailable_shards = 1`, cl))
 	if err != nil {
@@ -1410,7 +1403,7 @@ func (c *ClickHouseClient) ClusterServerStats(ctx context.Context) (*ClusterServ
 	// rows by their origin node.
 	memRows, err := c.Query(ctx, fmt.Sprintf(`
 		SELECT hostName() AS node, metric, value
-		FROM clusterAllReplicas('%s', system.asynchronous_metrics)
+		FROM clusterAllReplicas(%s, system.asynchronous_metrics)
 		WHERE metric IN ('CGroupMemoryUsed', 'CGroupMemoryTotal', 'MemoryResident', 'OSMemoryTotal')
 		SETTINGS skip_unavailable_shards = 1`, cl))
 	if err != nil {
@@ -1441,6 +1434,7 @@ func (c *ClickHouseClient) ClusterServerStats(ctx context.Context) (*ClusterServ
 func (c *ClickHouseClient) Close() error {
 	c.closeQueryIdentities()
 	c.closeSchemaIdentity()
+	c.readOnly.close()
 	return c.conn.Close()
 }
 
@@ -1878,8 +1872,8 @@ func (c *ClickHouseClient) KillQuery(ctx context.Context, queryID string) error 
 	if queryID == "" {
 		return nil
 	}
-	id := EscCHStr(queryID)
-	return c.killWhere(ctx, fmt.Sprintf("query_id = '%s' OR initial_query_id = '%s'", id, id))
+	id := sqlquote.String(queryID)
+	return c.killWhere(ctx, "query_id = "+id+" OR initial_query_id = "+id)
 }
 
 // KillQueryPrefix interrupts every running query whose id starts with prefix. One
@@ -1890,8 +1884,8 @@ func (c *ClickHouseClient) KillQueryPrefix(ctx context.Context, prefix string) e
 	if prefix == "" {
 		return nil
 	}
-	p := EscCHStr(prefix)
-	return c.killWhere(ctx, fmt.Sprintf("startsWith(query_id, '%s') OR startsWith(initial_query_id, '%s')", p, p))
+	p := sqlquote.String(prefix)
+	return c.killWhere(ctx, "startsWith(query_id, "+p+") OR startsWith(initial_query_id, "+p+")")
 }
 
 // killWhere issues an asynchronous KILL QUERY. Asynchronous is deliberate: a query
@@ -2648,8 +2642,8 @@ func (c *ClickHouseClient) loadShardHosts(ctx context.Context) (map[uint64]strin
 	}
 
 	rows, err := c.conn.Query(ctx, fmt.Sprintf(
-		"SELECT shard_num, host_name, port FROM system.clusters WHERE cluster = '%s' AND replica_num = 1 ORDER BY shard_num",
-		EscCHStr(c.topo.FanoutCluster),
+		"SELECT shard_num, host_name, port FROM system.clusters WHERE cluster = %s AND replica_num = 1 ORDER BY shard_num",
+		sqlquote.String(c.topo.FanoutCluster),
 	))
 	if err != nil {
 		return nil, fmt.Errorf("query system.clusters: %w", err)
@@ -2797,7 +2791,7 @@ func (c *ClickHouseClient) DistributionQueueByShard(ctx context.Context) ([]Shar
 				COALESCE(max(error_count), 0)       AS error_count,
 				anyLast(last_exception)             AS last_exception
 			FROM system.distribution_queue
-			WHERE table = '%s'`, EscCHStr(logsDistributedTable)))
+			WHERE table = %s`, sqlquote.String(logsDistributedTable)))
 		if err != nil {
 			stat.Unreachable = true
 			stat.Error = err.Error()
@@ -2872,8 +2866,8 @@ func (c *ClickHouseClient) ResetDistributedQueue(ctx context.Context, shardNum u
 	}
 
 	createSQL := fmt.Sprintf(
-		"CREATE TABLE IF NOT EXISTS %s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
-		logsDistributedTable, EscCHStr(c.topo.DDLCluster),
+		"CREATE TABLE IF NOT EXISTS %s AS logs ENGINE = Distributed(%s, currentDatabase(), 'logs', rand())",
+		logsDistributedTable, sqlquote.String(c.topo.DDLCluster),
 	)
 	// The table is now gone on this shard until CREATE succeeds. A single
 	// transient failure here (a network blip, a momentary server hiccup) would
@@ -3087,7 +3081,7 @@ func dropHotPartitionsOnConn(ctx context.Context, conn driver.Conn, label string
 		return
 	}
 	for _, partition := range partitions {
-		if err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE logs_hot DROP PARTITION '%s'", partition)+dropPartitionSettings); err != nil {
+		if err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE logs_hot DROP PARTITION %s", sqlquote.String(partition))+dropPartitionSettings); err != nil {
 			log.Printf("[HotTableCleaner] drop partition %s on %s: %v", partition, label, err)
 		}
 	}
@@ -3257,18 +3251,6 @@ func (c *ClickHouseClient) onEveryShard(ctx context.Context, what string, fn fun
 	return firstErr
 }
 
-// escCHLiteral escapes a value for use inside a single-quoted ClickHouse literal.
-//
-// The backslash is escaped first for the same reason escapeCHBacktickIdent does it:
-// ClickHouse honours a backslash-escaped quote inside a literal, so doubling only
-// the quote lets a trailing backslash escape the closing one and run what follows.
-// Today's callers pass UUIDs, ISO dates and Keeper paths, none of which can carry
-// either character, so this is the guarantee rather than a fix.
-func escCHLiteral(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	return strings.ReplaceAll(s, "'", "''")
-}
-
 // jsonTypeHintRe matches one declared path inside a JSON column type.
 //
 // It must accept BOTH spellings. Type hints are written with backticks, but
@@ -3375,10 +3357,9 @@ func buildFieldsTypeHintSQL(table string, fields []string) string {
 	sb.WriteString(table)
 	sb.WriteString(" MODIFY COLUMN fields JSON(\n    max_dynamic_paths=1024")
 	for _, f := range sorted {
-		escaped := escapeCHBacktickIdent(f)
-		sb.WriteString(",\n    `")
-		sb.WriteString(escaped)
-		sb.WriteString("` String")
+		sb.WriteString(",\n    ")
+		sb.WriteString(sqlquote.Ident(f))
+		sb.WriteString(" String")
 	}
 	sb.WriteString("\n)")
 	sb.WriteString(jsonLazyTypeHintSettings)
@@ -3505,11 +3486,10 @@ func (c *ClickHouseClient) applySchemaFieldIndexes(ctx context.Context, fields [
 		default:
 			idxExpr = "TYPE bloom_filter(0.001)"
 		}
-		escaped := escapeCHBacktickIdent(f.FieldName)
 		idxName := schemaFieldIndexName(f.FieldName)
 		idxSQL := fmt.Sprintf(
-			"ALTER TABLE logs ADD INDEX IF NOT EXISTS %s fields.`%s` %s GRANULARITY 1",
-			idxName, escaped, idxExpr,
+			"ALTER TABLE logs ADD INDEX IF NOT EXISTS %s fields.%s %s GRANULARITY 1",
+			idxName, sqlquote.Ident(f.FieldName), idxExpr,
 		)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(idxSQL)); err != nil {
 			log.Printf("Warning: add index %s: %v", idxName, err)

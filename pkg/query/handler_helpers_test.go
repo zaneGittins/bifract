@@ -84,22 +84,6 @@ func TestCursorRoundTrip(t *testing.T) {
 	}
 }
 
-func TestEscCHStr(t *testing.T) {
-	cases := map[string]string{
-		"plain":   "plain",
-		"o'brien": `o\'brien`,
-		`a\b`:     `a\\b`,
-		// The backslash must be doubled before quotes are escaped, or a trailing
-		// backslash would escape the closing quote of the literal.
-		`x\'`: `x\\\'`,
-	}
-	for in, want := range cases {
-		if got := escCHStr(in); got != want {
-			t.Errorf("escCHStr(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestFractalScopeSQL(t *testing.T) {
 	cases := []struct {
 		name string

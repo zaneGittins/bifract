@@ -149,29 +149,21 @@ func processTreeValuesSQL(t *ProcessTree) string {
 		"image String, parent_image String, commandline String, computer_name String, _depth UInt32, _path String, " +
 		"group_size UInt64, group_first String, group_last String"
 	if len(t.Rows) == 0 {
-		return "(SELECT * FROM values('" + structure + "', ('', '', '', '', '', '', '', '', '', 0, '', 0, '', '')) WHERE 0)"
+		return "(SELECT * FROM values(" + sqlString(structure) + ", ('', '', '', '', '', '', '', '', '', 0, '', 0, '', '')) WHERE 0)"
 	}
 	var sb strings.Builder
-	sb.WriteString("(SELECT * FROM values('" + structure + "'")
+	sb.WriteString("(SELECT * FROM values(" + sqlString(structure))
 	for _, r := range t.Rows {
 		sb.WriteString(", (")
 		for i, s := range []string{r.Timestamp, r.LogID, r.FractalID, r.ProcessGUID, r.ParentGUID, r.Image, r.ParentImage, r.Commandline, r.ComputerName} {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			sb.WriteString(SQLStringLiteral(s))
+			sb.WriteString(sqlString(s))
 		}
-		sb.WriteString(", " + strconv.Itoa(r.Depth) + ", " + SQLStringLiteral(r.Path) + ", " + strconv.FormatInt(r.GroupSize, 10) +
-			", " + SQLStringLiteral(r.GroupFirst) + ", " + SQLStringLiteral(r.GroupLast) + ")")
+		sb.WriteString(", " + strconv.Itoa(r.Depth) + ", " + sqlString(r.Path) + ", " + strconv.FormatInt(r.GroupSize, 10) +
+			", " + sqlString(r.GroupFirst) + ", " + sqlString(r.GroupLast) + ")")
 	}
 	sb.WriteString("))")
 	return sb.String()
-}
-
-var sqlLiteralEscaper = strings.NewReplacer("\\", "\\\\", "'", "\\'", "\n", "\\n", "\r", "\\r", "\t", "\\t", "\x00", "\\0")
-
-// SQLStringLiteral quotes s as a ClickHouse string literal. Unlike escapeString it also escapes
-// control characters, for values that come from log data.
-func SQLStringLiteral(s string) string {
-	return "'" + sqlLiteralEscaper.Replace(s) + "'"
 }

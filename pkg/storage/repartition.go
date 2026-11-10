@@ -10,6 +10,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	dbsql "bifract/db"
+	"bifract/pkg/sqlquote"
 )
 
 // repartitionTarget is a table whose layout changed after installs had it: partition keys gained
@@ -257,7 +258,7 @@ func (c *ClickHouseClient) copyOld(ctx context.Context, conn driver.Conn, t repa
 			return err
 		}
 		for _, id := range ids {
-			if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(stageName)+" MOVE PARTITION ID '"+id+"' TO TABLE "+quoteCHIdent(t.table)); err != nil {
+			if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(stageName)+" MOVE PARTITION ID "+sqlquote.String(id)+" TO TABLE "+quoteCHIdent(t.table)); err != nil {
 				return fmt.Errorf("move fractal %q: %w", f, err)
 			}
 		}
@@ -463,7 +464,7 @@ func (c *ClickHouseClient) alignStage(ctx context.Context, conn driver.Conn, t r
 // a row of defaults would not do, since a SummingMergeTree discards all-zero rows.
 func probeMove(ctx context.Context, conn driver.Conn, live, stage, dst string) error {
 	const absentPartition = "00000000000000000000000000000000"
-	if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(stage)+" MOVE PARTITION ID '"+absentPartition+"' TO TABLE "+quoteCHIdent(dst)); err != nil {
+	if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(stage)+" MOVE PARTITION ID "+sqlquote.String(absentPartition)+" TO TABLE "+quoteCHIdent(dst)); err != nil {
 		return err
 	}
 	probe := []string{repartitionProbeFractal}
@@ -484,7 +485,7 @@ func probeMove(ctx context.Context, conn driver.Conn, live, stage, dst string) e
 		return err
 	}
 	for _, id := range ids {
-		if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(stage)+" MOVE PARTITION ID '"+id+"' TO TABLE "+quoteCHIdent(dst)); err != nil {
+		if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(stage)+" MOVE PARTITION ID "+sqlquote.String(id)+" TO TABLE "+quoteCHIdent(dst)); err != nil {
 			return err
 		}
 	}
@@ -515,7 +516,7 @@ func fractalPartitionIDs(ctx context.Context, conn driver.Conn, table string, fr
 
 // chPartitionString renders a string the way system.parts.partition does inside a tuple.
 func chPartitionString(s string) string {
-	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
+	return sqlquote.String(s)
 }
 
 // dropFractalPartitions drops every partition of table on conn's node belonging to the
@@ -529,7 +530,7 @@ func dropFractalPartitions(ctx context.Context, conn driver.Conn, table string, 
 		batch := ids[start:min(start+dropPartitionBatch, len(ids))]
 		drops := make([]string, len(batch))
 		for i, id := range batch {
-			drops[i] = "DROP PARTITION ID '" + id + "'"
+			drops[i] = "DROP PARTITION ID " + sqlquote.String(id)
 		}
 		if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(table)+" "+strings.Join(drops, ", ")+dropPartitionSettings); err != nil {
 			return fmt.Errorf("drop %s partitions: %w", table, err)

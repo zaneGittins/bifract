@@ -315,7 +315,7 @@ func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
 // parent_guid is the next hop. ts_ms is its creation time. No FINAL: the caller dedups guids and
 // process_guid is globally unique.
 func BuildProcessTreeHopSQL(guid string, opts QueryOptions) string {
-	lit := "'" + escapeString(guid) + "'"
+	lit := sqlString(guid)
 	conds := append(procLineageWindow(opts, ""), "proc_key = "+procKeyExpr(lit), "process_guid = "+lit)
 	return fmt.Sprintf("SELECT process_guid, parent_guid, toUnixTimestamp64Milli(timestamp) AS ts_ms FROM %s WHERE %s",
 		procLineageTable(opts), strings.Join(conds, " AND "))
@@ -409,8 +409,8 @@ func procEdgesTable(opts QueryOptions) string {
 // procLineageWindow is the fractal and query-window scope of a proc_lineage read.
 func procLineageWindow(opts QueryOptions, prefix string) []string {
 	conds := []string{
-		fmt.Sprintf("%stimestamp >= '%s'", prefix, chTimeLiteral(opts.StartTime)),
-		fmt.Sprintf("%stimestamp <= '%s'", prefix, chTimeLiteral(opts.EndTime)),
+		fmt.Sprintf("%stimestamp >= %s", prefix, sqlString(chTimeLiteral(opts.StartTime))),
+		fmt.Sprintf("%stimestamp <= %s", prefix, sqlString(chTimeLiteral(opts.EndTime))),
 	}
 	if fc := fractalScopeCond(opts, prefix); fc != "" {
 		conds = append(conds, fc)
@@ -428,12 +428,12 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 	procLineage := procLineageTable(opts)
 	logs := opts.EffectiveTableName()
 
-	tsStart := chTimeLiteral(opts.StartTime)
-	tsEnd := chTimeLiteral(opts.EndTime)
+	tsStart := sqlString(chTimeLiteral(opts.StartTime))
+	tsEnd := sqlString(chTimeLiteral(opts.EndTime))
 	// The user's query window, applied to the process_guid-matched edge reads (file/net/dns rollup
 	// + p2p logs scan). No probe is needed anymore: the edge/p2p reads scope by guid, so the window
 	// only trims which of the tree's edges are in range, not the scan cost.
-	userWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", tsStart, tsEnd)
+	userWin := fmt.Sprintf("timestamp >= %s AND timestamp <= %s", tsStart, tsEnd)
 	fractal := fractalScopeCond(opts, "")
 	frac := func() string {
 		if fractal == "" {
@@ -485,7 +485,7 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 	}
 	for _, t := range []string{"remote_thread", "process_access"} {
 		if want(t) {
-			leafTypes = append(leafTypes, "'"+t+"'")
+			leafTypes = append(leafTypes, sqlString(t))
 		}
 	}
 	leafEdges := ""
@@ -507,11 +507,11 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 	p2pEdges := func(category, eventType string) string {
 		return fmt.Sprintf(
 			"SELECT fields.source_process_guid::String AS src_node, fields.target_process_guid::String AS dst_node, "+
-				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host, '' AS parent_label, toDate(ingest_timestamp) AS iday "+
+				"fields.target_image::String AS label, %[7]s AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host, '' AS parent_label, toDate(ingest_timestamp) AS iday "+
 				"FROM %[3]s WHERE %[4]s%[5]s AND %[6]s "+
-				"AND fields.bifract_category = '%[8]s' AND %[9]s AND fields.image::String != '' AND fields.target_image::String != '' "+
+				"AND fields.bifract_category = %[8]s AND %[9]s AND fields.image::String != '' AND fields.target_image::String != '' "+
 				"AND fields.target_process_guid::String != ''",
-			aPath("fields.image::String"), aPath("fields.target_image::String"), logs, userWin, frac(), inTree("fields.source_process_guid::String"), eventType, category, p2pBeforeRollup(opts))
+			aPath("fields.image::String"), aPath("fields.target_image::String"), logs, userWin, frac(), inTree("fields.source_process_guid::String"), sqlString(eventType), sqlString(category), p2pBeforeRollup(opts))
 	}
 
 	// spawn is always present (the tree spine); file/net/dns ride the process_edges rollup in one
@@ -611,7 +611,7 @@ func keyInCond(col string, keys []string) string {
 	}
 	quoted := make([]string, len(keys))
 	for i, k := range keys {
-		quoted[i] = "'" + escapeString(k) + "'"
+		quoted[i] = sqlString(k)
 	}
 	return fmt.Sprintf("%s IN (%s)", col, strings.Join(quoted, ", "))
 }
@@ -646,7 +646,7 @@ func BuildProvenanceScoringSQL(threshold float64, edgeTypes map[string]bool, dif
 	if !bl.NodeEnd.IsZero() && bl.NodeEnd.Before(pmEnd) {
 		pmEnd = bl.NodeEnd
 	}
-	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", chTimeLiteral(pmStart), chTimeLiteral(pmEnd))
+	timeWin := fmt.Sprintf("timestamp >= %s AND timestamp <= %s", sqlString(chTimeLiteral(pmStart)), sqlString(chTimeLiteral(pmEnd)))
 	fractal := fractalScopeCond(opts, "")
 	frac := func() string {
 		if fractal == "" {
@@ -734,14 +734,14 @@ func BuildProvenanceScoringSQL(threshold float64, edgeTypes map[string]bool, dif
 		procFreq, freqWhere(tgtOnTgt), procFreqHostsCap, hostDays))
 	// The observed window ends at the QUERY's end, not today(): a historical investigation must not
 	// be credited with stable days that postdate what it is looking at.
-	asOf := fmt.Sprintf("toDate('%s')", opts.EndTime.UTC().Format("2006-01-02"))
+	asOf := fmt.Sprintf("toDate(%s)", sqlString(opts.EndTime.UTC().Format("2006-01-02")))
 	// span = days the baseline covers, gating the stability terms (see minStabilityDays). It is the
 	// age of the WHOLE baseline, so it is never key-restricted.
 	if bl.FirstDay.IsZero() {
 		b.WriteString(fmt.Sprintf("span AS (SELECT dateDiff('day', %[3]s, %[4]s) + 1 AS days FROM %[1]s%[2]s), ",
 			procFreq, freqWhere(), firstSeen, asOf))
 	} else {
-		b.WriteString(fmt.Sprintf("span AS (SELECT dateDiff('day', toDate('%s'), %s) + 1 AS days), ", bl.FirstDay.UTC().Format("2006-01-02"), asOf))
+		b.WriteString(fmt.Sprintf("span AS (SELECT dateDiff('day', toDate(%s), %s) + 1 AS days), ", sqlString(bl.FirstDay.UTC().Format("2006-01-02")), asOf))
 	}
 	// NoDoze Eq.4/Eq.5 node stability: a day is STABLE for a node when it gained no new edge, and
 	// stability is the share of stable days over the node's observed lifetime. rel holds one
@@ -957,9 +957,9 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 	procLineage := procLineageTable(opts)
 	procFreq := procFreqTable(opts)
 
-	tsStart := chTimeLiteral(opts.StartTime)
-	tsEnd := chTimeLiteral(opts.EndTime)
-	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", tsStart, tsEnd)
+	tsStart := sqlString(chTimeLiteral(opts.StartTime))
+	tsEnd := sqlString(chTimeLiteral(opts.EndTime))
+	timeWin := fmt.Sprintf("timestamp >= %s AND timestamp <= %s", tsStart, tsEnd)
 	fractal := fractalScopeCond(opts, "")
 	fracAnd := ""
 	if fractal != "" {
@@ -993,10 +993,10 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 	// pass to bridge; et is the proc_freq event_type. Shared by net/dns. It aggregates only the
 	// tree's own targets, which are all the callers test, instead of every target in the fractal.
 	rareGate := func(et string) string {
-		treeTargets := fmt.Sprintf("SELECT fkey_tgt FROM %s WHERE %sevent_type = '%s' AND %s", edgeTable, edgeFrac, et, treeKeys(""))
-		return fmt.Sprintf("SELECT target_norm FROM %s WHERE event_type = '%s'%s AND target_norm GLOBAL IN (%s) GROUP BY target_norm "+
+		treeTargets := fmt.Sprintf("SELECT fkey_tgt FROM %s WHERE %sevent_type = %s AND %s", edgeTable, edgeFrac, sqlString(et), treeKeys(""))
+		return fmt.Sprintf("SELECT target_norm FROM %s WHERE event_type = %s%s AND target_norm GLOBAL IN (%s) GROUP BY target_norm "+
 			"HAVING length(groupUniqArrayMerge(%d)(hosts)) <= %s AND uniqExact(src_image) <= %s",
-			procFreq, et, fracAnd, treeTargets, procFreqHostsCap, hostGate, imageGate)
+			procFreq, sqlString(et), fracAnd, treeTargets, procFreqHostsCap, hostGate, imageGate)
 	}
 
 	// file: write -> execute. The tree's written paths come from the edge rollup (label = raw
@@ -1071,15 +1071,15 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 	// Targets come from the rollup, and from logs for what was ingested before it began.
 	p2p := func(reconType, category string, anomaly string) string {
 		targets := fmt.Sprintf(
-			"SELECT dst_node AS peer_guid, label AS image, computer_name AS host FROM %[1]s WHERE %[2]s%[3]s AND %[4]s AND event_type = '%[5]s' AND dst_node != '' AND %[6]s "+
-				"UNION ALL SELECT fields.target_process_guid::String, fields.target_image::String, fields.computer_name::String FROM %[7]s WHERE %[3]s%[8]s AND fields.bifract_category = '%[5]s' AND %[9]s "+
+			"SELECT dst_node AS peer_guid, label AS image, computer_name AS host FROM %[1]s WHERE %[2]s%[3]s AND %[4]s AND event_type = %[5]s AND dst_node != '' AND %[6]s "+
+				"UNION ALL SELECT fields.target_process_guid::String, fields.target_image::String, fields.computer_name::String FROM %[7]s WHERE %[3]s%[8]s AND fields.bifract_category = %[5]s AND %[9]s "+
 				"AND %[10]s AND fields.target_process_guid::String != '' AND %[11]s",
-			edgeTable, edgeFrac, timeWin, treeKeys(""), category, notInTree("dst_node"), logs, fracAnd, p2pBeforeRollup(opts),
+			edgeTable, edgeFrac, timeWin, treeKeys(""), sqlString(category), notInTree("dst_node"), logs, fracAnd, p2pBeforeRollup(opts),
 			inTree("fields.source_process_guid::String"), notInTree("fields.target_process_guid::String"))
 		return fmt.Sprintf(
-			"SELECT '%[1]s' AS recon_type, peer_guid, '' AS src_guid, '' AS object_id, any(image) AS label, toFloat64(%[2]s) AS anomaly, any(image) AS peer_image, "+
+			"SELECT %[1]s AS recon_type, peer_guid, '' AS src_guid, '' AS object_id, any(image) AS label, toFloat64(%[2]s) AS anomaly, any(image) AS peer_image, "+
 				"'' AS peer_log_id, '' AS peer_ts, '' AS peer_fractal, any(host) AS peer_host FROM (%[3]s) GROUP BY peer_guid ORDER BY peer_guid LIMIT %[4]d",
-			reconType, anomaly, targets, maxReconnectPeers)
+			sqlString(reconType), anomaly, targets, maxReconnectPeers)
 	}
 	if want("remote_thread") {
 		parts = append(parts, p2p("remote_thread", "remote_thread", "0.95"))

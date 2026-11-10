@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -466,7 +467,7 @@ func emitProvenanceSource(rows []map[string]interface{}, maxBytes int) (sql stri
 		structure[i] = c + " " + typ
 	}
 	var sb strings.Builder
-	sb.WriteString("SELECT * FROM values('" + strings.Join(structure, ", ") + "'")
+	sb.WriteString("SELECT * FROM values(" + sqlquote.String(strings.Join(structure, ", ")))
 	head := sb.Len()
 	for _, r := range rows {
 		if emitted > 0 && sb.Len()-head >= maxBytes {
@@ -484,7 +485,7 @@ func emitProvenanceSource(rows []map[string]interface{}, maxBytes int) (sql stri
 				}
 				sb.WriteString(strconv.FormatFloat(f, 'f', -1, 64))
 			} else {
-				sb.WriteString(parser.SQLStringLiteral(reconString(r[c])))
+				sb.WriteString(sqlquote.String(reconString(r[c])))
 			}
 		}
 		sb.WriteString(")")

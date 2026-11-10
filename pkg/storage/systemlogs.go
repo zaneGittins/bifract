@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+
+	"bifract/pkg/sqlquote"
 )
 
 // orphanedSystemLogRe matches the tables ClickHouse leaves behind when a system
@@ -60,8 +62,8 @@ func (c *ClickHouseClient) DropOrphanedSystemLogTables(ctx context.Context) erro
 	// text_log routinely exceeds.
 	var dropped int
 	for _, name := range names {
-		stmt := fmt.Sprintf("DROP TABLE IF EXISTS system.`%s`%s SYNC SETTINGS max_table_size_to_drop = 0",
-			name, c.OnClusterSQL())
+		stmt := fmt.Sprintf("DROP TABLE IF EXISTS system.%s%s SYNC SETTINGS max_table_size_to_drop = 0",
+			sqlquote.Ident(name), c.OnClusterSQL())
 		if err := c.conn.Exec(ctx, stmt); err != nil {
 			log.Printf("Warning: could not drop stranded system log table %s (will retry next start): %v", name, err)
 			continue

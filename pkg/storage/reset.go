@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"bifract/pkg/sqlquote"
 )
 
 // resetMaterializedViews are the log-sourced views defined by init-clickhouse.sql.
@@ -78,14 +80,14 @@ func KeeperTablePath(shard, database, table string) string {
 // errors when the path does not exist, which is the healthy case and callers should
 // treat as "nothing to clean".
 func KeeperReplicasQuery(path string) string {
-	return fmt.Sprintf("SELECT name FROM system.zookeeper WHERE path = '%s/replicas'", escCHLiteral(path))
+	return fmt.Sprintf("SELECT name FROM system.zookeeper WHERE path = %s", sqlquote.String(path+"/replicas"))
 }
 
 // DropKeeperReplicaStatement removes one replica's registration by path. Only valid
 // for a replica that is not currently active, which is exactly the state a dropped
 // table leaves behind.
 func DropKeeperReplicaStatement(replica, path string) string {
-	return fmt.Sprintf("SYSTEM DROP REPLICA '%s' FROM ZKPATH '%s'", escCHLiteral(replica), escCHLiteral(path))
+	return fmt.Sprintf("SYSTEM DROP REPLICA %s FROM ZKPATH %s", sqlquote.String(replica), sqlquote.String(path))
 }
 
 // ShardMacroQuery reads a node's {shard} substitution, needed to build its Keeper
@@ -179,16 +181,7 @@ func (c *ClickHouseClient) cleanKeeperPaths(ctx context.Context, extraTables []s
 // above and from Postgres, so this guards the interpolation rather than validating
 // a user-supplied name.
 func quoteCHIdent(name string) string {
-	return "`" + escapeCHBacktickIdent(name) + "`"
-}
-
-// escapeCHBacktickIdent escapes a string for use inside a ClickHouse
-// backtick-quoted identifier. ClickHouse treats a backslash-escaped backtick as
-// a literal backtick, so doubling only backticks lets a `\` escape the closing
-// quote and break out of the identifier; the backslash must be escaped first.
-func escapeCHBacktickIdent(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	return strings.ReplaceAll(s, "`", "``")
+	return sqlquote.Ident(name)
 }
 
 // Analytics model objects are named from the model's UUID. Defined here, in the

@@ -10,6 +10,7 @@ import (
 	"bifract/pkg/ingest"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 	"bifract/pkg/tlshresolve"
 )
@@ -101,10 +102,10 @@ func (s *Scratch) WaitVisible(ctx context.Context, units []Unit, w Window) error
 	}
 
 	query := fmt.Sprintf(
-		"SELECT fractal_id, count() AS c FROM %s WHERE ingest_timestamp >= '%s' AND ingest_timestamp <= '%s' GROUP BY fractal_id",
+		"SELECT fractal_id, count() AS c FROM %s WHERE ingest_timestamp >= %s AND ingest_timestamp <= %s GROUP BY fractal_id",
 		s.Qualified(),
-		w.Start.Format("2006-01-02 15:04:05"),
-		w.End.Format("2006-01-02 15:04:05"))
+		sqlquote.String(w.Start.Format("2006-01-02 15:04:05")),
+		sqlquote.String(w.End.Format("2006-01-02 15:04:05")))
 
 	deadline := time.Now().Add(visibilityTimeout)
 	var missing []string

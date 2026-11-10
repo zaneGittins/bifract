@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -146,9 +147,9 @@ type maintainRow struct {
 // whichever node happened to run it.
 func (r maintainRow) insertSQL(target, sourceTable, where string) (string, error) {
 	if r.modelType.IsNetwork() {
-		return BuildNetStateInsert(r.def, "`"+target+"`", sourceTable, where, r.fractalID)
+		return BuildNetStateInsert(r.def, sqlquote.Ident(target), sourceTable, where, r.fractalID)
 	}
-	return BuildStateInsert(r.def, r.modelType, "`"+target+"`", sourceTable, where, r.fractalID)
+	return BuildStateInsert(r.def, r.modelType, sqlquote.Ident(target), sourceTable, where, r.fractalID)
 }
 
 // stateTarget is the table a cycle writes, distributed when the deployment is.
@@ -299,8 +300,8 @@ func (s *StateMaintainer) maintain(ctx context.Context, r maintainRow, cutoff ti
 	// Bounded on both sides and keyed on ingest_timestamp, so the read prunes to
 	// the partitions and parts holding this window rather than the model's whole
 	// history.
-	where := fmt.Sprintf("ingest_timestamp > '%s' AND ingest_timestamp <= '%s'",
-		storage.EscCHStr(from.Format(chTimeLayout)), storage.EscCHStr(to.Format(chTimeLayout)))
+	where := fmt.Sprintf("ingest_timestamp > %s AND ingest_timestamp <= %s",
+		sqlquote.String(from.Format(chTimeLayout)), sqlquote.String(to.Format(chTimeLayout)))
 
 	def, err := s.mgr.ResolveSource(ctx, r.def, r.fractalID, "")
 	if err != nil {

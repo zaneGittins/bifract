@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -80,9 +81,8 @@ type stateSummary struct {
 // is what a volume model scores as of (see volumeAsOf). oldest and newest skip
 // days the model cannot have recorded (see recordedDay); from is its recordStart.
 func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, fractalID, volumeAsOf string, from, today time.Time, pass *time.Time) string {
-	fidEsc := storage.EscCHStr(fractalID)
-	fid := fidScope(fidEsc)
-	qt := "`" + table + "`"
+	fid := fidScope(fractalID)
+	qt := sqlquote.Ident(table)
 	epoch := func(expr string) string { return "toUInt64(toUnixTimestamp(" + expr + "))" }
 	recorded := func(d string) string { return recordedDay(d, from) }
 	// kept is a day array's recorded days. An empty one's min and max are the epoch.
@@ -129,7 +129,7 @@ FROM (%s
 			// A windowed pair counts on the day it came back.
 			return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
 FROM (%s)`, epoch("toDateTime(minIf(arrayMin(_k), notEmpty(_k)), 'UTC')"), epoch("toDateTime(max(arrayMax(_k)), 'UTC')"), findingsSeriesSQL("since", today),
-				flaggedHere(), "SELECT *, "+kept("days")+" AS _k FROM ("+buildRarityScoredSQL(qt, fidEsc, hist)+")")
+				flaggedHere(), "SELECT *, "+kept("days")+" AS _k FROM ("+buildRarityScoredSQL(qt, fractalID, hist)+")")
 		}
 		// A finding is a (partition, value) pair whose earliest day is that day.
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
@@ -138,7 +138,7 @@ FROM (
     FROM (SELECT partition_val, value_val, finalizeAggregation(days) AS _d, %s AS _k FROM %s WHERE %s)
     GROUP BY partition_val, value_val
 )`, epoch("toDateTime(minIf(kf, kf > toDate(0)), 'UTC')"), epoch("toDateTime(max(kl), 'UTC')"), findingsSeriesSQL("fd", today),
-			flagged(buildRarityScoredSQL(qt, fidEsc, 0)), kept("_d"), qt, fid)
+			flagged(buildRarityScoredSQL(qt, fractalID, 0)), kept("_d"), qt, fid)
 	case ModelTypeVolumeBaseline:
 		// A finding is an entity whose latest complete bucket scores above the
 		// alert's z threshold right now; there is no per-day history of scores.
@@ -150,7 +150,7 @@ FROM %s WHERE %s AND %s`, epoch("toDateTime(min(bucket), 'UTC')"), epoch("toDate
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest%s,
     toUInt64(ifNull((SELECT %s FROM %s WHERE %s), 0)) AS scored
 FROM %s WHERE %s`, epoch("min(hour)"), epoch("max(last_ts)"),
-			flagged(networkLatest(qt, fidEsc)), epoch("max(scored_at)"), qt, fid, "`"+stateTable+"`", fid+" AND "+recorded("toDate(hour, 'UTC')"))
+			flagged(networkLatest(qt, fractalID)), epoch("max(scored_at)"), qt, fid, sqlquote.Ident(stateTable), fid+" AND "+recorded("toDate(hour, 'UTC')"))
 	case ModelTypeTLSH:
 		oldest, newest := keyBounds()
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest FROM %s WHERE %s`, oldest, newest, qt, fid)
@@ -164,7 +164,7 @@ func findingsSeriesSQL(dayCol string, today time.Time) string {
 	t := today.UTC().Format("2006-01-02")
 	parts := make([]string, findingsDays)
 	for i := 0; i < findingsDays; i++ {
-		parts[i] = fmt.Sprintf("toUInt64(countIf(%s = toDate('%s') - %d))", dayCol, t, findingsDays-1-i)
+		parts[i] = fmt.Sprintf("toUInt64(countIf(%s = toDate(%s) - %d))", dayCol, sqlquote.String(t), findingsDays-1-i)
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
 }
@@ -248,7 +248,7 @@ func recordedSince(d string, from time.Time) string {
 	if from.IsZero() {
 		return d + " > toDate(0)"
 	}
-	return d + " >= toDate('" + from.UTC().Format("2006-01-02") + "')"
+	return d + " >= toDate(" + sqlquote.String(from.UTC().Format("2006-01-02")) + ")"
 }
 
 // historySpan is how much history lies between oldest and newest in days: the

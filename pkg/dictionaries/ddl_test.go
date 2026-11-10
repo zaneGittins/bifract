@@ -83,7 +83,7 @@ func TestPatternDictionaryDeclaresMarkerFirst(t *testing.T) {
 	}
 	src := m.patternSourceQuery(dict, cols)
 	keys := src[strings.Index(src, "[")+1 : strings.Index(src, "] AS keys")]
-	if got := strings.ReplaceAll(keys, `\'`, ""); got != PatternMatchAttr+", tool, risk" {
+	if got := strings.ReplaceAll(keys, "'", ""); got != PatternMatchAttr+", tool, risk" {
 		t.Errorf("source key array %s does not line up with the declaration", keys)
 	}
 	if !strings.Contains(ddl, "LAYOUT(REGEXP_TREE)") {

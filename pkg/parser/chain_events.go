@@ -132,7 +132,7 @@ func BuildChainEventsSQL(meta *ChainMeta, entities []string, anchors [][]int64, 
 				continue
 			}
 			seen[e] = true
-			lits = append(lits, "'"+escapeString(e)+"'")
+			lits = append(lits, sqlString(e))
 		}
 		if len(lits) > 0 {
 			where = append(where, fmt.Sprintf("%s IN (%s)", meta.EntityExpr, strings.Join(lits, ", ")))

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+
+	"bifract/pkg/sqlquote"
 )
 
 // A REGEXP_TREE runs every (?i) expression through RE2 on every row; a pattern
@@ -14,7 +16,7 @@ import (
 // patternArraySQL is a scalar subquery for a pattern list's expressions, read
 // from the same rows its dictionary loads.
 func (m *Manager) patternArraySQL(id, keyCol string) string {
-	return fmt.Sprintf("(SELECT groupArray(`%s`) %s)", escCH(keyCol), m.liveRows(id, keyCol))
+	return fmt.Sprintf("(SELECT groupArray(%s) %s)", sqlquote.Ident(keyCol), m.liveRows(id, keyCol))
 }
 
 // probeSQL compiles a list's expressions. Where replicas can lag, it reads every
@@ -24,9 +26,9 @@ func (m *Manager) probeSQL(dict *Dictionary) string {
 	if !m.replicated {
 		return "SELECT multiMatchAny('', " + m.patternArraySQL(dict.ID, dict.KeyColumn) + ")"
 	}
-	from := m.ch.Topology().FanoutSystemTableArgs("`"+escCH(m.chDB)+"`", "`"+escCH(chTableName(dict.ID))+"`")
-	return fmt.Sprintf("SELECT multiMatchAny('', (SELECT groupUniqArray(`%s`) FROM %s WHERE notEmpty(`%s`)))",
-		escCH(dict.KeyColumn), from, escCH(dict.KeyColumn))
+	from := m.ch.Topology().FanoutSystemTableArgs(sqlquote.Ident(m.chDB), sqlquote.Ident(chTableName(dict.ID)))
+	return fmt.Sprintf("SELECT multiMatchAny('', (SELECT groupUniqArray(%s) FROM %s WHERE notEmpty(%s)))",
+		sqlquote.Ident(dict.KeyColumn), from, sqlquote.Ident(dict.KeyColumn))
 }
 
 // invalidatePrefilter withdraws a pattern list's screen before its expressions

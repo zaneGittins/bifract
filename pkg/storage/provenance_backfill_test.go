@@ -13,6 +13,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"bifract/internal/fakedb"
+	"bifract/pkg/sqlquote"
 )
 
 // fillFake answers the summary fill's queries: both views present, fractals f1 and o'k, and
@@ -71,7 +72,8 @@ func TestBackfillProvenanceSummary(t *testing.T) {
 		}
 	}
 	// The filter is a literal inside a literal: the fractal id is escaped for both.
-	if want := `additional_table_filters = {'proc_lineage': 'fractal_id = ''o''''k''', 'proc_freq': 'fractal_id = ''o''''k'''}`; !strings.Contains(inserts[2], want) {
+	cond := sqlquote.String("fractal_id = " + sqlquote.String("o'k"))
+	if want := "additional_table_filters = {'proc_lineage': " + cond + ", 'proc_freq': " + cond + "}"; !strings.Contains(inserts[2], want) {
 		t.Errorf("fractal filter: want %s in\n%s", want, inserts[2])
 	}
 	if !strings.Contains(inserts[0], "max_bytes_before_external_group_by") {
@@ -91,7 +93,7 @@ func TestBackfillProvenanceSummaryResumes(t *testing.T) {
 	if err := c.BackfillProvenancePaths(context.Background(), &summaryState{}); err != nil {
 		t.Fatal(err)
 	}
-	if inserts := f.ExecutedMatching("INSERT INTO provenance_summary "); len(inserts) != 2 || !strings.Contains(inserts[0], "o''''k") {
+	if inserts := f.ExecutedMatching("INSERT INTO provenance_summary "); len(inserts) != 2 || !strings.Contains(inserts[0], sqlquote.String("fractal_id = "+sqlquote.String("o'k"))) {
 		t.Errorf("resume refilled a done fractal:\n%s", strings.Join(inserts, "\n"))
 	}
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -98,7 +99,7 @@ func activityLimit(r *http.Request) int {
 func activityClassFilter(class, classExpr string) string {
 	switch class {
 	case "search", "alert", "ingest", "system":
-		return fmt.Sprintf(" AND %s = '%s'", classExpr, class)
+		return fmt.Sprintf(" AND %s = %s", classExpr, sqlquote.String(class))
 	}
 	return ""
 }
@@ -112,8 +113,8 @@ func activityTextFilter(q string) string {
 	if len(q) > 200 {
 		q = q[:200]
 	}
-	esc := storage.EscCHStr(q)
-	return fmt.Sprintf(" AND (positionCaseInsensitive(query, '%s') > 0 OR positionCaseInsensitive(log_comment, '%s') > 0)", esc, esc)
+	lit := sqlquote.String(q)
+	return fmt.Sprintf(" AND (positionCaseInsensitive(query, %[1]s) > 0 OR positionCaseInsensitive(log_comment, %[1]s) > 0)", lit)
 }
 
 func activityProcTextFilter(q string) string {
@@ -124,8 +125,8 @@ func activityProcTextFilter(q string) string {
 	if len(q) > 200 {
 		q = q[:200]
 	}
-	esc := storage.EscCHStr(q)
-	return fmt.Sprintf(" AND (positionCaseInsensitive(query, '%s') > 0 OR positionCaseInsensitive(Settings['log_comment'], '%s') > 0 OR positionCaseInsensitive(user, '%s') > 0)", esc, esc, esc)
+	lit := sqlquote.String(q)
+	return fmt.Sprintf(" AND (positionCaseInsensitive(query, %[1]s) > 0 OR positionCaseInsensitive(Settings['log_comment'], %[1]s) > 0 OR positionCaseInsensitive(user, %[1]s) > 0)", lit)
 }
 
 // activityNodeFilter pins the view to one node. Empty means every node.
@@ -137,7 +138,7 @@ func activityNodeFilter(node string) string {
 	if len(node) > 128 {
 		node = node[:128]
 	}
-	return fmt.Sprintf(" AND hostName() = '%s'", storage.EscCHStr(node))
+	return fmt.Sprintf(" AND hostName() = %s", sqlquote.String(node))
 }
 
 // HandleActivityStream returns the merged query stream: what is running right now
@@ -192,7 +193,7 @@ func activityStreamSQL(topo storage.Topology, state, class, text, node string, l
 	// query cannot be yet.
 	if state != "error" {
 		where := "is_initial_query = 1" +
-			fmt.Sprintf(" AND Settings['log_comment'] != '%s'", storage.EscCHStr(activityTag)) +
+			fmt.Sprintf(" AND Settings['log_comment'] != %s", sqlquote.String(activityTag)) +
 			activityClassFilter(class, activityProcClassSQL) +
 			activityProcTextFilter(text) +
 			activityNodeFilter(node)
@@ -230,7 +231,7 @@ LIMIT %d`, activityProcClassSQL, procSource, where, activityRunningCap))
 	AND is_initial_query = 1
 	AND event_date >= toDate(now() - INTERVAL %d MINUTE)
 	AND event_time > now() - INTERVAL %d MINUTE
-	AND log_comment != '%s'`, windowMin, windowMin, storage.EscCHStr(activityTag)) +
+	AND log_comment != %s`, windowMin, windowMin, sqlquote.String(activityTag)) +
 			activityClassFilter(class, activityClassSQL) +
 			activityTextFilter(text) +
 			activityNodeFilter(node)
@@ -311,7 +312,7 @@ func (h *PerformanceHandler) HandleActivitySummary(w http.ResponseWriter, r *htt
 	AND is_initial_query = 1
 	AND event_date >= toDate(now() - INTERVAL %d MINUTE)
 	AND event_time > now() - INTERVAL %d MINUTE
-	AND log_comment != '%s'`, windowMin, windowMin, storage.EscCHStr(activityTag))
+	AND log_comment != %s`, windowMin, windowMin, sqlquote.String(activityTag))
 
 	out := map[string]interface{}{"success": true, "bucket_seconds": bucketSec, "window_minutes": windowMin}
 
@@ -344,8 +345,8 @@ ORDER BY t`, bucketSec, activityClassSQL, logSource, logWhere))
 	toFloat64(max(elapsed)) AS oldest_sec,
 	toUInt64(countIf(elapsed > 5)) AS slow
 FROM %s
-WHERE is_initial_query = 1 AND Settings['log_comment'] != '%s'`,
-		procSource, storage.EscCHStr(activityTag))); rerr == nil && len(running) > 0 {
+WHERE is_initial_query = 1 AND Settings['log_comment'] != %s`,
+		procSource, sqlquote.String(activityTag))); rerr == nil && len(running) > 0 {
 		out["running"] = running[0]
 	}
 
@@ -484,9 +485,9 @@ func (h *PerformanceHandler) HandleActivityDetail(w http.ResponseWriter, r *http
 	toInt64(exception_code) AS exception_code,
 	substring(exception, 1, 500) AS exception
 FROM %s
-WHERE (query_id = '%s' OR initial_query_id = '%s') AND type != 'QueryStart'
+WHERE (query_id = %s OR initial_query_id = %s) AND type != 'QueryStart'
 ORDER BY coordinator DESC, duration_ms DESC
-LIMIT 64`, source, storage.EscCHStr(queryID), storage.EscCHStr(queryID)))
+LIMIT 64`, source, sqlquote.String(queryID), sqlquote.String(queryID)))
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"success": false, "error": fmt.Sprintf("detail query failed: %v", err),

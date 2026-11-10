@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 	"github.com/lib/pq"
 )
@@ -592,7 +593,7 @@ func (m *Manager) dropStateMV(ctx context.Context, mvName string) error {
 	if mvName == "" {
 		return nil
 	}
-	sql := m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", mvName))
+	sql := m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS %s", sqlquote.Ident(mvName)))
 	if err := m.ch.ExecSchema(ctx, sql); err != nil && !isCHDDLTimeout(err) {
 		return fmt.Errorf("drop model mv: %w", err)
 	}
@@ -607,7 +608,7 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 	if mt.IsScheduled() {
 		return m.createNetworkCHObjects(ctx, id, fractalID, def, mt, tableName, mvName)
 	}
-	tableSQL, err := GenerateDDL(def, mt, "`"+tableName+"`")
+	tableSQL, err := GenerateDDL(def, mt, sqlquote.Ident(tableName))
 	if err != nil {
 		return err
 	}
@@ -676,23 +677,23 @@ func (m *Manager) ensureStateLayout(ctx context.Context, id, tableName, mvName s
 func (m *Manager) stateLayoutOK(ctx context.Context, id, tableName string, def ModelDefinition, mt ModelType) (bool, error) {
 	col := parser.HistoryDayColumn
 	days := def.HistoryDaysFor(mt)
-	want := fmt.Sprintf("position(engine_full, '%s') = 0", col)
+	want := fmt.Sprintf("position(engine_full, %s) = 0", sqlquote.String(col))
 	if days > 0 {
-		want = fmt.Sprintf("position(engine_full, 'TTL %s + toIntervalDay(%d)') > 0", col, parser.HistoryRetentionDays(days))
+		want = fmt.Sprintf("position(engine_full, %s) > 0", sqlquote.String("TTL "+col+" + toIntervalDay("+fmt.Sprint(parser.HistoryRetentionDays(days))+")"))
 	}
 	from := m.systemTable
-	q := fmt.Sprintf("SELECT count() FROM %s WHERE database = currentDatabase() AND name = '%s' AND NOT (%s)",
-		from("tables"), storage.EscCHStr(tableName), want)
+	q := fmt.Sprintf("SELECT count() FROM %s WHERE database = currentDatabase() AND name = %s AND NOT (%s)",
+		from("tables"), sqlquote.String(tableName), want)
 	if m.ch.Topology().DistributedTables {
 		// A Distributed table has no TTL, so its columns are what can be wrong.
-		bad := fmt.Sprintf("countIf(name = '%s') > 0", col)
+		bad := fmt.Sprintf("countIf(name = %s) > 0", sqlquote.String(col))
 		if days > 0 {
-			bad = fmt.Sprintf("countIf(name = '%s') = 0", col)
+			bad = fmt.Sprintf("countIf(name = %s) = 0", sqlquote.String(col))
 		}
 		q = fmt.Sprintf(`SELECT (%s) + (SELECT count() FROM (
     SELECT hostName() AS h, %s AS bad FROM %s
-    WHERE database = currentDatabase() AND table = '%s' GROUP BY h) WHERE bad)`,
-			q, bad, from("columns"), storage.EscCHStr(chModelDistName(id)))
+    WHERE database = currentDatabase() AND table = %s GROUP BY h) WHERE bad)`,
+			q, bad, from("columns"), sqlquote.String(chModelDistName(id)))
 	}
 	var wrong uint64
 	if err := m.ch.QueryRow(storage.AdminReadContext(ctx), q).Scan(&wrong); err != nil {
@@ -705,7 +706,7 @@ func (m *Manager) stateLayoutOK(ctx context.Context, id, tableName string, def M
 // are admin reads, since clusterAllReplicas needs the privileged connection.
 func (m *Manager) systemTable(table string) string {
 	if c := m.ch.Topology().FanoutCluster; c != "" {
-		return fmt.Sprintf("clusterAllReplicas('%s', system.%s)", storage.EscCHStr(c), table)
+		return fmt.Sprintf("clusterAllReplicas(%s, system.%s)", sqlquote.String(c), table)
 	}
 	return "system." + table
 }
@@ -714,10 +715,10 @@ func (m *Manager) systemTable(table string) string {
 // table and its Distributed companion holds points in the current layout.
 func (m *Manager) netStateLayoutOK(ctx context.Context, id string) (bool, error) {
 	q := fmt.Sprintf(`SELECT count() FROM (
-    SELECT hostName() AS h, table, countIf(name = 'points' AND type = '%s') AS ok FROM %s
-    WHERE database = currentDatabase() AND table IN ('%s', '%s') GROUP BY h, table) WHERE ok = 0`,
-		storage.EscCHStr(netStatePointsType), m.systemTable("columns"),
-		storage.EscCHStr(chModelStateName(id)), storage.EscCHStr(chModelStateDistName(id)))
+    SELECT hostName() AS h, table, countIf(name = 'points' AND type = %s) AS ok FROM %s
+    WHERE database = currentDatabase() AND table IN (%s, %s) GROUP BY h, table) WHERE ok = 0`,
+		sqlquote.String(netStatePointsType), m.systemTable("columns"),
+		sqlquote.String(chModelStateName(id)), sqlquote.String(chModelStateDistName(id)))
 	var wrong uint64
 	if err := m.ch.QueryRow(storage.AdminReadContext(ctx), q).Scan(&wrong); err != nil {
 		return false, err
@@ -742,14 +743,14 @@ func (m *Manager) ensureNetStateLayout(ctx context.Context, id string, windowDay
 	state := chModelStateName(id)
 	log.Printf("model %s: state table %s has an older layout; recreating it", id, state)
 	if m.ch.Topology().DistributedTables {
-		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelStateDistName(id)))); err != nil && !isCHDDLTimeout(err) {
+		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS %s", sqlquote.Ident(chModelStateDistName(id))))); err != nil && !isCHDDLTimeout(err) {
 			return fmt.Errorf("drop distributed state table: %w", err)
 		}
 	}
 	if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(dropModelTableSQL(state))); err != nil && !isCHDDLTimeout(err) {
 		return fmt.Errorf("drop state table: %w", err)
 	}
-	ddl := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetStateTableDDL("`"+state+"`", windowDays)))
+	ddl := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetStateTableDDL(sqlquote.Ident(state), windowDays)))
 	if err := m.ch.ExecSchema(ctx, ddl); err != nil && !isCHDDLTimeout(err) {
 		return fmt.Errorf("recreate state table: %w", err)
 	}
@@ -766,9 +767,9 @@ func (m *Manager) ensureNetStateLayout(ctx context.Context, id string, windowDay
 // partitioned by expiry with the TTL that drops whole parts.
 func (m *Manager) netResultsLayoutOK(ctx context.Context, table string) (bool, error) {
 	q := fmt.Sprintf(`SELECT count() FROM %s
-WHERE database = currentDatabase() AND name = '%s'
-  AND (partition_key != '%s' OR position(engine_full, '%s') = 0)`,
-		m.systemTable("tables"), storage.EscCHStr(table), storage.EscCHStr(netResultsPartitionKey), storage.EscCHStr(netResultsTTL))
+WHERE database = currentDatabase() AND name = %s
+  AND (partition_key != %s OR position(engine_full, %s) = 0)`,
+		m.systemTable("tables"), sqlquote.String(table), sqlquote.String(netResultsPartitionKey), sqlquote.String(netResultsTTL))
 	var wrong uint64
 	if err := m.ch.QueryRow(storage.AdminReadContext(ctx), q).Scan(&wrong); err != nil {
 		return false, err
@@ -797,20 +798,20 @@ func (m *Manager) ensureNetResultsLayout(ctx context.Context, mo *Model) error {
 	if err := ddl("drop stage", m.ch.InjectOnCluster(dropModelTableSQL(stage))); err != nil {
 		return err
 	}
-	if err := ddl("create stage", m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL("`"+stage+"`")))); err != nil {
+	if err := ddl("create stage", m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL(sqlquote.Ident(stage))))); err != nil {
 		return err
 	}
 	cols := "src_ip, dst_ip, dst_port, regularity_score, ts_score, ds_score, dur_score, hist_score, " +
 		"prevalence, prevalence_total, prevalence_score, first_seen_score, threat_intel_score, " +
 		"final_score, conn_count, total_duration, first_seen, last_seen, scored_at"
-	fid := storage.EscCHStr(mo.FractalID)
+	fid := mo.FractalID
 	expires := netResultsWrittenExpiry(mo.DatasetEnd != nil, time.Now()).Format("2006-01-02")
-	insert := fmt.Sprintf("INSERT INTO `%s` (fractal_id, %s, expires_on) SELECT '%s', %s, toDate('%s') FROM (%s)",
-		stage, cols, fid, cols, expires, networkLatest("`"+m.readTableName(mo)+"`", fid))
+	insert := fmt.Sprintf("INSERT INTO %s (fractal_id, %s, expires_on) SELECT %s, %s, toDate(%s) FROM (%s)",
+		sqlquote.Ident(stage), cols, sqlquote.String(fid), cols, sqlquote.String(expires), networkLatest(sqlquote.Ident(m.readTableName(mo)), fid))
 	if err := m.ch.ExecSchema(ctx, insert); err != nil {
 		return fmt.Errorf("copy results: %w", err)
 	}
-	if err := ddl("swap", fmt.Sprintf("EXCHANGE TABLES `%s` AND `%s`%s", table, stage, m.ch.OnClusterSQL())); err != nil {
+	if err := ddl("swap", fmt.Sprintf("EXCHANGE TABLES %s AND %s%s", sqlquote.Ident(table), sqlquote.Ident(stage), m.ch.OnClusterSQL())); err != nil {
 		return err
 	}
 	return ddl("drop old results", m.ch.InjectOnCluster(dropModelTableSQL(stage)))
@@ -823,8 +824,8 @@ func (m *Manager) seedScoredPass(ctx context.Context, mo *Model) error {
 		return nil
 	}
 	var ms uint64
-	q := fmt.Sprintf("SELECT toUInt64(toUnixTimestamp64Milli(max(scored_at))) FROM `%s` WHERE %s",
-		m.readTableName(mo), fidScope(storage.EscCHStr(mo.FractalID)))
+	q := fmt.Sprintf("SELECT toUInt64(toUnixTimestamp64Milli(max(scored_at))) FROM %s WHERE %s",
+		sqlquote.Ident(m.readTableName(mo)), fidScope(mo.FractalID))
 	if err := m.ch.QueryRow(storage.AdminReadContext(ctx), q).Scan(&ms); err != nil || ms == 0 {
 		return err
 	}
@@ -871,7 +872,7 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 	stateName := chModelStateName(id)
 	windowDays := def.WindowDays()
 
-	stateSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetStateTableDDL("`"+stateName+"`", windowDays)))
+	stateSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetStateTableDDL(sqlquote.Ident(stateName), windowDays)))
 	if err := m.ch.ExecSchema(ctx, stateSQL); err != nil && !isCHDDLTimeout(err) {
 		return fmt.Errorf("create state table: %w", err)
 	}
@@ -879,7 +880,7 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 		return err
 	}
 
-	resultsSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL("`" + tableName + "`")))
+	resultsSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL(sqlquote.Ident(tableName))))
 	if err := m.ch.ExecSchema(ctx, resultsSQL); err != nil && !isCHDDLTimeout(err) {
 		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(dropModelTableSQL(stateName)))
 		return fmt.Errorf("create results table: %w", err)
@@ -936,11 +937,10 @@ func (m *Manager) ensureDistributedCompanions(ctx context.Context, id string, mt
 	if !topo.DistributedTables {
 		return
 	}
-	cl := storage.EscCHStr(topo.DDLCluster)
 	for _, c := range distCompanions(id, mt, tableName) {
 		sql := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
-			c.dist, c.local, cl, c.local,
+			"CREATE TABLE IF NOT EXISTS %s AS %s ENGINE = Distributed(%s, currentDatabase(), %s, rand())",
+			sqlquote.Ident(c.dist), sqlquote.Ident(c.local), sqlquote.String(topo.DDLCluster), sqlquote.String(c.local),
 		)
 		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(sql)); err != nil && !isCHDDLTimeout(err) {
 			log.Printf("model %s: create %s: %v", id, c.what, err)
@@ -953,7 +953,7 @@ func (m *Manager) ensureDistributedCompanions(ctx context.Context, id string, mt
 // can re-create the table under the same name (code 253 otherwise), and the
 // size guard is lifted so a large model table never refuses to drop.
 func dropModelTableSQL(name string) string {
-	return fmt.Sprintf("DROP TABLE IF EXISTS `%s` SYNC SETTINGS max_table_size_to_drop = 0", name)
+	return fmt.Sprintf("DROP TABLE IF EXISTS %s SYNC SETTINGS max_table_size_to_drop = 0", sqlquote.Ident(name))
 }
 
 func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName string, mt ModelType) error {
@@ -961,7 +961,7 @@ func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName strin
 	// the target tables. Every drop is IF EXISTS + best-effort (log and continue) so
 	// a partial prior failure still fully cleans up. InjectOnCluster fans each drop
 	// out to every shard/replica.
-	mvDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", mvName))
+	mvDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS %s", sqlquote.Ident(mvName)))
 	if err := m.ch.ExecSchema(ctx, mvDrop); err != nil {
 		log.Printf("drop MV %s: %v", mvName, err)
 	}
@@ -978,12 +978,12 @@ func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName strin
 	}
 	// Drop the distributed table(s) (cluster mode) so no dangling fan-out object remains.
 	if m.ch.Topology().DistributedTables {
-		distDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelDistName(id)))
+		distDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS %s", sqlquote.Ident(chModelDistName(id))))
 		if err := m.ch.ExecSchema(ctx, distDrop); err != nil {
 			log.Printf("drop distributed table %s: %v", chModelDistName(id), err)
 		}
 		if mt.IsScheduled() {
-			distStateDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelStateDistName(id)))
+			distStateDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS %s", sqlquote.Ident(chModelStateDistName(id))))
 			if err := m.ch.ExecSchema(ctx, distStateDrop); err != nil {
 				log.Printf("drop distributed state table %s: %v", chModelStateDistName(id), err)
 			}
@@ -994,7 +994,7 @@ func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName strin
 
 // RowCount returns the approximate number of rows in a model's aggregating table.
 func (m *Manager) RowCount(ctx context.Context, tableName string) (uint64, error) {
-	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() FROM `%s`", tableName))
+	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() FROM %s", sqlquote.Ident(tableName)))
 	if err != nil {
 		return 0, err
 	}
@@ -1057,13 +1057,13 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID string, q
 
 // buildRarityScoredSQL scores a rarity model's pairs (see parser.RarityScoredSQL)
 // with the day list and since; historyDays is 0 for anything but a windowed table.
-func buildRarityScoredSQL(source, fidEsc string, historyDays int) string {
-	return parser.RarityScoredSQL(source, fidScope(fidEsc), 1, historyDays, true)
+func buildRarityScoredSQL(source, fid string, historyDays int) string {
+	return parser.RarityScoredSQL(source, fidScope(fid), 1, historyDays, true)
 }
 
 // fidScope is the WHERE predicate scoping a model table read to one fractal.
-// fidEsc must already be CH-escaped.
-func fidScope(fidEsc string) string { return "fractal_id = '" + fidEsc + "'" }
+// fidScope scopes a model's rows to one fractal.
+func fidScope(fid string) string { return "fractal_id = " + sqlquote.String(fid) }
 
 func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule, historyDays int) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{"partition_val": true, "value_val": true, "model_count": true, "model_total": true, "percent": true, "coverage": true}
@@ -1072,11 +1072,11 @@ func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID string
 		return nil, 0, nil
 	}
 
-	baseQuery := buildRarityScoredSQL("`"+tableName+"`", storage.EscCHStr(fractalID), historyDays)
+	baseQuery := buildRarityScoredSQL(sqlquote.Ident(tableName), fractalID, historyDays)
 
 	if q.Search != "" {
-		baseQuery += fmt.Sprintf(" AND (partition_val ILIKE '%%%s%%' OR value_val ILIKE '%%%s%%')",
-			storage.EscCHStr(q.Search), storage.EscCHStr(q.Search))
+		baseQuery += fmt.Sprintf(" AND (partition_val ILIKE %s OR value_val ILIKE %s)",
+			sqlquote.String("%"+q.Search+"%"), sqlquote.String("%"+q.Search+"%"))
 	}
 	return m.runPage(ctx, "rarity", baseQuery, where, order, q.Limit, q.Offset)
 }
@@ -1099,21 +1099,21 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID str
 
 	extra := ""
 	if q.Search != "" {
-		extra = fmt.Sprintf("%s ILIKE '%%%s%%'", keyCol, storage.EscCHStr(q.Search))
+		extra = fmt.Sprintf("%s ILIKE %s", keyCol, sqlquote.String("%"+q.Search+"%"))
 	}
-	scope := fidScope(storage.EscCHStr(fractalID))
+	scope := fidScope(fractalID)
 	if extra != "" {
 		scope += " AND " + extra
 	}
-	baseQuery := firstSeenAgg("`"+tableName+"`", scope, keyCol, historyDays, recorded, true)
+	baseQuery := firstSeenAgg(sqlquote.Ident(tableName), scope, keyCol, historyDays, recorded, true)
 	return m.runPage(ctx, "first_seen", baseQuery, where, order, q.Limit, q.Offset)
 }
 
 // buildVolumeScoredSQL scores a volume_baseline model's entities with the shared
-// definition (see parser.VolumeScoredSQL), as of asOf (see volumeAsOf). fidEsc must
+// definition (see parser.VolumeScoredSQL), as of asOf (see volumeAsOf). fid must
 // already be CH-escaped.
-func buildVolumeScoredSQL(source, fidEsc string, def ModelDefinition, asOf string) string {
-	return parser.VolumeScoredSQLAt(source, fidScope(fidEsc), def.TimeBucket, def.MinSample, "", asOf, true)
+func buildVolumeScoredSQL(source, fid string, def ModelDefinition, asOf string) string {
+	return parser.VolumeScoredSQLAt(source, fidScope(fid), def.TimeBucket, def.MinSample, "", asOf, true)
 }
 
 func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalID string, def ModelDefinition, asOf string, q DataQuery, rule findingsRule) ([]map[string]interface{}, uint64, error) {
@@ -1129,9 +1129,9 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 		return nil, 0, nil
 	}
 
-	baseQuery := buildVolumeScoredSQL("`"+tableName+"`", storage.EscCHStr(fractalID), def, asOf)
+	baseQuery := buildVolumeScoredSQL(sqlquote.Ident(tableName), fractalID, def, asOf)
 	if q.Search != "" {
-		baseQuery += fmt.Sprintf("\nAND entity_val ILIKE '%%%s%%'", storage.EscCHStr(q.Search))
+		baseQuery += fmt.Sprintf("\nAND entity_val ILIKE %s", sqlquote.String("%"+q.Search+"%"))
 	}
 	return m.runPage(ctx, "volume_baseline", baseQuery, where, order, q.Limit, q.Offset)
 }
@@ -1174,16 +1174,16 @@ func (m *Manager) getNetworkData(ctx context.Context, tableName, fractalID strin
 	if none {
 		return nil, 0, nil
 	}
-	fid := storage.EscCHStr(fractalID)
+	fid := fractalID
 	// The rule reads raw scores, as the alert and the counts do; only the page rounds.
-	rows := networkLatest("`"+tableName+"`", fid)
+	rows := networkLatest(sqlquote.Ident(tableName), fid)
 	if where != "" {
 		rows = fmt.Sprintf("SELECT * FROM (%s) WHERE %s", rows, where)
 	}
 	base := fmt.Sprintf("SELECT %s, toUInt8(%s) AS current FROM (%s)", networkResultCols, parser.NetCurrentPredicate(pass, ""), rows)
 	if q.Search != "" {
-		s := storage.EscCHStr(q.Search)
-		base += fmt.Sprintf(" WHERE src_ip ILIKE '%%%s%%' OR dst_ip ILIKE '%%%s%%'", s, s)
+		like := sqlquote.String("%" + q.Search + "%")
+		base += " WHERE src_ip ILIKE " + like + " OR dst_ip ILIKE " + like
 	}
 	return m.runPage(ctx, "network", base, "", order, q.Limit, q.Offset)
 }
@@ -1223,8 +1223,8 @@ func (m *Manager) getNetworkHistogram(ctx context.Context, qt, fid string) (map[
 // findings_rule, that rule as a phrase ("" when the model sets none).
 func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) (map[string]interface{}, error) {
 	tableName := m.readTableName(model)
-	qt := "`" + tableName + "`"
-	fid := storage.EscCHStr(fractalID)
+	qt := sqlquote.Ident(tableName)
+	fid := fractalID
 	rule := findingsRuleFor(model.ModelType, model.Definition, model.ScoredPassAt)
 	now := time.Now().UTC()
 	hist := model.Definition.HistoryDaysFor(model.ModelType)
@@ -1358,7 +1358,7 @@ FROM (%s
 }
 
 func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, def ModelDefinition, fid, asOf string, rule findingsRule) (map[string]interface{}, error) {
-	scoring := buildVolumeScoredSQL("`"+tableName+"`", fid, def, asOf)
+	scoring := buildVolumeScoredSQL(sqlquote.Ident(tableName), fid, def, asOf)
 	q := fmt.Sprintf(`SELECT count() AS total_entities,
        countIf(abs(z_score) > %g) AS anomalous,
        countIf(%s) AS findings,
@@ -1391,8 +1391,8 @@ type histBucket struct {
 // a single cheap GROUP BY.
 func (m *Manager) GetHistogram(ctx context.Context, model *Model, fractalID string) (map[string]interface{}, error) {
 	tableName := m.readTableName(model)
-	qt := "`" + tableName + "`"
-	fid := storage.EscCHStr(fractalID)
+	qt := sqlquote.Ident(tableName)
+	fid := fractalID
 	switch model.ModelType {
 	case ModelTypeRarity:
 		return m.getRarityHistogram(ctx, qt, fid, model.Definition)
@@ -1481,8 +1481,8 @@ var (
 
 // firstSeenCountInner returns the SQL projecting one `event_count` column per
 // first_seen entity, ready for histogram bucketing.
-func firstSeenCountInner(source, fidEsc, keyCol string) string {
-	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAgg(source, fidScope(fidEsc), keyCol, 0, false, true) + ") WHERE event_count >= 1"
+func firstSeenCountInner(source, fid, keyCol string) string {
+	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAgg(source, fidScope(fid), keyCol, 0, false, true) + ") WHERE event_count >= 1"
 }
 
 // getRarityHistogram reports how many values the model's own alert thresholds
@@ -1584,7 +1584,7 @@ GROUP BY day ORDER BY day`, firstSeenAgg(qt, fidScope(fid), keyCol, historyDays,
 }
 
 func (m *Manager) getVolumeBaselineHistogram(ctx context.Context, tableName string, def ModelDefinition, fid, asOf string) (map[string]interface{}, error) {
-	inner := buildVolumeScoredSQL("`"+tableName+"`", fid, def, asOf)
+	inner := buildVolumeScoredSQL(sqlquote.Ident(tableName), fid, def, asOf)
 	buckets, err := m.runHistogram(ctx, inner, volumeHistBucketExpr, volumeHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("volume_baseline histogram: %w", err)
@@ -1612,7 +1612,7 @@ func buildExtractionTestSQL(tableName, fractalID string, filter []FilterConditio
 	if err := validateDefinitionFieldNames(ModelDefinition{Filter: filter, Extractions: extractions}); err != nil {
 		return "", err
 	}
-	ident := func(name string) string { return "`" + parser.EscapeCHBacktickIdent(name) + "`" }
+	ident := func(name string) string { return sqlquote.Ident(name) }
 
 	var b strings.Builder
 	b.WriteString("WITH\nbase AS (\n    SELECT timestamp, norm_log, log_id")
@@ -1623,7 +1623,7 @@ func buildExtractionTestSQL(tableName, fractalID string, filter []FilterConditio
 			b.WriteString(fmt.Sprintf(", %s AS %s", chFieldRef(ext.FromField), ident(ext.FromField)))
 		}
 	}
-	b.WriteString(fmt.Sprintf("\n    FROM %s\n    WHERE %s", tableName, fidScope(storage.EscCHStr(fractalID))))
+	b.WriteString(fmt.Sprintf("\n    FROM %s\n    WHERE %s", tableName, fidScope(fractalID)))
 	for _, fc := range filter {
 		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
 	}

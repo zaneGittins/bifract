@@ -9,6 +9,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"bifract/pkg/sqlquote"
 )
 
 // buildAnalyzeFieldsSQL generates a query that computes per-field statistics.
@@ -33,7 +35,7 @@ func buildAnalyzeFieldsSQL(
 	if len(fieldsList) > 0 {
 		var paths []string
 		for _, f := range fieldsList {
-			paths = append(paths, fmt.Sprintf("'%s'", escapeString(f)))
+			paths = append(paths, sqlString(f))
 		}
 		pathFilter = fmt.Sprintf(" WHERE kv.1 IN (%s)", strings.Join(paths, ", "))
 	}
@@ -97,7 +99,7 @@ func fractalScopeCond(opts QueryOptions, prefix string) string {
 	if len(opts.FractalIDs) > 0 {
 		quoted := make([]string, 0, len(opts.FractalIDs)+1)
 		for _, id := range opts.FractalIDs {
-			quoted = append(quoted, fmt.Sprintf("'%s'", escapeString(id)))
+			quoted = append(quoted, sqlString(id))
 		}
 		if opts.IncludeEmptyFractalID {
 			quoted = append(quoted, "''")
@@ -106,9 +108,9 @@ func fractalScopeCond(opts QueryOptions, prefix string) string {
 	}
 	if opts.FractalID != "" {
 		if opts.IncludeEmptyFractalID {
-			return fmt.Sprintf("%s IN ('%s', '')", col, escapeString(opts.FractalID))
+			return fmt.Sprintf("%s IN (%s, '')", col, sqlString(opts.FractalID))
 		}
-		return fmt.Sprintf("%s = '%s'", col, escapeString(opts.FractalID))
+		return col + " = " + sqlString(opts.FractalID)
 	}
 	return ""
 }
@@ -206,14 +208,6 @@ func conditionFields(conds ...Condition) []string {
 		})
 	}
 	return out
-}
-
-func escapeString(s string) string {
-	// Escape backslashes first (for ClickHouse regex patterns)
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	// Escape single quotes for SQL
-	s = strings.ReplaceAll(s, "'", "\\'")
-	return s
 }
 
 // namedGroupOpenRe matches the opening syntax of a named capture group in every
@@ -465,24 +459,10 @@ func jsonFieldRef(field string) string {
 	var b strings.Builder
 	b.WriteString("fields")
 	for _, p := range parts {
-		b.WriteString(".`")
-		b.WriteString(EscapeCHBacktickIdent(p))
-		b.WriteString("`")
+		b.WriteString(".")
+		b.WriteString(sqlquote.Ident(p))
 	}
 	return b.String() + "::String"
-}
-
-// EscapeCHBacktickIdent escapes a string for use inside a ClickHouse
-// backtick-quoted identifier. ClickHouse honours BOTH a doubled backtick and a
-// backslash-escaped backtick inside the quotes, so a name may contain a
-// backslash that escapes the closing quote: doubling only backticks then leaves
-// `\` + “ “ “ reading as an escaped-backtick-plus-close, breaking out of the
-// identifier. Escaping the backslash first closes that hole. Field names reach
-// here straight from a user's query (sort, dedup, concat, ...), so this is the
-// boundary that keeps an attacker-supplied name from becoming SQL.
-func EscapeCHBacktickIdent(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	return strings.ReplaceAll(s, "`", "``")
 }
 
 // quoteIdent renders a column name as an identifier, backtick-quoted unless it is
@@ -491,7 +471,7 @@ func quoteIdent(s string) string {
 	if isBareIdentifier(s) {
 		return s
 	}
-	return "`" + EscapeCHBacktickIdent(s) + "`"
+	return sqlquote.Ident(s)
 }
 
 // validateNumeric ensures a value is a valid number, preventing SQL injection in numeric contexts.
@@ -519,9 +499,7 @@ func escapeRegexForClickHouse(pattern string) string {
 	// For ClickHouse regex patterns, we need to:
 	// 1. Escape backslashes for string literal
 	// 2. Wrap in single quotes
-	escaped := strings.ReplaceAll(pattern, "\\", "\\\\")
-	escaped = strings.ReplaceAll(escaped, "'", "\\'")
-	return "'" + escaped + "'"
+	return sqlString(pattern)
 }
 
 // extractLiteralTokens pulls contiguous alphabetic sequences from a regex
@@ -630,7 +608,7 @@ const caseInsensitiveFlag = "(?i)"
 func buildEqualityListSQL(fieldRef string, values []string, negate, isJSONField bool) string {
 	quoted := make([]string, len(values))
 	for i, v := range values {
-		quoted[i] = "'" + escapeString(v) + "'"
+		quoted[i] = sqlString(v)
 	}
 	list := strings.Join(quoted, ", ")
 	if negate {
@@ -664,7 +642,7 @@ func buildContainsAnySQL(fieldRef string, values []string, negate bool, mode Sou
 	values = normLogSearchValues(fieldRef, values, mode)
 	quoted := make([]string, len(values))
 	for i, v := range values {
-		quoted[i] = "'" + escapeString(v) + "'"
+		quoted[i] = sqlString(v)
 	}
 	// multiSearch* functions take at most 255 needles, so a longer list is split.
 	const maxNeedles = 255
@@ -689,7 +667,7 @@ func buildStartsWithAnySQL(fieldRef string, values []string, negate bool, mode S
 	values = normLogSearchValues(fieldRef, values, mode)
 	parts := make([]string, len(values))
 	for i, v := range values {
-		parts[i] = fmt.Sprintf("startsWith(lower(%s), '%s')", fieldRef, escapeString(strings.ToLower(v)))
+		parts[i] = fmt.Sprintf("startsWith(lower(%s), %s)", fieldRef, sqlString(strings.ToLower(v)))
 	}
 	var expr string
 	if len(parts) == 1 {
@@ -709,7 +687,7 @@ func buildEndsWithAnySQL(fieldRef string, values []string, negate bool, mode Sou
 	values = normLogSearchValues(fieldRef, values, mode)
 	parts := make([]string, len(values))
 	for i, v := range values {
-		parts[i] = fmt.Sprintf("endsWith(lower(%s), '%s')", fieldRef, escapeString(strings.ToLower(v)))
+		parts[i] = fmt.Sprintf("endsWith(lower(%s), %s)", fieldRef, sqlString(strings.ToLower(v)))
 	}
 	var expr string
 	if len(parts) == 1 {
@@ -862,14 +840,14 @@ func lenientDateTime(ref string, text bool) string {
 // also break the generic row scanner, which reads String columns into a *string.
 func timeFormatExpr(field Argument, chFormat, timezone string, registry *FieldRegistry) (string, error) {
 	if field.FieldName() == "timestamp" {
-		return fmt.Sprintf("formatDateTime(%s, '%s', '%s')", registry.Column("timestamp").sql, escapeString(chFormat), escapeString(timezone)), nil
+		return fmt.Sprintf("formatDateTime(%s, %s, %s)", registry.Column("timestamp").sql, sqlString(chFormat), sqlString(timezone)), nil
 	}
 	ref, err := ResolveArg(field, registry)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("ifNull(formatDateTime(%s, '%s', '%s'), '')",
-		lenientDateTime(ref, field.IsFieldName() && registry.isText(field.FieldName())), escapeString(chFormat), escapeString(timezone)), nil
+	return fmt.Sprintf("ifNull(formatDateTime(%s, %s, %s), '')",
+		lenientDateTime(ref, field.IsFieldName() && registry.isText(field.FieldName())), sqlString(chFormat), sqlString(timezone)), nil
 }
 
 // numericCast is a field's value as a Float64 for an aggregate: a number is
@@ -939,7 +917,7 @@ func parseBucketSpan(span string) (int, string) {
 func getBucketExpression(n int, unit string, tz string) string {
 	zone := ""
 	if tz != "" && tz != "UTC" {
-		zone = fmt.Sprintf(", '%s'", escapeString(tz))
+		zone = ", " + sqlString(tz)
 	}
 	// For common 1-unit spans use the simpler built-in functions
 	if n == 1 {

@@ -166,14 +166,13 @@ func pgrImageMatch(name string, arg Argument, col string) (string, error) {
 	if text == "" || text == "*" {
 		return "", fmt.Errorf("%s() was given no value to match", name)
 	}
-	v := escapeString(text)
 	if strings.ContainsAny(text, `\/`) {
-		return fmt.Sprintf("lower(%s) = lower('%s')", col, v), nil
+		return fmt.Sprintf("lower(%s) = lower(%s)", col, sqlString(text)), nil
 	}
 	if strings.Contains(text, ":") {
 		return "", fmt.Errorf(`%s(): %s looks like a path that lost its backslashes: double them, as in "C:\\Windows\\cmd.exe"`, name, text)
 	}
-	return fmt.Sprintf(`(lower(%[2]s) = lower('%[1]s') OR endsWith(lower(%[2]s), lower('\\%[1]s')) OR endsWith(lower(%[2]s), lower('/%[1]s')))`, v, col), nil
+	return fmt.Sprintf(`(lower(%[2]s) = lower(%[1]s) OR endsWith(lower(%[2]s), lower(%[3]s)) OR endsWith(lower(%[2]s), lower(%[4]s)))`, sqlString(text), col, sqlString(`\`+text), sqlString("/"+text)), nil
 }
 
 // pgrHasDescendantHandler compiles pgrHasDescendant(), which reads proc_ancestry by ancestor.
@@ -288,7 +287,7 @@ func pgrNetworkMatch(arg Argument) (string, error) {
 	if strings.ContainsAny(text, "/*") && !isStoredSubnet(text) {
 		return "", fmt.Errorf("pgrHasNetwork() compares one stored address, so %s would never match: use a /regex/ for a range", text)
 	}
-	return fmt.Sprintf("fkey_tgt = '%s'", escapeString(text)), nil
+	return "fkey_tgt = " + sqlString(text), nil
 }
 
 // The internal ranges of ipAbstractTmpl, case included; a test holds them to it.

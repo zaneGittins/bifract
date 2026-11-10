@@ -2,6 +2,7 @@ package query
 
 import (
 	"bifract/pkg/api"
+	"bifract/pkg/sqlquote"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -630,11 +631,11 @@ func fractalScopeSQL(opts parser.QueryOptions) string {
 	case len(opts.FractalIDs) > 0:
 		quoted := make([]string, len(opts.FractalIDs))
 		for i, id := range opts.FractalIDs {
-			quoted[i] = fmt.Sprintf("'%s'", escCHStr(id))
+			quoted[i] = sqlquote.String(id)
 		}
 		cond = fmt.Sprintf("fractal_id IN (%s)", strings.Join(quoted, ", "))
 	case opts.FractalID != "":
-		cond = fmt.Sprintf("fractal_id = '%s'", escCHStr(opts.FractalID))
+		cond = fmt.Sprintf("fractal_id = %s", sqlquote.String(opts.FractalID))
 	default:
 		return ""
 	}
@@ -652,8 +653,8 @@ func fractalScopeSQL(opts parser.QueryOptions) string {
 // bucket boundary, so a minute landing on it belongs to the next bucket.
 func histogramRollupSQL(table string, opts parser.QueryOptions, start, end time.Time, bucketSec int) string {
 	conds := []string{
-		fmt.Sprintf("minute >= '%s'", start.UTC().Format("2006-01-02 15:04:05")),
-		fmt.Sprintf("minute < '%s'", end.UTC().Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("minute >= %s", sqlquote.String(start.UTC().Format("2006-01-02 15:04:05"))),
+		fmt.Sprintf("minute < %s", sqlquote.String(end.UTC().Format("2006-01-02 15:04:05"))),
 	}
 	if scope := fractalScopeSQL(opts); scope != "" {
 		conds = append(conds, scope)
@@ -1300,7 +1301,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 			if req.Cursor != "" {
 				if cur, cerr := decodeCursor(req.Cursor); cerr == nil {
 					if idx := strings.LastIndex(sql, " ORDER BY"); idx >= 0 {
-						cond := fmt.Sprintf("(toUnixTimestamp64Milli(timestamp), log_id) < (%d, '%s')", cur.TSMilli, escCHStr(cur.LID))
+						cond := fmt.Sprintf("(toUnixTimestamp64Milli(timestamp), log_id) < (%d, %s)", cur.TSMilli, sqlquote.String(cur.LID))
 						// Use WHERE or AND depending on whether a WHERE clause already exists
 						if strings.Contains(strings.ToUpper(sql[:idx]), " WHERE ") {
 							cond = " AND " + cond
@@ -2980,7 +2981,7 @@ func (h *QueryHandler) buildFractalCondition(r *http.Request, selectedFractal st
 		}
 		quoted := make([]string, len(prismFractalIDs))
 		for i, id := range prismFractalIDs {
-			quoted[i] = fmt.Sprintf("'%s'", escCHStr(id))
+			quoted[i] = sqlquote.String(id)
 		}
 		condition = "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
 		if h.fractalManager != nil {
@@ -3000,10 +3001,10 @@ func (h *QueryHandler) buildFractalCondition(r *http.Request, selectedFractal st
 		if h.fractalManager != nil {
 			defaultFractal, ferr := h.fractalManager.GetDefaultFractal(r.Context())
 			if ferr == nil && defaultFractal.ID == selectedFractal {
-				return fmt.Sprintf("fractal_id IN ('%s', '')", escCHStr(selectedFractal)), false, nil
+				return fmt.Sprintf("fractal_id IN (%s, '')", sqlquote.String(selectedFractal)), false, nil
 			}
 		}
-		return fmt.Sprintf("fractal_id = '%s'", escCHStr(selectedFractal)), false, nil
+		return fmt.Sprintf("fractal_id = %s", sqlquote.String(selectedFractal)), false, nil
 	}
 	return "", false, nil
 }
@@ -3012,8 +3013,8 @@ func (h *QueryHandler) buildFractalCondition(r *http.Request, selectedFractal st
 // The constant upper bound keeps future-dated (clock-skewed) rows from leading a
 // newest-first read, and as a sort-key range it still prunes and reads in order.
 func recentLogsSQL(table, fractalCondition string, withShard bool, start, end time.Time) string {
-	where := fmt.Sprintf("WHERE timestamp >= '%s' AND timestamp <= '%s'",
-		start.UTC().Format("2006-01-02 15:04:05.000"), end.UTC().Format("2006-01-02 15:04:05.000"))
+	where := fmt.Sprintf("WHERE timestamp >= %s AND timestamp <= %s",
+		sqlquote.String(start.UTC().Format("2006-01-02 15:04:05.000")), sqlquote.String(end.UTC().Format("2006-01-02 15:04:05.000")))
 	if fractalCondition != "" {
 		where += " AND " + fractalCondition
 	}
@@ -3027,8 +3028,8 @@ func recentLogsSQL(table, fractalCondition string, withShard bool, start, end ti
 // recentHistogramSQL counts the landing window from the per-minute rollup,
 // bounded above like recentLogsSQL so future-dated rows stay out of it.
 func recentHistogramSQL(table, fractalCondition string, start, end time.Time) string {
-	where := fmt.Sprintf("WHERE minute >= '%s' AND minute <= '%s'",
-		start.UTC().Format("2006-01-02 15:04:05"), end.UTC().Format("2006-01-02 15:04:05"))
+	where := fmt.Sprintf("WHERE minute >= %s AND minute <= %s",
+		sqlquote.String(start.UTC().Format("2006-01-02 15:04:05")), sqlquote.String(end.UTC().Format("2006-01-02 15:04:05")))
 	if fractalCondition != "" {
 		where += " AND " + fractalCondition
 	}
@@ -3245,13 +3246,6 @@ func decodeCursor(s string) (cursorToken, error) {
 	}
 	var tok cursorToken
 	return tok, json.Unmarshal(b, &tok)
-}
-
-// escCHStr escapes a value for use inside single-quoted ClickHouse strings.
-func escCHStr(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "'", "\\'")
-	return s
 }
 
 // fetchProfileData polls system.query_log until the query finishes, then

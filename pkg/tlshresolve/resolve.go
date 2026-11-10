@@ -18,6 +18,7 @@ import (
 	"bifract/pkg/dictionaries"
 	"bifract/pkg/models"
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 	"bifract/pkg/tlsh"
 )
@@ -264,8 +265,8 @@ func (h *Resolver) ResolveForTable(ctx context.Context, p parser.TLSHParams, src
 	}
 
 	ref := models.CHFieldRef(p.Field)
-	sql := fmt.Sprintf("SELECT DISTINCT %s AS digest FROM %s WHERE fractal_id = '%s' AND %s LIMIT %d",
-		ref, src.Table, storage.EscCHStr(src.FractalID), models.TLSHDigestGuard(ref), tlshMaxIndexRows+1)
+	sql := fmt.Sprintf("SELECT DISTINCT %s AS digest FROM %s WHERE fractal_id = %s AND %s LIMIT %d",
+		ref, src.Table, sqlquote.String(src.FractalID), models.TLSHDigestGuard(ref), tlshMaxIndexRows+1)
 
 	rows, err := h.DB.Query(ctx, sql)
 	if err != nil {
@@ -332,8 +333,8 @@ func (h *Resolver) probeTLSHIndex(ctx context.Context, indexes map[string]models
 		}
 
 		sql := fmt.Sprintf(
-			"SELECT DISTINCT digest FROM `%s` WHERE fractal_id = '%s' LIMIT %d",
-			storage.EscCHStr(idx.TableName), storage.EscCHStr(fid), tlshMaxIndexRows+1)
+			"SELECT DISTINCT digest FROM %s WHERE fractal_id = %s LIMIT %d",
+			sqlquote.Ident(idx.TableName), sqlquote.String(fid), tlshMaxIndexRows+1)
 
 		rows, err := h.DB.Query(ctx, sql)
 		if err != nil {

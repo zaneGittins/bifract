@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 )
 
 // A model's source query is compiled by the BQL translator rather than rendered
@@ -126,9 +127,9 @@ func checkNoScopeLeak(preds []string) error {
 // sentinel fractal and a century-wide window.
 func stripScopeGuards(where []string) ([]string, error) {
 	want := map[string]bool{
-		fmt.Sprintf("fractal_id = '%s'", sourceScopeFractal):                    false,
-		fmt.Sprintf("timestamp >= '%s'", sourceScopeStart.Format(chTimeLayout)): false,
-		fmt.Sprintf("timestamp <= '%s'", sourceScopeEnd.Format(chTimeLayout)):   false,
+		fmt.Sprintf("fractal_id = %s", sqlquote.String(sourceScopeFractal)):                    false,
+		fmt.Sprintf("timestamp >= %s", sqlquote.String(sourceScopeStart.Format(chTimeLayout))): false,
+		fmt.Sprintf("timestamp <= %s", sqlquote.String(sourceScopeEnd.Format(chTimeLayout))):   false,
 	}
 	var out []string
 	for _, w := range where {

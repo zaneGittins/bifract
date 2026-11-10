@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"bifract/pkg/sqlquote"
 )
 
 // SchemaCHUser is the ClickHouse identity that builds user-defined schema: the
@@ -86,12 +88,12 @@ type schemaIdentity struct {
 // schema DDL as that user, which is exactly the behaviour that existed before this.
 func (c *ClickHouseClient) EnsureSchemaIdentity(ctx context.Context) {
 	onCluster := c.OnClusterSQL()
-	db := "`" + EscCHIdent(c.logsDatabase()) + "`"
+	db := sqlquote.Ident(c.logsDatabase())
 	pw := c.queryIdentityPassword(SchemaCHUser)
 
 	required := append([]string{
-		fmt.Sprintf("CREATE USER IF NOT EXISTS %s%s IDENTIFIED BY '%s'", SchemaCHUser, onCluster, EscCHStr(pw)),
-		fmt.Sprintf("ALTER USER %s%s IDENTIFIED BY '%s'", SchemaCHUser, onCluster, EscCHStr(pw)),
+		fmt.Sprintf("CREATE USER IF NOT EXISTS %s%s IDENTIFIED BY %s", SchemaCHUser, onCluster, sqlquote.String(pw)),
+		fmt.Sprintf("ALTER USER %s%s IDENTIFIED BY %s", SchemaCHUser, onCluster, sqlquote.String(pw)),
 	}, schemaIdentityGlobalGrants(onCluster, SchemaCHUser)...)
 	// Create the user, then narrow any prior broad grants, then grant. The revoke
 	// precedes the grants because ClickHouse revokes hierarchically; see

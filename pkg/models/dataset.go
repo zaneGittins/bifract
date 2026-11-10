@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"bifract/pkg/sqlquote"
 )
 
 var (
@@ -140,5 +142,5 @@ func volumeAsOf(mo *Model) string {
 		bucket = time.Hour
 	}
 	at := mo.DatasetEnd.UTC().Truncate(bucket).Add(bucket)
-	return fmt.Sprintf("toDateTime('%s', 'UTC')", at.Format("2006-01-02 15:04:05"))
+	return fmt.Sprintf("toDateTime(%s, 'UTC')", sqlquote.String(at.Format("2006-01-02 15:04:05")))
 }

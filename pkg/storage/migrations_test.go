@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bifract/internal/fakedb"
+	"bifract/pkg/sqlquote"
 
 	dbsql "bifract/db"
 )
@@ -227,7 +228,7 @@ func TestSetMigrationsBaseline(t *testing.T) {
 func TestRecordCompletedStepEscapesName(t *testing.T) {
 	f := fakedb.NewCH()
 	recordCompletedStep(context.Background(), f, 7, 3, "o'brien")
-	if got := f.Executed()[0]; !strings.Contains(got, "VALUES (7, 3, 'o''brien')") {
+	if got := f.Executed()[0]; !strings.Contains(got, "VALUES (7, 3, "+sqlquote.String("o'brien")+")") {
 		t.Errorf("stmt = %q", got)
 	}
 }

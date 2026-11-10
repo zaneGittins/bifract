@@ -22,6 +22,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"bifract/pkg/sqlquote"
 )
 
 func main() {
@@ -170,7 +172,7 @@ func classify(pairs []pair, clickhouse, tmp string) error {
 			p.verdict = changedMetadata
 		default:
 			asked = append(asked, i)
-			fmt.Fprintf(&batch, "SELECT 'PAIR %d OLD';\nEXPLAIN AST %s;\nSELECT 'PAIR %d NEW';\nEXPLAIN AST %s;\n", i, was.statement(), i, now.statement())
+			fmt.Fprintf(&batch, "SELECT %s;\nEXPLAIN AST %s;\nSELECT %s;\nEXPLAIN AST %s;\n", sqlquote.String("PAIR "+fmt.Sprint(i)+" OLD"), was.statement(), sqlquote.String("PAIR "+fmt.Sprint(i)+" NEW"), now.statement())
 		}
 	}
 	if len(asked) == 0 {

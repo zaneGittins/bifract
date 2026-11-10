@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -455,8 +456,8 @@ func (m *Manager) addColumn(ctx context.Context, dict *Dictionary, colName strin
 			return nil, err
 		}
 
-		alterSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` String DEFAULT ''",
-			escCH(dict.CHTableName), escCH(colName)))
+		alterSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s String DEFAULT ''",
+			sqlquote.Ident(dict.CHTableName), sqlquote.Ident(colName)))
 		if err := m.ch.ExecSchema(ctx, alterSQL); err != nil {
 			return nil, fmt.Errorf("failed to alter ClickHouse table: %w", err)
 		}
@@ -509,7 +510,7 @@ func (m *Manager) removeColumn(ctx context.Context, dict *Dictionary, colName st
 
 	// Drop secondary key dict before altering the table
 	if wasKey {
-		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(id, colName)))))
+		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS %s", sqlquote.Ident(chColDictName(id, colName)))))
 	}
 
 	colsJSON, _ := json.Marshal(newCols)
@@ -517,8 +518,8 @@ func (m *Manager) removeColumn(ctx context.Context, dict *Dictionary, colName st
 		return nil, err
 	}
 
-	dropSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN IF EXISTS `%s`",
-		escCH(dict.CHTableName), escCH(colName)))
+	dropSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s",
+		sqlquote.Ident(dict.CHTableName), sqlquote.Ident(colName)))
 	if err := m.ch.ExecSchema(ctx, dropSQL); err != nil {
 		return nil, fmt.Errorf("failed to drop column: %w", err)
 	}
@@ -613,16 +614,16 @@ func (m *Manager) KeyCollisions(ctx context.Context, id string) (*KeyCollisionRe
 		return report, nil
 	}
 
-	table := escCH(m.rowTable(dict.ID))
+	table := m.rowTable(dict.ID)
 	for _, col := range m.keyColumns(dict) {
-		c := escCH(col)
+		c := col
 		// Bounded: this runs synchronously on the toggle request, over a dictionary
 		// that can hold millions of rows, and what the caller needs is whether any
 		// key collides plus enough examples to judge it. Counting past the cap would
 		// block the request to refine a number nobody reads.
 		countSQL := fmt.Sprintf(
-			"SELECT count() FROM (SELECT lower(`%s`) AS k FROM `%s` FINAL WHERE notEmpty(`%s`) GROUP BY k HAVING uniqExact(`%s`) > 1 LIMIT %d)%s",
-			c, table, c, c, maxCollisionCount, collisionScanSettings)
+			"SELECT count() FROM (SELECT lower(%s) AS k FROM %s FINAL WHERE notEmpty(%s) GROUP BY k HAVING uniqExact(%s) > 1 LIMIT %d)%s",
+			sqlquote.Ident(c), sqlquote.Ident(table), sqlquote.Ident(c), sqlquote.Ident(c), maxCollisionCount, collisionScanSettings)
 		rows, err := m.ch.QuerySchema(ctx, countSQL)
 		if err != nil {
 			return nil, err
@@ -641,8 +642,8 @@ func (m *Manager) KeyCollisions(ctx context.Context, id string) (*KeyCollisionRe
 			continue
 		}
 		sampleSQL := fmt.Sprintf(
-			"SELECT lower(`%s`) AS k, groupUniqArray(`%s`) AS stored FROM `%s` FINAL WHERE notEmpty(`%s`) GROUP BY k HAVING uniqExact(`%s`) > 1 ORDER BY k LIMIT %d%s",
-			c, c, table, c, c, maxCollisionSamples-len(report.Samples), collisionScanSettings)
+			"SELECT lower(%s) AS k, groupUniqArray(%s) AS stored FROM %s FINAL WHERE notEmpty(%s) GROUP BY k HAVING uniqExact(%s) > 1 ORDER BY k LIMIT %d%s",
+			sqlquote.Ident(c), sqlquote.Ident(c), sqlquote.Ident(table), sqlquote.Ident(c), sqlquote.Ident(c), maxCollisionSamples-len(report.Samples), collisionScanSettings)
 		sampleRows, err := m.ch.QuerySchema(ctx, sampleSQL)
 		if err != nil {
 			return nil, err
@@ -794,7 +795,7 @@ func (m *Manager) UnsetColumnKey(ctx context.Context, id, colName string) (*Dict
 		return nil, err
 	}
 
-	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, colName)))))
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS %s", sqlquote.Ident(chColDictName(dict.ID, colName)))))
 	return m.GetDictionary(ctx, id)
 }
 
@@ -847,24 +848,24 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 func (m *Manager) rowsQueries(dict *Dictionary, search string, limit, offset int) (countSQL, querySQL string) {
 	var colRefs []string
 	for _, c := range dict.Columns {
-		colRefs = append(colRefs, fmt.Sprintf("`%s`", escCH(c.Name)))
+		colRefs = append(colRefs, sqlquote.Ident(c.Name))
 	}
 
 	where := ""
 	if search != "" {
 		var searchClauses []string
 		for _, c := range dict.Columns {
-			searchClauses = append(searchClauses, fmt.Sprintf("positionCaseInsensitive(`%s`, '%s') > 0",
-				escCH(c.Name), escCHStr(search)))
+			searchClauses = append(searchClauses, fmt.Sprintf("positionCaseInsensitive(%s, %s) > 0",
+				sqlquote.Ident(c.Name), sqlquote.String(search)))
 		}
 		where = "WHERE (" + strings.Join(searchClauses, " OR ") + ")"
 	}
 
-	table := escCH(m.rowTable(dict.ID))
-	countSQL = fmt.Sprintf("SELECT count() FROM `%s` FINAL %s", table, where)
-	querySQL = fmt.Sprintf("SELECT %s, `%s` FROM `%s` FINAL %s ORDER BY `%s` ASC, `%s` ASC LIMIT %d OFFSET %d",
-		strings.Join(colRefs, ", "), seqColumn, table, where,
-		seqColumn, escCH(dict.KeyColumn), limit, offset)
+	table := m.rowTable(dict.ID)
+	countSQL = fmt.Sprintf("SELECT count() FROM %s FINAL %s", sqlquote.Ident(table), where)
+	querySQL = fmt.Sprintf("SELECT %s, %s FROM %s FINAL %s ORDER BY %s ASC, %s ASC LIMIT %d OFFSET %d",
+		strings.Join(colRefs, ", "), sqlquote.Ident(seqColumn), sqlquote.Ident(table), where,
+		sqlquote.Ident(seqColumn), sqlquote.Ident(dict.KeyColumn), limit, offset)
 	return countSQL, querySQL
 }
 
@@ -933,7 +934,7 @@ const maxSeqLookup = 1000
 
 // maxSeq is the highest editor ordinal in the table, 0 when it is empty.
 func (m *Manager) maxSeq(ctx context.Context, dict *Dictionary) (uint64, error) {
-	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT max(`%s`) FROM `%s`", seqColumn, escCH(m.rowTable(dict.ID))))
+	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT max(%s) FROM %s", sqlquote.Ident(seqColumn), sqlquote.Ident(m.rowTable(dict.ID))))
 	if err != nil {
 		return 0, fmt.Errorf("failed to read dictionary row order: %w", err)
 	}
@@ -994,16 +995,16 @@ func (m *Manager) seqLookupQuery(dict *Dictionary, rows []DictionaryRow) string 
 	for _, row := range rows {
 		for _, k := range []string{row.Key, row.Fields[dict.KeyColumn]} {
 			if k != "" {
-				keys = append(keys, "'"+escCHStr(k)+"'")
+				keys = append(keys, sqlquote.String(k))
 			}
 		}
 	}
 	if len(keys) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("SELECT `%s`, `%s` FROM `%s` FINAL WHERE `%s` IN (%s)",
-		escCH(dict.KeyColumn), seqColumn, escCH(m.rowTable(dict.ID)),
-		escCH(dict.KeyColumn), strings.Join(keys, ", "))
+	return fmt.Sprintf("SELECT %s, %s FROM %s FINAL WHERE %s IN (%s)",
+		sqlquote.Ident(dict.KeyColumn), sqlquote.Ident(seqColumn), sqlquote.Ident(m.rowTable(dict.ID)),
+		sqlquote.Ident(dict.KeyColumn), strings.Join(keys, ", "))
 }
 
 // planSeqs gives each row the ordinal its key already holds in existing, else
@@ -1051,8 +1052,8 @@ func (m *Manager) DeleteRow(ctx context.Context, id, key string) error {
 	if err := requireEditable(dict); err != nil {
 		return err
 	}
-	found, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() FROM `%s` FINAL WHERE `%s` = '%s'",
-		escCH(m.rowTable(dict.ID)), escCH(dict.KeyColumn), escCHStr(key)))
+	found, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() FROM %s FINAL WHERE %s = %s",
+		sqlquote.Ident(m.rowTable(dict.ID)), sqlquote.Ident(dict.KeyColumn), sqlquote.String(key)))
 	if err != nil {
 		return fmt.Errorf("failed to look up row: %w", err)
 	}
@@ -1077,7 +1078,7 @@ func (m *Manager) DeleteRow(ctx context.Context, id, key string) error {
 // asynchronous by default, so without the wait the caller's next read still returns
 // the row it just deleted.
 func (m *Manager) deleteRowByKey(ctx context.Context, dict *Dictionary, key string) error {
-	return m.deleteRowsByKeys(ctx, dict, []string{"'" + escCHStr(key) + "'"}, "")
+	return m.deleteRowsByKeys(ctx, dict, []string{sqlquote.String(key)}, "")
 }
 
 // deleteRowsByKeys mutates the local table, not the Distributed companion, which does
@@ -1090,8 +1091,8 @@ func (m *Manager) deleteRowsByKeys(ctx context.Context, dict *Dictionary, quoted
 	if extra != "" {
 		extra = " AND " + extra
 	}
-	return m.deleteRowsWhere(ctx, dict, fmt.Sprintf("`%s` IN (%s)%s",
-		escCH(dict.KeyColumn), strings.Join(quotedKeys, ", "), extra))
+	return m.deleteRowsWhere(ctx, dict, fmt.Sprintf("%s IN (%s)%s",
+		sqlquote.Ident(dict.KeyColumn), strings.Join(quotedKeys, ", "), extra))
 }
 
 // deleteRowsWhere deletes the rows matching predicate, already-escaped SQL, and
@@ -1101,8 +1102,8 @@ func (m *Manager) deleteRowsWhere(ctx context.Context, dict *Dictionary, predica
 	if m.ch.Topology().ReplicatedEngines {
 		sync = 2
 	}
-	deleteSQL := fmt.Sprintf("ALTER TABLE `%s` DELETE WHERE %s SETTINGS mutations_sync = %d",
-		escCH(dict.CHTableName), predicate, sync)
+	deleteSQL := fmt.Sprintf("ALTER TABLE %s DELETE WHERE %s SETTINGS mutations_sync = %d",
+		sqlquote.Ident(dict.CHTableName), predicate, sync)
 	if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(deleteSQL)); err != nil {
 		return fmt.Errorf("failed to delete rows: %w", err)
 	}
@@ -1335,9 +1336,9 @@ func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []
 func (m *Manager) insertStatement(dict *Dictionary, rows []DictionaryRow, seqs []uint64) (string, []interface{}) {
 	colNames := make([]string, 0, len(dict.Columns)+1)
 	for _, c := range dict.Columns {
-		colNames = append(colNames, fmt.Sprintf("`%s`", escCH(c.Name)))
+		colNames = append(colNames, sqlquote.Ident(c.Name))
 	}
-	colNames = append(colNames, fmt.Sprintf("`%s`", seqColumn))
+	colNames = append(colNames, sqlquote.Ident(seqColumn))
 
 	rowPlaceholder := "(" + strings.TrimSuffix(strings.Repeat("?, ", len(colNames)), ", ") + ")"
 	placeholders := make([]string, len(rows))
@@ -1350,8 +1351,8 @@ func (m *Manager) insertStatement(dict *Dictionary, rows []DictionaryRow, seqs [
 		args = append(args, seqs[j])
 	}
 
-	insertSQL := fmt.Sprintf("INSERT INTO `%s` (%s)%s VALUES %s",
-		escCH(m.rowTable(dict.ID)), strings.Join(colNames, ", "), m.insertSettings(), strings.Join(placeholders, ", "))
+	insertSQL := fmt.Sprintf("INSERT INTO %s (%s)%s VALUES %s",
+		sqlquote.Ident(m.rowTable(dict.ID)), strings.Join(colNames, ", "), m.insertSettings(), strings.Join(placeholders, ", "))
 	return insertSQL, args
 }
 
@@ -1368,12 +1369,12 @@ func (m *Manager) ExportCSV(ctx context.Context, id string, w io.Writer) error {
 	var colRefs []string
 	var colNames []string
 	for _, c := range dict.Columns {
-		colRefs = append(colRefs, fmt.Sprintf("`%s`", escCH(c.Name)))
+		colRefs = append(colRefs, sqlquote.Ident(c.Name))
 		colNames = append(colNames, c.Name)
 	}
 
-	querySQL := fmt.Sprintf("SELECT %s FROM `%s` FINAL ORDER BY `%s` ASC, `%s` ASC",
-		strings.Join(colRefs, ", "), escCH(m.rowTable(dict.ID)), seqColumn, escCH(dict.KeyColumn))
+	querySQL := fmt.Sprintf("SELECT %s FROM %s FINAL ORDER BY %s ASC, %s ASC",
+		strings.Join(colRefs, ", "), sqlquote.Ident(m.rowTable(dict.ID)), sqlquote.Ident(seqColumn), sqlquote.Ident(dict.KeyColumn))
 
 	dataRows, err := m.ch.QuerySchema(ctx, querySQL)
 	if err != nil {
@@ -1400,7 +1401,7 @@ func (m *Manager) ExportCSV(ctx context.Context, id string, w io.Writer) error {
 // reloadSQL renders a cluster-aware SYSTEM RELOAD DICTIONARY. Every node keeps its
 // own copy, so reloading only the one this connection landed on leaves the rest stale.
 func (m *Manager) reloadSQL(name string) string {
-	return fmt.Sprintf("SYSTEM RELOAD DICTIONARY%s `%s`.`%s`", m.ch.OnClusterSQL(), escCH(m.chDB), escCH(name))
+	return fmt.Sprintf("SYSTEM RELOAD DICTIONARY%s %s.%s", m.ch.OnClusterSQL(), sqlquote.Ident(m.chDB), sqlquote.Ident(name))
 }
 
 // ReloadDictionary forces ClickHouse to reload the dictionary from its source table.
@@ -1466,14 +1467,14 @@ func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
 			continue
 		}
 		// The table may predate a column that was added while this node was down.
-		alterSeq := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` UInt64 DEFAULT 0",
-			escCH(dict.CHTableName), seqColumn))
+		alterSeq := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s UInt64 DEFAULT 0",
+			sqlquote.Ident(dict.CHTableName), sqlquote.Ident(seqColumn)))
 		if err := m.ch.ExecSchema(ctx, alterSeq); err != nil {
 			log.Printf("[Dictionaries] reconcile %s: row order column: %v", dict.ID, err)
 		}
 		for _, c := range dict.Columns {
-			alterSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` String DEFAULT ''",
-				escCH(dict.CHTableName), escCH(c.Name)))
+			alterSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s String DEFAULT ''",
+				sqlquote.Ident(dict.CHTableName), sqlquote.Ident(c.Name)))
 			if err := m.ch.ExecSchema(ctx, alterSQL); err != nil {
 				log.Printf("[Dictionaries] reconcile %s: column %q: %v", dict.ID, c.Name, err)
 			}
@@ -1517,8 +1518,8 @@ var (
 // for an orphan.
 func (m *Manager) DropOrphans(ctx context.Context) (int, error) {
 	// system.tables lists DDL dictionaries too, with engine Dictionary.
-	q := fmt.Sprintf(`SELECT DISTINCT name FROM %s WHERE database = '%s' AND (startsWith(name, 'dict_') OR startsWith(name, 'lookup_'))`,
-		m.ch.Topology().FanoutSystemTable("system.tables"), escCHStr(m.chDB))
+	q := fmt.Sprintf(`SELECT DISTINCT name FROM %s WHERE database = %s AND (startsWith(name, 'dict_') OR startsWith(name, 'lookup_'))`,
+		m.ch.Topology().FanoutSystemTable("system.tables"), sqlquote.String(m.chDB))
 	found, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return 0, fmt.Errorf("list lookup objects: %w", err)
@@ -1570,11 +1571,11 @@ func (m *Manager) DropOrphans(ctx context.Context) (int, error) {
 		// Dictionaries read from the tables, and the companion from the local
 		// table, so drop in that order.
 		for _, name := range dicts[id] {
-			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(name))))
+			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS %s", sqlquote.Ident(name))))
 		}
 		slices.SortFunc(tables[id], func(a, b string) int { return len(b) - len(a) })
 		for _, name := range tables[id] {
-			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s` SYNC SETTINGS max_table_size_to_drop = 0", escCH(name))))
+			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS %s SYNC SETTINGS max_table_size_to_drop = 0", sqlquote.Ident(name))))
 		}
 		swept++
 	}
@@ -1657,10 +1658,10 @@ func (m *Manager) consolidateShards(ctx context.Context, dict *Dictionary) error
 	}
 	colRefs := make([]string, 0, len(dict.Columns))
 	for _, c := range dict.Columns {
-		colRefs = append(colRefs, fmt.Sprintf("`%s`", escCH(c.Name)))
+		colRefs = append(colRefs, sqlquote.Ident(c.Name))
 	}
-	found, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT %s, `%s`, _shard_num FROM `%s` FINAL",
-		strings.Join(colRefs, ", "), seqColumn, escCH(chDistTableName(dict.ID))))
+	found, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT %s, %s, _shard_num FROM %s FINAL",
+		strings.Join(colRefs, ", "), sqlquote.Ident(seqColumn), sqlquote.Ident(chDistTableName(dict.ID))))
 	if err != nil {
 		return fmt.Errorf("read rows: %w", err)
 	}
@@ -1687,9 +1688,9 @@ func (m *Manager) consolidateShards(ctx context.Context, dict *Dictionary) error
 
 	quoted := make([]string, 0, len(plan.keys))
 	for _, k := range plan.keys {
-		quoted = append(quoted, "'"+escCHStr(k)+"'")
+		quoted = append(quoted, sqlquote.String(k))
 	}
-	below := fmt.Sprintf("`%s` < %d", seqColumn, threshold)
+	below := fmt.Sprintf("%s < %d", sqlquote.Ident(seqColumn), threshold)
 	for i := 0; i < len(quoted); i += csvImportBatchSize {
 		end := i + csvImportBatchSize
 		if end > len(quoted) {
@@ -1724,17 +1725,17 @@ func (m *Manager) createCHObjects(ctx context.Context, dict *Dictionary) error {
 }
 
 func (m *Manager) dropCHObjects(ctx context.Context, dict *Dictionary) error {
-	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName))))
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS %s", sqlquote.Ident(dict.CHDictName))))
 	for _, c := range dict.Columns {
 		if c.IsKey {
-			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name)))))
+			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS %s", sqlquote.Ident(chColDictName(dict.ID, c.Name)))))
 		}
 	}
-	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(chDistTableName(dict.ID)))))
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS %s", sqlquote.Ident(chDistTableName(dict.ID)))))
 	// SYNC clears the replica's Keeper path now rather than after the Atomic drop
 	// delay. A rebuild re-creates the table under the same name, and would
 	// otherwise attach to the old replica metadata and its old columns.
-	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s` SYNC SETTINGS max_table_size_to_drop = 0", escCH(dict.CHTableName))))
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS %s SYNC SETTINGS max_table_size_to_drop = 0", sqlquote.Ident(dict.CHTableName))))
 	return nil
 }
 
@@ -1755,18 +1756,18 @@ func (m *Manager) dictSourceQuery(dict *Dictionary, keyCol string, cols []Dictio
 	// keys are hashed: lower() here is what makes lower() at lookup time hit. An
 	// IP_TRIE parses its key as a range, where case does not arise.
 	if dict.CaseInsensitiveKeys && NormalizeKind(dict.Kind) != KindNetwork {
-		refs = append(refs, fmt.Sprintf("lower(`%s`)", escCH(keyCol)))
+		refs = append(refs, fmt.Sprintf("lower(%s)", sqlquote.Ident(keyCol)))
 	} else {
-		refs = append(refs, fmt.Sprintf("`%s`", escCH(keyCol)))
+		refs = append(refs, sqlquote.Ident(keyCol))
 	}
 	for _, c := range cols {
 		if c.Name == keyCol {
 			continue
 		}
-		refs = append(refs, fmt.Sprintf("`%s`", escCH(c.Name)))
+		refs = append(refs, sqlquote.Ident(c.Name))
 	}
 	q := fmt.Sprintf("SELECT %s %s", strings.Join(refs, ", "), m.liveRows(dict.ID, keyCol))
-	return escCHStr(q)
+	return q
 }
 
 // rowTable is the table every row read and write goes through.
@@ -1788,7 +1789,7 @@ func (m *Manager) rowTable(id string) string {
 // liveRows is the FROM and WHERE every read of a list's current keys shares: the
 // dictionary sources and the pattern prefilter must see exactly the same rows.
 func (m *Manager) liveRows(id, keyCol string) string {
-	return fmt.Sprintf("FROM `%s`.`%s` FINAL WHERE notEmpty(`%s`)", escCH(m.chDB), escCH(m.rowTable(id)), escCH(keyCol))
+	return fmt.Sprintf("FROM %s.%s FINAL WHERE notEmpty(%s)", sqlquote.Ident(m.chDB), sqlquote.Ident(m.rowTable(id)), sqlquote.Ident(keyCol))
 }
 
 // insertSettings makes a Distributed insert synchronous. The editor reads a row back
@@ -1814,9 +1815,9 @@ func (m *Manager) ensureDistTable(ctx context.Context, dict *Dictionary) error {
 	// identity on the UUID-derived names used here (see chTableName), so this is
 	// about using the right one for the context rather than a behaviour change.
 	sql := fmt.Sprintf(
-		"CREATE OR REPLACE TABLE `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', 0)",
-		escCH(chDistTableName(dict.ID)), escCH(dict.CHTableName),
-		escCHStr(m.ddlCluster), escCHStr(dict.CHTableName))
+		"CREATE OR REPLACE TABLE %s AS %s ENGINE = Distributed(%s, currentDatabase(), %s, 0)",
+		sqlquote.Ident(chDistTableName(dict.ID)), sqlquote.Ident(dict.CHTableName),
+		sqlquote.String(m.ddlCluster), sqlquote.String(dict.CHTableName))
 	if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(sql)); err != nil && !storage.IsDDLTimeout(err) {
 		return err
 	}
@@ -1826,12 +1827,12 @@ func (m *Manager) ensureDistTable(ctx context.Context, dict *Dictionary) error {
 func (m *Manager) createCHTable(ctx context.Context, dict *Dictionary) error {
 	var colDefs []string
 	for _, c := range dict.Columns {
-		colDefs = append(colDefs, fmt.Sprintf("`%s` String DEFAULT ''", escCH(c.Name)))
+		colDefs = append(colDefs, fmt.Sprintf("%s String DEFAULT ''", sqlquote.Ident(c.Name)))
 	}
-	colDefs = append(colDefs, fmt.Sprintf("`%s` UInt64 DEFAULT 0", seqColumn))
+	colDefs = append(colDefs, fmt.Sprintf("%s UInt64 DEFAULT 0", sqlquote.Ident(seqColumn)))
 	createSQL := fmt.Sprintf(
-		"CREATE TABLE IF NOT EXISTS `%s` (%s) ENGINE = ReplacingMergeTree() ORDER BY (`%s`)",
-		escCH(dict.CHTableName), strings.Join(colDefs, ", "), escCH(dict.KeyColumn))
+		"CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = ReplacingMergeTree() ORDER BY (%s)",
+		sqlquote.Ident(dict.CHTableName), strings.Join(colDefs, ", "), sqlquote.Ident(dict.KeyColumn))
 	createSQL = m.ch.RewriteEngine(m.ch.InjectOnCluster(createSQL))
 	return m.ch.ExecSchema(ctx, createSQL)
 }
@@ -1870,22 +1871,21 @@ func (m *Manager) keyDictionaryDDL(dict *Dictionary, colName string, cols []Dict
 
 // dictionaryDDL renders CREATE OR REPLACE DICTIONARY. The attributes must be in
 // the order the source query selects them after the key: ClickHouse maps the
-// source's columns by position. sourceQuery is already escaped for the quoted
-// QUERY literal it is embedded in.
+// source's columns by position.
 func (m *Manager) dictionaryDDL(name, keyCol string, attrs []string, sourceQuery, layout string) string {
 	var attrsStr string
 	for _, a := range attrs {
-		attrsStr += fmt.Sprintf(",\n    `%s` String DEFAULT ''", escCH(a))
+		attrsStr += fmt.Sprintf(",\n    %s String DEFAULT ''", sqlquote.Ident(a))
 	}
 	createSQL := fmt.Sprintf(
-		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(USER '%s' PASSWORD '%s' QUERY '%s'))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(%s)",
-		escCH(name),
-		escCH(keyCol),
+		"CREATE OR REPLACE DICTIONARY %s (\n    %s String%s\n)\nPRIMARY KEY %s\nSOURCE(CLICKHOUSE(USER %s PASSWORD %s QUERY %s))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(%s)",
+		sqlquote.Ident(name),
+		sqlquote.Ident(keyCol),
 		attrsStr,
-		escCH(keyCol),
-		escCHStr(m.ch.User),
-		escCHStr(m.ch.Password),
-		sourceQuery,
+		sqlquote.Ident(keyCol),
+		sqlquote.String(m.ch.User),
+		sqlquote.String(m.ch.Password),
+		sqlquote.String(sourceQuery),
 		layout,
 	)
 	return m.ch.InjectOnCluster(createSQL)
@@ -1897,13 +1897,13 @@ func (m *Manager) recreateAllCHDictionaries(ctx context.Context, dict *Dictionar
 	if err := m.invalidatePrefilter(ctx, dict); err != nil {
 		return err
 	}
-	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName))))
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS %s", sqlquote.Ident(dict.CHDictName))))
 	if err := m.createCHDictionary(ctx, dict, cols); err != nil {
 		return err
 	}
 	for _, c := range cols {
 		if c.IsKey {
-			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name)))))
+			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS %s", sqlquote.Ident(chColDictName(dict.ID, c.Name)))))
 			if err := m.createCHDictionaryForKey(ctx, dict, c.Name, cols); err != nil {
 				return fmt.Errorf("failed to recreate secondary key dictionary for %q: %w", c.Name, err)
 			}
@@ -1943,20 +1943,19 @@ func (m *Manager) patternSourceQuery(dict *Dictionary, cols []DictionaryColumn) 
 			continue
 		}
 		keys = append(keys, quoteCHStr(c.Name))
-		values = append(values, fmt.Sprintf("`%s`", escCH(c.Name)))
+		values = append(values, sqlquote.Ident(c.Name))
 	}
 	q := fmt.Sprintf(
-		"SELECT `%s` AS id, toUInt64(0) AS parent_id, `%s` AS regexp, [%s] AS keys, [%s] AS values %s ORDER BY `%s`",
-		escCH(seqColumn), escCH(dict.KeyColumn),
+		"SELECT %s AS id, toUInt64(0) AS parent_id, %s AS regexp, [%s] AS keys, [%s] AS values %s ORDER BY %s",
+		sqlquote.Ident(seqColumn), sqlquote.Ident(dict.KeyColumn),
 		strings.Join(keys, ", "), strings.Join(values, ", "),
-		m.liveRows(dict.ID, dict.KeyColumn), escCH(seqColumn))
-	return escCHStr(q)
+		m.liveRows(dict.ID, dict.KeyColumn), sqlquote.Ident(seqColumn))
+	return q
 }
 
-// quoteCHStr renders a Go string as a ClickHouse string literal for embedding in
-// a source query, which is itself already a quoted string.
+// quoteCHStr renders a Go string as a ClickHouse string literal.
 func quoteCHStr(s string) string {
-	return "'" + escCHStr(s) + "'"
+	return sqlquote.String(s)
 }
 
 // dictLayout is the ClickHouse layout a kind is built with. A network list is an
@@ -1973,7 +1972,7 @@ func dictLayout(kind string) string {
 }
 
 func (m *Manager) updateRowCount(ctx context.Context, dict *Dictionary) {
-	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL", escCH(m.rowTable(dict.ID)))
+	countSQL := fmt.Sprintf("SELECT count() FROM %s FINAL", sqlquote.Ident(m.rowTable(dict.ID)))
 	rows, err := m.ch.QuerySchema(ctx, countSQL)
 	if err != nil || len(rows) == 0 {
 		return
@@ -2269,7 +2268,7 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 	}
 
 	// Truncate existing data.
-	truncSQL := m.ch.InjectOnCluster(fmt.Sprintf("TRUNCATE TABLE `%s`", escCH(dict.CHTableName)))
+	truncSQL := m.ch.InjectOnCluster(fmt.Sprintf("TRUNCATE TABLE %s", sqlquote.Ident(dict.CHTableName)))
 	if err := m.ch.ExecSchema(ctx, truncSQL); err != nil {
 		return 0, fmt.Errorf("failed to truncate dictionary table: %w", err)
 	}
@@ -2372,35 +2371,10 @@ func getLogField(log map[string]interface{}, field string) string {
 	return ""
 }
 
-// escCH escapes an identifier for use inside ClickHouse backtick-quoted names.
-//
-// Backslashes are escaped BEFORE backticks, and both are escaped rather than
-// stripped. ClickHouse honours a backslash-escaped backtick inside the quotes, so a
-// name ending in a backslash escapes the closing quote and the identifier swallows
-// the rest of the statement ("Back quoted string is not closed"). Stripping only
-// backticks left that open: dictionary columns are created from raw log field names
-// by ExecuteDictionaryAction (see collectLogColumns), which validates nothing, so
-// the name reaching DDL is ingested data.
-//
-// Escaping rather than stripping also keeps the name intact, so what Postgres
-// records and what ClickHouse creates stay the same string.
-func escCH(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	return strings.ReplaceAll(s, "`", "``")
-}
-
 var validIdentifierRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_\-]*$`)
 
 func isValidIdentifier(s string) bool {
 	return len(s) > 0 && len(s) <= 255 && validIdentifierRe.MatchString(s)
-}
-
-// escCHStr escapes a value for use inside single-quoted ClickHouse strings.
-func escCHStr(s string) string {
-	s = strings.ReplaceAll(s, "\x00", "")
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "'", "\\'")
-	return s
 }
 
 // GetKeys returns up to limit key-column values from a dictionary, unpaginated.
@@ -2418,8 +2392,8 @@ func (m *Manager) GetKeys(ctx context.Context, id string, limit int) ([]string, 
 	if limit <= 0 {
 		limit = 1_000_000
 	}
-	sql := fmt.Sprintf("SELECT DISTINCT `%s` AS k FROM `%s` FINAL WHERE `%s` != '' LIMIT %d",
-		escCH(keyCol), escCH(m.rowTable(dict.ID)), escCH(keyCol), limit)
+	sql := fmt.Sprintf("SELECT DISTINCT %s AS k FROM %s FINAL WHERE %s != '' LIMIT %d",
+		sqlquote.Ident(keyCol), sqlquote.Ident(m.rowTable(dict.ID)), sqlquote.Ident(keyCol), limit)
 	rows, err := m.ch.QuerySchema(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("read dictionary keys: %w", err)

@@ -117,11 +117,15 @@ func runSample(t *testing.T, conn clickhouse.Conn, sql string) sampleRun {
 	}
 	if err2 != nil {
 		var types []string
-		r, _ := conn.Query(context.Background(), fmt.Sprintf("SELECT toString(type) FROM system.query_log WHERE log_comment = '%s'", tag))
-		for r != nil && r.Next() {
-			var ty string
-			_ = r.Scan(&ty)
-			types = append(types, ty)
+		if r, err := conn.Query(context.Background(), fmt.Sprintf("SELECT toString(type) FROM system.query_log WHERE log_comment = '%s'", tag)); err == nil {
+			for r.Next() {
+				var ty string
+				_ = r.Scan(&ty)
+				types = append(types, ty)
+			}
+			r.Close()
+		} else {
+			types = append(types, "query_log unreadable: "+err.Error())
 		}
 		t.Fatalf("query_log %s: %v (entries %v)\n%s", tag, err2, types, sql[len(sql)-200:])
 	}
@@ -136,6 +140,11 @@ func runSample(t *testing.T, conn clickhouse.Conn, sql string) sampleRun {
 func TestSampleSpansTheWindow(t *testing.T) {
 	conn := ovfConn(t)
 	defer conn.Close()
+	// Rows read and peak memory come from system.query_log, which a server
+	// configured without a query_log section does not have.
+	if err := conn.Exec(context.Background(), "SELECT 1 FROM system.query_log LIMIT 1"); err != nil {
+		t.Skipf("the server has no system.query_log to measure the scans by: %v", err)
+	}
 	anchor := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
 	window := 8 * time.Hour
 	seedSample(t, conn, anchor, window)

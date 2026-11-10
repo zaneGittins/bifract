@@ -8,6 +8,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/google/uuid"
+
+	"bifract/pkg/sqlquote"
 )
 
 // Fractal isolation has two layers. The translator adds a fractal_id predicate to
@@ -45,17 +47,20 @@ var fractalScopeTables = []string{"logs", "logs_hot", "logs_raw"}
 // Policy names carry a version: a changed expression ships under a new name so
 // IF NOT EXISTS never leaves an old definition in place.
 const (
-	fractalScopePolicy    = "bifract_fractal_scope_v2"
-	retiredScopePolicy    = "bifract_fractal_scope_v1"
-	scopeRequiredPolicy   = "bifract_scope_required_v1"
-	fractalScopeListSQL   = "arrayPopBack(splitByChar(',', splitByString('" + fractalScopeMarker + "', initialQueryID())[2]))"
-	fractalScopeMarkedSQL = "position(initialQueryID(), '" + fractalScopeMarker + "') > 0"
+	fractalScopePolicy  = "bifract_fractal_scope_v2"
+	retiredScopePolicy  = "bifract_fractal_scope_v1"
+	scopeRequiredPolicy = "bifract_scope_required_v1"
+)
+
+var (
+	fractalScopeListSQL   = "arrayPopBack(splitByChar(',', splitByString(" + sqlquote.String(fractalScopeMarker) + ", initialQueryID())[2]))"
+	fractalScopeMarkedSQL = "position(initialQueryID(), " + sqlquote.String(fractalScopeMarker) + ") > 0"
 )
 
 // fractalScopeFilter applies to every user and is a no-op for a query that carries
 // no scope: ingest, merges and admin tooling read as before.
 // IN builds a set once per read; has() on the LowCardinality column cost ~40ns a row.
-const fractalScopeFilter = "NOT " + fractalScopeMarkedSQL + " OR fractal_id IN (SELECT arrayJoin(" + fractalScopeListSQL + "))"
+var fractalScopeFilter = "NOT " + fractalScopeMarkedSQL + " OR fractal_id IN (SELECT arrayJoin(" + fractalScopeListSQL + "))"
 
 type scopeKey struct{}
 type queryIDKey struct{}
@@ -149,8 +154,7 @@ func SentQueryIDOf(ctx context.Context) string {
 // QueryIDMatchSQL matches a query_id column against an id the caller assigned,
 // whether or not a fractal scope was appended to it.
 func QueryIDMatchSQL(column, id string) string {
-	e := EscCHStr(id)
-	return fmt.Sprintf("(%s = '%s' OR startsWith(%s, '%s%s'))", column, e, column, e, fractalScopeMarker)
+	return fmt.Sprintf("(%s = %s OR startsWith(%s, %s))", column, sqlquote.String(id), column, sqlquote.String(id+fractalScopeMarker))
 }
 
 // ensureFractalScopePolicies creates the row policies when any is missing. Never
@@ -191,10 +195,10 @@ func (c *ClickHouseClient) execScopeDDL(ctx context.Context, sql string) error {
 }
 
 func (c *ClickHouseClient) scopeTablesSQL() string {
-	db := "`" + EscCHIdent(c.logsDatabase()) + "`"
+	db := sqlquote.Ident(c.logsDatabase())
 	tables := make([]string, len(fractalScopeTables))
 	for i, t := range fractalScopeTables {
-		tables[i] = db + ".`" + t + "`"
+		tables[i] = db + "." + sqlquote.Ident(t)
 	}
 	return strings.Join(tables, ", ")
 }
@@ -225,11 +229,11 @@ func (c *ClickHouseClient) scopePolicyCounts(ctx context.Context) map[string]uin
 	defer cancel()
 	quoted := make([]string, len(fractalScopeTables))
 	for i, t := range fractalScopeTables {
-		quoted[i] = "'" + EscCHStr(t) + "'"
+		quoted[i] = sqlquote.String(t)
 	}
 	rows, err := c.conn.Query(sctx, fmt.Sprintf(
-		"SELECT short_name, count() AS n FROM system.row_policies WHERE database = '%s' AND short_name IN ('%s', '%s', '%s') AND table IN (%s) GROUP BY short_name",
-		EscCHStr(c.logsDatabase()), fractalScopePolicy, scopeRequiredPolicy, retiredScopePolicy, strings.Join(quoted, ", ")))
+		"SELECT short_name, count() AS n FROM system.row_policies WHERE database = %s AND short_name IN (%s, %s, %s) AND table IN (%s) GROUP BY short_name",
+		sqlquote.String(c.logsDatabase()), sqlquote.String(fractalScopePolicy), sqlquote.String(scopeRequiredPolicy), sqlquote.String(retiredScopePolicy), strings.Join(quoted, ", ")))
 	if err != nil {
 		return counts
 	}

@@ -16,6 +16,7 @@ import (
 	"bifract/pkg/normalizers"
 	"bifract/pkg/parser"
 	"bifract/pkg/sigma"
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 	"github.com/lib/pq"
 	"github.com/robfig/cron/v3"
@@ -1319,8 +1320,8 @@ func (m *Manager) resolveActionNames(ctx context.Context, actionNames []string, 
 	selects := make([]string, 0, len(alertActionKinds))
 	for _, kind := range alertActionKinds {
 		selects = append(selects, fmt.Sprintf(
-			`SELECT id::text, name, '%s' AS kind FROM %s WHERE name = ANY($1) AND enabled = true AND %s`,
-			kind.label, kind.table, scope))
+			`SELECT id::text, name, %s AS kind FROM %s WHERE name = ANY($1) AND enabled = true AND %s`,
+			sqlquote.PGString(kind.label), kind.table, scope))
 	}
 
 	rows, err := m.pg.Query(ctx, strings.Join(selects, " UNION ALL "), args...)

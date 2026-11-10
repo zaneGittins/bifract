@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 )
 
 // Readiness states.
@@ -115,16 +116,16 @@ func readinessHasGroups(mt ModelType, def ModelDefinition) bool {
 // which is what caps T at the window, and drops days the model cannot have
 // recorded (see recordedDay). scored adds the group columns, at the cost of the
 // scored read's window step.
-func readinessSource(mt ModelType, def ModelDefinition, qt, fidEsc string, from time.Time, scored bool) string {
+func readinessSource(mt ModelType, def ModelDefinition, qt, fid string, from time.Time, scored bool) string {
 	hist := def.HistoryDaysFor(mt)
 	var src string
 	switch {
 	case mt != ModelTypeRarity:
-		src = firstSeenAgg(qt, fidScope(fidEsc), "entity_key", hist, false, true)
+		src = firstSeenAgg(qt, fidScope(fid), "entity_key", hist, false, true)
 	case scored:
-		src = buildRarityScoredSQL(qt, fidEsc, hist)
+		src = buildRarityScoredSQL(qt, fid, hist)
 	default:
-		src = "SELECT seen_days AS days FROM (\n" + parser.RarityPairDaysSQL(qt, fidScope(fidEsc), hist, false) + "\n)"
+		src = "SELECT seen_days AS days FROM (\n" + parser.RarityPairDaysSQL(qt, fidScope(fid), hist, false) + "\n)"
 	}
 	return fmt.Sprintf(`SELECT *, arrayFilter(d -> %s, days) AS kept
 FROM (%s)
@@ -144,7 +145,7 @@ func newKeyPredicate(mt ModelType, def ModelDefinition) string {
 // readinessSummarySQL reads T's bounds, N1 and, for a grouped rarity model, the
 // group counts. model_total and coverage repeat on a group's rows, so groups are
 // counted distinct.
-func readinessSummarySQL(mt ModelType, def ModelDefinition, qt, fidEsc string, from time.Time) string {
+func readinessSummarySQL(mt ModelType, def ModelDefinition, qt, fid string, from time.Time) string {
 	groups := ""
 	hasGroups := readinessHasGroups(mt, def)
 	if hasGroups {
@@ -156,17 +157,17 @@ func readinessSummarySQL(mt ModelType, def ModelDefinition, qt, fidEsc string, f
 	return fmt.Sprintf(`SELECT toUInt64(toUnixTimestamp(toDateTime(min(kept[1]), 'UTC'))) AS oldest,
     toUInt64(toUnixTimestamp(toDateTime(max(kept[-1]), 'UTC'))) AS newest,
     toUInt64(countIf(length(kept) = 1%s)) AS seen_once%s
-FROM (%s)`, newKeyPredicate(mt, def), groups, readinessSource(mt, def, qt, fidEsc, from, hasGroups))
+FROM (%s)`, newKeyPredicate(mt, def), groups, readinessSource(mt, def, qt, fid, from, hasGroups))
 }
 
 // selfCheckSQL counts the keys seen on exactly one first-half day (the second
 // element of a sorted list decides) and the keys first seen in the second half.
-func selfCheckSQL(mt ModelType, def ModelDefinition, qt, fidEsc string, from time.Time, s selfCheckHalves) string {
-	mid := "toDate('" + s.mid.Format("2006-01-02") + "')"
-	end := "toDate('" + s.end.Format("2006-01-02") + "')"
+func selfCheckSQL(mt ModelType, def ModelDefinition, qt, fid string, from time.Time, s selfCheckHalves) string {
+	mid := "toDate(" + sqlquote.String(s.mid.Format("2006-01-02")) + ")"
+	end := "toDate(" + sqlquote.String(s.end.Format("2006-01-02")) + ")"
 	return fmt.Sprintf(`SELECT toUInt64(countIf(kept[1] < %[1]s AND (length(kept) = 1 OR kept[2] >= %[1]s)%[3]s)) AS forecast,
     toUInt64(countIf(kept[1] >= %[1]s AND kept[1] < %[2]s%[3]s)) AS actual
-FROM (%[4]s)`, mid, end, newKeyPredicate(mt, def), readinessSource(mt, def, qt, fidEsc, from, false))
+FROM (%[4]s)`, mid, end, newKeyPredicate(mt, def), readinessSource(mt, def, qt, fid, from, false))
 }
 
 func parseReadinessGroups(r map[string]interface{}, readyDays int) *ReadinessGroups {

@@ -3,9 +3,9 @@ package schemafields
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -166,5 +166,5 @@ GROUP BY fractal`,
 // ClickHouse metadata rather than user input, but they reach a query as literals
 // and are quoted like any other.
 func quoteCH(s string) string {
-	return "'" + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `'`, `\'`) + "'"
+	return sqlquote.String(s)
 }

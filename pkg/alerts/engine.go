@@ -18,6 +18,7 @@ import (
 	"bifract/pkg/parser"
 	"bifract/pkg/query"
 	"bifract/pkg/settings"
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 	"bifract/pkg/tlshresolve"
 
@@ -252,8 +253,8 @@ func (e *Engine) refreshRecentIngest(ctx context.Context, since time.Time) {
 	// Inclusive: a row stamped exactly at a cursor belongs to the window that
 	// starts there, so it is work the alert has not done yet.
 	sql := fmt.Sprintf(
-		"SELECT fractal_id, max(ingest_timestamp) AS last_ingest FROM %s WHERE ingest_timestamp >= toDateTime64('%s', 3, 'UTC') GROUP BY fractal_id",
-		e.ch.HotReadTable(), since.UTC().Format("2006-01-02 15:04:05.000"))
+		"SELECT fractal_id, max(ingest_timestamp) AS last_ingest FROM %s WHERE ingest_timestamp >= toDateTime64(%s, 3, 'UTC') GROUP BY fractal_id",
+		e.ch.HotReadTable(), sqlquote.String(since.UTC().Format("2006-01-02 15:04:05.000")))
 	// Scanned with typed destinations rather than the map-based Query helper,
 	// which formats DateTime64 into a display string.
 	rows, err := e.ch.QueryRows(ctx, sql)

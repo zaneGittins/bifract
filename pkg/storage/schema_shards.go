@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"bifract/pkg/sqlquote"
 )
 
 // Shard-aware schema provisioning. Only deployments with Topology.PerNodeAdmin
@@ -240,8 +242,8 @@ func (c *ClickHouseClient) distributedTableDDL() []string {
 			key = "cityHash64(proc_key)"
 		}
 		stmts = append(stmts, fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS %s_distributed AS %s ENGINE = Distributed('%s', currentDatabase(), '%s', %s)",
-			t, t, EscCHStr(c.topo.DDLCluster), t, key))
+			"CREATE TABLE IF NOT EXISTS %s_distributed AS %s ENGINE = Distributed(%s, currentDatabase(), %s, %s)",
+			t, t, sqlquote.String(c.topo.DDLCluster), sqlquote.String(t), key))
 	}
 	return stmts
 }
@@ -321,8 +323,8 @@ func syncDistributedColumns(ctx context.Context, conn driver.Conn, database, dis
 		lc := local[name]
 		dc, exists := dist[name]
 		if !exists {
-			stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS `%s` %s%s",
-				distTable, name, lc.typ, defaultClause(lc))
+			stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s%s",
+				distTable, sqlquote.Ident(name), lc.typ, defaultClause(lc))
 			if err := conn.Exec(ctx, stmt); err != nil {
 				return fmt.Errorf("add column %s to %s: %w", name, distTable, err)
 			}
@@ -332,8 +334,8 @@ func syncDistributedColumns(ctx context.Context, conn driver.Conn, database, dis
 		// Column present: repair a drifted or absent default so the Distributed
 		// layer materializes omitted columns identically to the local table.
 		if dc.kind != lc.kind || dc.expr != lc.expr {
-			stmt := fmt.Sprintf("ALTER TABLE %s MODIFY COLUMN `%s` %s%s",
-				distTable, name, lc.typ, defaultClause(lc))
+			stmt := fmt.Sprintf("ALTER TABLE %s MODIFY COLUMN %s %s%s",
+				distTable, sqlquote.Ident(name), lc.typ, defaultClause(lc))
 			if err := conn.Exec(ctx, stmt); err != nil {
 				return fmt.Errorf("modify column %s on %s: %w", name, distTable, err)
 			}
@@ -366,8 +368,8 @@ func (c *ClickHouseClient) EnsureColumn(ctx context.Context, local, dist, column
 			return err
 		}
 		if n == 0 {
-			stmt := fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` %s",
-				escapeCHBacktickIdent(local), escapeCHBacktickIdent(column), definition)
+			stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s",
+				sqlquote.Ident(local), sqlquote.Ident(column), definition)
 			if err := conn.Exec(ctx, stmt); err != nil {
 				return fmt.Errorf("add %s to %s: %w", column, local, err)
 			}
@@ -392,7 +394,7 @@ func (c *ClickHouseClient) DeleteRowsWhere(ctx context.Context, local, where str
 		if ok, err := chTableExists(ctx, conn, local); err != nil || !ok {
 			return err
 		}
-		table := "`" + escapeCHBacktickIdent(local) + "`"
+		table := sqlquote.Ident(local)
 		var n uint64
 		if err := conn.QueryRow(ctx, "SELECT count() FROM "+table+" WHERE "+where).Scan(&n); err != nil || n == 0 {
 			return err

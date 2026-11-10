@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"bifract/pkg/sqlquote"
 )
 
 // DeploymentKind is declared by the operator, never inferred from the presence
@@ -137,7 +139,7 @@ func (t Topology) OnClusterSQL() string {
 	if t.DDLCluster == "" {
 		return ""
 	}
-	return " ON CLUSTER '" + EscCHStr(t.DDLCluster) + "'"
+	return " ON CLUSTER " + sqlquote.String(t.DDLCluster)
 }
 
 // FanoutSystemTable returns the every-replica form of a system table, e.g.
@@ -147,7 +149,7 @@ func (t Topology) FanoutSystemTable(table string) string {
 	if t.FanoutCluster == "" {
 		return table
 	}
-	return fmt.Sprintf("clusterAllReplicas('%s', %s)", EscCHStr(t.FanoutCluster), table)
+	return fmt.Sprintf("clusterAllReplicas(%s, %s)", sqlquote.String(t.FanoutCluster), table)
 }
 
 // FanoutSystemTableArgs returns the three-argument every-replica form that some
@@ -157,7 +159,7 @@ func (t Topology) FanoutSystemTableArgs(db, table string) string {
 	if t.FanoutCluster == "" {
 		return db + "." + table
 	}
-	return fmt.Sprintf("clusterAllReplicas('%s', %s, %s)", EscCHStr(t.FanoutCluster), db, table)
+	return fmt.Sprintf("clusterAllReplicas(%s, %s, %s)", sqlquote.String(t.FanoutCluster), db, table)
 }
 
 // ShardSystemTable returns the one-replica-per-shard form, cluster('c', system.X).
@@ -167,7 +169,7 @@ func (t Topology) ShardSystemTable(table string) string {
 	if t.FanoutCluster == "" {
 		return table
 	}
-	return fmt.Sprintf("cluster('%s', %s)", EscCHStr(t.FanoutCluster), table)
+	return fmt.Sprintf("cluster(%s, %s)", sqlquote.String(t.FanoutCluster), table)
 }
 
 // Table returns the read/write name for a base table, adding the _distributed

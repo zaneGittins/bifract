@@ -813,14 +813,14 @@ func equalitySQL(cond Condition, registry *FieldRegistry, fieldRef string, isJSO
 	}
 	switch {
 	case negate && isJSONField:
-		return atom(fmt.Sprintf("(%s IS NULL OR %s != '%s')", fieldRef, fieldRef, escapeString(cond.Value)))
+		return atom(fmt.Sprintf("(%s IS NULL OR %s != %s)", fieldRef, fieldRef, sqlString(cond.Value)))
 	case negate:
-		return atom(fmt.Sprintf("%s != '%s'", fieldRef, escapeString(cond.Value)))
+		return atom(fmt.Sprintf("%s != %s", fieldRef, sqlString(cond.Value)))
 	case iceberg:
 		// MAP correctness + promoted `_ice_` column pruning (icebergEqualityPredicate).
 		return icebergEqualityPredicate(cond.Field, cond.Value, registry.icePromoted)
 	}
-	return atom(fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value)))
+	return atom(fmt.Sprintf("%s = %s", fieldRef, sqlString(cond.Value)))
 }
 
 // orderingSQL compiles a numeric comparison. Text is read with textToNumber; a
@@ -829,7 +829,7 @@ func equalitySQL(cond Condition, registry *FieldRegistry, fieldRef string, isJSO
 func orderingSQL(cond Condition, ref sqlRef) string {
 	fieldRef := ref.sql
 	if err := validateNumeric(cond.Value); err != nil {
-		return fmt.Sprintf("%s %s '%s'", fieldRef, cond.Operator, escapeString(cond.Value))
+		return fmt.Sprintf("%s %s %s", fieldRef, cond.Operator, sqlString(cond.Value))
 	}
 	if ref.typ != typeNumber {
 		fieldRef = textToNumber(fieldRef)

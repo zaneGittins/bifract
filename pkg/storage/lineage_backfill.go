@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"bifract/pkg/sqlquote"
 )
 
 // lineageBackfillDone records, on each shard, how far each logs partition has been copied into
@@ -61,7 +63,7 @@ func backfillLineageOnShard(ctx context.Context, conn driver.Conn, sel string, r
 		if !last.After(done) {
 			continue
 		}
-		window := " AND _partition_id = '" + EscCHStr(id) + "' AND ingest_timestamp > " + chTime(done) + " AND ingest_timestamp <= " + chTime(last)
+		window := " AND _partition_id = " + sqlquote.String(id) + " AND ingest_timestamp > " + chTime(done) + " AND ingest_timestamp <= " + chTime(last)
 		if err := conn.Exec(ctx, "INSERT INTO proc_lineage ("+cols+") "+sel+window+lineageBackfillSettings); err != nil {
 			return fmt.Errorf("backfill partition %s: %w", id, err)
 		}
