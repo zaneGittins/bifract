@@ -217,13 +217,7 @@ func FuzzHostileValue(f *testing.F) {
 // ClickHouse's own parser agrees: every hostile translation is one SELECT, and
 // its syntax tree with literals blanked is the benign twin's.
 func TestHostileValuesParseAsOneSelectInClickHouse(t *testing.T) {
-	bin := os.Getenv("BIFRACT_TEST_CLICKHOUSE_BIN")
-	if bin == "" {
-		if os.Getenv("BIFRACT_REQUIRE_CLICKHOUSE") != "" {
-			t.Fatal("BIFRACT_TEST_CLICKHOUSE_BIN is not set")
-		}
-		t.Skip("BIFRACT_TEST_CLICKHOUSE_BIN not set")
-	}
+	bin := hostileClickhouseBin(t)
 	type pair struct{ name, sql, twin string }
 	var pairs []pair
 	for _, tmpl := range hostileTemplates {
@@ -299,4 +293,22 @@ func maskLiterals(line string) string {
 		return line[:i] + " (alias …)"
 	}
 	return line
+}
+
+// hostileClickhouseBin finds clickhouse as the probe does (see clickhouseBin in the
+// external test package): BIFRACT_TEST_CLICKHOUSE_BIN, else clickhouse on PATH.
+func hostileClickhouseBin(t *testing.T) string {
+	t.Helper()
+	bin := os.Getenv("BIFRACT_TEST_CLICKHOUSE_BIN")
+	if bin == "" {
+		bin = "clickhouse"
+	}
+	if path, err := exec.LookPath(bin); err == nil {
+		return path
+	}
+	if os.Getenv("BIFRACT_REQUIRE_CLICKHOUSE") != "" {
+		t.Fatalf("no clickhouse binary %q, and BIFRACT_REQUIRE_CLICKHOUSE is set", bin)
+	}
+	t.Skipf("no clickhouse binary %q; set BIFRACT_TEST_CLICKHOUSE_BIN", bin)
+	return ""
 }
