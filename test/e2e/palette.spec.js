@@ -18,6 +18,10 @@ async function openQuery(page) {
   return fractal;
 }
 
+function selectedTab(page) {
+  return page.locator('#paletteTabs [role="tab"][aria-selected="true"]');
+}
+
 // A history row only this test owns, so parallel specs cannot change what it finds.
 async function recordHistory(page, text) {
   const res = await page.request.post('/api/v1/query-history', {
@@ -67,6 +71,21 @@ test.describe('command palette', () => {
     await expect(page).toHaveURL(new RegExp(`#f/${fractal.id}/alerts/coverage$`));
   });
 
+  test('going to a page with an editor puts the cursor in it', async ({ page }) => {
+    const fractal = await openQuery(page);
+    await page.goto(`/#f/${fractal.id}/dashboards`);
+    await expect(page.locator('#sidebar a[data-nav="dashboards"]')).toHaveAttribute('aria-current', 'page', { timeout: 15000 });
+
+    for (const [name, editor] of [['Query', '#queryInput'], ['Recall', '#recallQueryInput']]) {
+      if (!(await page.locator(`#sidebar a[data-tip="${name}"]:visible`).count())) continue;
+      await page.keyboard.press(SHORTCUT);
+      await page.locator('#paletteInput').fill(name);
+      await expect(page.locator('.pal-item.active')).toContainText(name);
+      await page.keyboard.press('Enter');
+      await expect(page.locator(editor)).toBeFocused();
+    }
+  });
+
   test('the best match is selected, not the first section', async ({ page }) => {
     await openQuery(page);
     // Holds c-o-v-e-r-a-g-e in order, so it matches loosely and sorts first.
@@ -102,19 +121,60 @@ test.describe('command palette', () => {
     }
   });
 
-  test('a prefix narrows to one section and Backspace widens it again', async ({ page }) => {
+  test('a prefix opens its tab and Backspace returns to All', async ({ page }) => {
     await openQuery(page);
     await page.keyboard.press(SHORTCUT);
     await page.keyboard.type('#');
 
-    await expect(page.locator('#paletteScope')).toBeVisible();
-    await expect(page.locator('#paletteScope')).toContainText('Queries');
+    await expect(selectedTab(page)).toContainText('Saved');
     await expect(page.locator('#paletteInput')).toHaveValue('');
     await expect(page.locator('.pal-group', { hasText: 'Actions' })).toHaveCount(0);
 
     await page.keyboard.press('Backspace');
-    await expect(page.locator('#paletteScope')).toBeHidden();
+    await expect(selectedTab(page)).toHaveText('All');
     await expect(page.locator('.pal-group', { hasText: 'Actions' })).toHaveCount(1);
+  });
+
+  test('the tabs are always shown and a click opens one', async ({ page }) => {
+    await openQuery(page);
+    await page.keyboard.press(SHORTCUT);
+    await expect(selectedTab(page)).toHaveText('All');
+    for (const name of ['Saved', 'Recent', 'Functions', 'Go to', 'Actions']) {
+      await expect(page.locator('#paletteTabs [role="tab"]', { hasText: name })).toBeVisible();
+    }
+
+    await page.locator('#paletteTabs [role="tab"]', { hasText: 'Go to' }).click();
+    await expect(selectedTab(page)).toContainText('Go to');
+    await expect(page.locator('.pal-group').first()).toContainText('Pages');
+    await expect(page.locator('#paletteInput')).toBeFocused();
+  });
+
+  test('Tab steps through the tabs from All', async ({ page }) => {
+    await openQuery(page);
+    await page.keyboard.press(SHORTCUT);
+    await page.keyboard.press('Tab');
+    await expect(selectedTab(page)).toContainText('Saved');
+    await page.keyboard.press('Tab');
+    await expect(selectedTab(page)).toContainText('Recent');
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Shift+Tab');
+    await expect(selectedTab(page)).toHaveText('All');
+  });
+
+  test('a section links to its own tab', async ({ page }) => {
+    await openQuery(page);
+    await recordHistory(page, `source=palette-see-${Date.now()}`);
+    await page.keyboard.press(SHORTCUT);
+    await page.locator('.pal-group', { hasText: 'Recent queries' }).locator('.pal-see').click();
+    await expect(selectedTab(page)).toContainText('Recent');
+    await expect(page.locator('#palettePreview')).toBeHidden();
+  });
+
+  test('other tabs count what they hold for the text typed', async ({ page }) => {
+    await openQuery(page);
+    await page.keyboard.press(SHORTCUT);
+    await page.locator('#paletteInput').fill('groupby');
+    await expect(page.locator('#paletteTabs [role="tab"]', { hasText: 'Functions' }).locator('span')).toHaveText(/^[1-9]\d*$/);
   });
 
   test('the Queries button opens a saved-first browse view', async ({ page }) => {
@@ -145,7 +205,7 @@ test.describe('command palette', () => {
     }
   });
 
-  test('Tab switches browse tabs and Backspace leaves browsing', async ({ page }) => {
+  test('Tab moves from Saved to Recent and Backspace returns to All', async ({ page }) => {
     await openQuery(page);
     await recordHistory(page, `source=palette-tabs-${Date.now()}`);
     await page.locator('#queriesMenuBtn').click();
@@ -158,7 +218,7 @@ test.describe('command palette', () => {
     await expect(page.locator('#paletteTabs [aria-selected="true"]')).toContainText('Saved');
 
     await page.keyboard.press('Backspace');
-    await expect(page.locator('#paletteTabs')).toBeHidden();
+    await expect(selectedTab(page)).toHaveText('All');
     await expect(page.locator('#palettePreview')).toBeVisible();
   });
 
@@ -230,6 +290,63 @@ test.describe('command palette', () => {
     await expect(page.locator('#paletteInput')).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(page.locator('#palette')).toBeHidden();
+  });
+});
+
+test.describe('command palette, functions', () => {
+  test('the Functions button opens the reference, and Enter inserts at the cursor', async ({ page }) => {
+    await openQuery(page);
+    const editor = page.locator('#queryInput');
+    await editor.fill('level=error');
+    await page.locator('#functionsMenuBtn').click();
+    await expect(selectedTab(page)).toContainText('Functions');
+
+    await page.locator('#paletteInput').fill('groupby');
+    await expect(page.locator('.pal-item.active')).toContainText('groupby');
+    await expect(page.locator('#palettePreview')).toContainText('Examples');
+    await page.keyboard.press('Enter');
+
+    await expect(page.locator('#palette')).toBeHidden();
+    await expect(editor).toHaveValue('level=error | groupby()');
+    await expect(editor).toBeFocused();
+    // The caret waits inside the parentheses for the arguments.
+    expect(await editor.evaluate(el => el.selectionStart)).toBe('level=error | groupby('.length);
+  });
+
+  test('a slash opens Functions, and descriptions match as written', async ({ page }) => {
+    await openQuery(page);
+    await page.keyboard.press(SHORTCUT);
+    await page.keyboard.type('/average');
+    await expect(selectedTab(page)).toContainText('Functions');
+    await expect(page.locator('.pal-item', { hasText: /^\s*avg\b/ })).toHaveCount(1);
+    // Letters scattered through a description are not a match.
+    await page.locator('#paletteInput').fill('zqxj');
+    await expect(page.locator('#paletteStatus')).toHaveText('No matches');
+  });
+
+  test('from another page, a function is added to the end of the query', async ({ page }) => {
+    const fractal = await openQuery(page);
+    await page.locator('#queryInput').fill('level=error');
+    await page.locator('#queryInput').evaluate(el => el.setSelectionRange(0, 0));
+    await page.goto(`/#f/${fractal.id}/dashboards`);
+    await expect(page.locator('#sidebar a[data-nav="dashboards"]')).toHaveAttribute('aria-current', 'page', { timeout: 15000 });
+
+    await page.keyboard.press(SHORTCUT);
+    await page.keyboard.type('/groupby');
+    await expect(page.locator('.pal-item.active')).toContainText('groupby');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#sidebar a[data-nav="search"]')).toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('#queryInput')).toHaveValue('level=error | groupby()');
+  });
+
+  test("the editor's hint opens Functions on that function", async ({ page }) => {
+    await openQuery(page);
+    await page.locator('#queryInput').click();
+    await page.keyboard.type('groupby(?');
+    await page.locator('#functionHint .fn-hint-browse').click();
+    await expect(selectedTab(page)).toContainText('Functions');
+    await expect(page.locator('#paletteInput')).toHaveValue('groupby');
+    await expect(page.locator('.pal-item.active')).toContainText('groupby');
   });
 });
 

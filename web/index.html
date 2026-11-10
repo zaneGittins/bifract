@@ -1664,10 +1664,15 @@
 
                 <div class="toolbar-spacer"></div>
 
-                <!-- Opens the command palette on its query rows -->
+                <!-- Open the command palette on its Saved and Functions tabs -->
                 <div class="toolbar-menu-wrap" id="queriesMenuWrap">
-                    <button id="queriesMenuBtn" class="toolbar-menu-btn" type="button" title="Recent and saved queries" aria-haspopup="dialog">
+                    <button id="queriesMenuBtn" class="toolbar-menu-btn" type="button" title="Saved and recent queries" aria-haspopup="dialog">
                         Queries
+                    </button>
+                </div>
+                <div class="toolbar-menu-wrap">
+                    <button id="functionsMenuBtn" class="toolbar-menu-btn" type="button" title="Functions and operators" aria-haspopup="dialog">
+                        Functions
                     </button>
                 </div>
 
@@ -1703,6 +1708,7 @@
                     <div id="queryHighlight" class="query-highlight"></div>
                     <textarea
                         id="queryInput"
+                        data-page-focus
                         class="search-input"
                         placeholder="Enter query (e.g., level=info)"
                         autocomplete="off"
@@ -2779,6 +2785,7 @@
                                 <div id="recallQueryHighlight" class="query-highlight"></div>
                                 <textarea
                                     id="recallQueryInput"
+                                    data-page-focus
                                     class="search-input"
                                     placeholder="Search the archive (e.g., level=error)"
                                     autocomplete="off"
@@ -3506,11 +3513,10 @@
         <div class="pal-dialog" role="dialog" aria-modal="true" aria-label="Command palette">
             <div class="pal-input-row">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-                <button id="paletteScope" type="button" class="pal-chip" title="Show all results" hidden></button>
                 <input id="paletteInput" type="text" role="combobox" aria-expanded="false" aria-controls="paletteList" aria-autocomplete="list" aria-label="Search" autocomplete="off" spellcheck="false">
                 <span id="paletteContext" class="pal-context" hidden></span>
             </div>
-            <div id="paletteTabs" class="pal-tabs" role="tablist" aria-label="Query lists" hidden></div>
+            <div id="paletteTabs" class="pal-tabs" role="tablist" aria-label="Filter results"></div>
             <div class="pal-body">
                 <div id="paletteList" class="pal-list" role="listbox" aria-label="Results"></div>
                 <div id="palettePreview" class="pal-preview"></div>
@@ -4223,22 +4229,6 @@ throttleTimeSeconds: 3600"></textarea>
                     <button type="button" id="cancelEditTokenModalBtn" class="btn-secondary">Cancel</button>
                     <button type="button" id="submitEditTokenModalBtn" class="btn-primary">Save</button>
                 </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Query Reference Overlay (opened from the BQL editor's ? hint) -->
-    <div id="queryRefOverlay" class="qref-overlay" role="dialog" aria-modal="true" aria-label="Query reference">
-        <div class="qref-overlay-scrim"></div>
-        <div class="qref-overlay-panel">
-            <div class="qref-overlay-header">
-                <span class="qref-overlay-title">Query Reference</span>
-                <button class="qref-overlay-close" onclick="QueryReference.closeOverlay()" title="Close" aria-label="Close">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                </button>
-            </div>
-            <div id="referenceContent" class="reference-content">
-                <div class="loading">Loading reference...</div>
             </div>
         </div>
     </div>

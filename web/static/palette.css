@@ -48,36 +48,6 @@
     font-size: 15px;
 }
 
-.pal-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-    padding: 3px 8px;
-    border: none;
-    border-radius: 5px;
-    background: var(--accent-glow);
-    color: var(--accent-secondary);
-    font-family: var(--font-main);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-}
-
-.pal-chip[hidden] {
-    display: none;
-}
-
-.pal-chip span {
-    color: var(--text-muted);
-    font-weight: 400;
-}
-
-.pal-chip.ai {
-    background: color-mix(in srgb, var(--accent-tertiary) 16%, transparent);
-    color: var(--accent-tertiary);
-}
-
 .pal-context {
     flex-shrink: 0;
     padding: 2px 7px;
@@ -151,6 +121,12 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--text-muted);
+}
+
+.pal-group-end {
+    display: flex;
+    align-items: center;
+    gap: 10px;
 }
 
 .pal-group em {
@@ -321,6 +297,38 @@
 .pal-meta dd {
     margin: 0;
     color: var(--text-secondary);
+}
+
+/* Function reference: parameters, their types, and example headings. */
+.pal-pv-title.mono,
+.pal-params code,
+.pal-pv-note code {
+    font-family: var(--font-mono);
+}
+
+.pal-params dt {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.pal-params code {
+    color: var(--text-primary);
+}
+
+.pal-opt,
+.pal-type {
+    font-size: 10.5px;
+    color: var(--text-muted);
+}
+
+.pal-pv-label {
+    margin-bottom: -6px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
 }
 
 .pal-tags {
@@ -582,21 +590,15 @@
     color: var(--error);
 }
 
-/* ---- Browse (the Queries button): one list per tab, full rows ---- */
-
-.pal-dialog.browse {
-    width: min(780px, 100%);
-}
+/* ---- Tabs: one per kind of row; saved and recent draw full rows ---- */
 
 .pal-tabs {
     display: flex;
-    gap: 4px;
-    padding: 6px 10px 0;
+    gap: 2px;
+    padding: 4px 10px 0;
     border-bottom: 1px solid var(--border-color);
-}
-
-.pal-tabs[hidden] {
-    display: none;
+    overflow-x: auto;
+    scrollbar-width: none;
 }
 
 .pal-tab {
@@ -611,7 +613,16 @@
     font-family: var(--font-main);
     font-size: 12.5px;
     color: var(--text-muted);
+    white-space: nowrap;
     cursor: pointer;
+}
+
+.pal-tab:hover {
+    color: var(--text-primary);
+}
+
+.pal-tab.ai svg {
+    color: var(--accent-tertiary);
 }
 
 .pal-tab span {
@@ -624,27 +635,44 @@
     color: var(--text-primary);
 }
 
-.pal-dialog.browse .pal-body {
+.pal-dialog.rich .pal-body {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
     height: min(560px, 68vh);
 }
 
-.pal-dialog.browse .pal-list {
+.pal-dialog.rich .pal-list {
     border-right: none;
 }
 
 /* Without a preview, the pane only appears to hold a form, above the list. */
-.pal-dialog.browse .pal-preview {
+.pal-dialog.rich .pal-preview {
     display: none;
 }
 
-.pal-dialog.browse .pal-preview.has-panel {
+.pal-dialog.rich .pal-preview.has-panel {
     display: flex;
     order: -1;
     max-height: none;
     border-top: none;
     border-bottom: 1px solid var(--border-color);
+}
+
+.pal-see {
+    padding: 0;
+    border: none;
+    background: none;
+    font-family: var(--font-main);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--accent-secondary);
+    cursor: pointer;
+}
+
+.pal-see:hover {
+    text-decoration: underline;
 }
 
 .pal-item.rich {

@@ -187,7 +187,7 @@ const Autocomplete = {
             browseBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.hideHint();
-                if (window.QueryReference) QueryReference.openOverlay();
+                if (window.QueryReference) QueryReference.open(hint.name);
             });
         }
     },

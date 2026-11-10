@@ -31,24 +31,39 @@ It finds:
 - another fractal or prism
 - a dashboard, notebook, alert rule, lookup or analytics model in the current scope
 - your recent queries in this fractal, and its saved queries
+- BQL functions and operators, with their syntax, parameters and examples
 
-The page you are on leads. On Query, your recent and saved queries come first, then actions such as **Save current query**. On Recall, **New search**, **Restore this window** and your recent recalls come first.
+The page you are on leads. On Query, your recent and saved queries come first, then actions such as **Save current query**. On Recall, **New search**, **Restore this window** and your recent recalls come first. Typing on Query also lists matching functions.
+
+### Tabs
+
+Tabs under the search box show one kind of result at a time: **All**, **Saved**, **Recent**, **Functions**, **Go to**, **Actions** and **Ask AI**, depending on the page. Click a tab, or press Tab to step through them. Saved, Recent and Functions show how many results they hold for what you typed, and each section in **All** has a **See all** link to its tab.
+
+Buttons open the palette on the tab you want:
+
+| Button | Opens |
+|--------|-------|
+| **Go to...** in the sidebar, or Cmd/Ctrl+K | All |
+| **Queries** on Query | Saved |
+| **Functions** on Query | Functions |
+| **Browse all** in the editor's function hint | Functions, on that function |
+| **Recent** on Recall | Recall |
+
+Saved and Recent show each query in full, with its name, description, tags and actions beside it (Load, Run, Edit, Favorite, Delete; Save as and Remove on recent ones).
+
+On Functions, Enter inserts the function into the query at the cursor, starting a new `|` stage when it follows other text, and Cmd/Ctrl+Enter copies its first example.
 
 | Key | Does |
 |-----|------|
-| Enter | Open the result. On a query, load it into the editor |
-| Cmd/Ctrl+Enter | Run a query |
-| Tab | Show only the highlighted result's section, then move to the preview's buttons |
-| `#`, `>`, `?` typed first | Show only queries, actions, or Ask AI |
-| Backspace in an empty box | Show every section again |
+| Enter | Open the result. On a query, load it into the editor. On a function, insert it |
+| Cmd/Ctrl+Enter | Run a query, or copy a function's example |
+| Tab, Shift+Tab | Next or previous tab |
+| `#`, `/`, `>`, `?` typed first | Open Saved, Functions, Actions, or Ask AI |
+| Backspace in an empty box | Back to All |
 | Cmd/Ctrl+S | On Query, save the query in the editor |
 | Esc | Close a form, then the palette |
 
-The **Recent** button on Recall opens the palette on its rows.
-
-### Browse your queries
-
-The **Queries** button on Query opens your queries to browse rather than search: **Saved** first, then **Recent**, one list at a time, each row showing the name, description, query and tags with its actions beside it (Load, Run, Edit, Favorite, Delete; Save as and Remove on recent ones). Tab switches lists, typing filters the one you are on, and Backspace in the empty box goes back to the full palette.
+Opening Query or Recall from the palette puts the cursor in its query bar.
 
 ## Ask AI
 

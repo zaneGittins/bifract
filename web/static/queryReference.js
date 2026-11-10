@@ -1,318 +1,119 @@
-// Query Reference View module
+// Functions and operators in the command palette: the BQL reference, searched
+// by name and description and read in the preview. Enter puts one in the query
+// at the cursor; nothing else in the query changes.
 
 const QueryReference = {
-    functions: [],
-    operators: [],
-    activeCategory: null,
-    expandedCards: new Set(),
-    _loaded: false,
+    ICON: '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10 2.5c-1.6 0-2.2.8-2.5 2.5l-1 6c-.3 1.7-.9 2.5-2.5 2.5M5 6.5h5"/></svg>',
+
+    _items: null,
 
     init() {
-        const overlay = document.getElementById('queryRefOverlay');
-        if (overlay) {
-            const scrim = overlay.querySelector('.qref-overlay-scrim');
-            if (scrim) scrim.addEventListener('click', () => this.closeOverlay());
-        }
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && this.isOpen()) this.closeOverlay();
+        const btn = document.getElementById('functionsMenuBtn');
+        if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); this.open(); });
+        if (window.BQLLang) BQLLang.onReady(() => { this._items = null; Palette.refresh(); });
+
+        Palette.register({
+            id: 'functions', group: 'Functions', order: 200, tab: 'functions', icon: this.ICON,
+            when: ctx => ctx.hasScope,
+            // Only Query writes queries, so other pages keep their own rows.
+            inAll: ctx => ctx.view === 'search',
+            items: () => this.items(),
+            preview: it => this.preview(it),
+            actions: () => [
+                { label: 'Insert in query', run: it => this.insert(it) },
+                { label: 'Copy example', run: it => this.copy(it) },
+            ],
         });
     },
 
-    isOpen() {
-        const overlay = document.getElementById('queryRefOverlay');
-        return !!overlay && overlay.classList.contains('open');
+    // text pre-fills the search, as when the editor's hint asks for more.
+    open(text) {
+        Palette.open({ tab: 'functions', text });
     },
 
-    // Open the reference as a centered overlay over the query editor.
-    // The catalog rarely changes, so it is fetched once and cached in the DOM.
-    async openOverlay() {
-        const overlay = document.getElementById('queryRefOverlay');
-        if (!overlay) return;
-        overlay.classList.add('open');
-        document.body.classList.add('qref-overlay-active');
-        if (!this._loaded) {
-            await this.loadReference();
-            this._loaded = true;
+    items() {
+        if (this._items) return this._items;
+        const lang = window.BQLLang;
+        if (!lang || !lang.loaded) return [];
+        this._items = [
+            ...lang.functions.map(fn => ({
+                key: `fn:${fn.name}`,
+                label: fn.name,
+                mono: true,
+                search: [...(fn.aliases || []), fn.category, fn.description].join(' '),
+                hint: fn.category,
+                fn,
+            })),
+            ...lang.operators.map(op => ({
+                key: `op:${op.operator}`,
+                label: op.operator,
+                mono: true,
+                search: `operator ${op.description}`,
+                hint: 'Operator',
+                op,
+            })),
+        ];
+        return this._items;
+    },
+
+    preview(it) {
+        const esc = Utils.escapeHtml;
+        const hl = text => (window.SyntaxHighlight ? SyntaxHighlight.highlight(text) : esc(text));
+        const doc = it.fn || it.op;
+        const examples = (doc.examples || []).map(ex => `<pre class="pal-code pal-hl">${hl(ex)}</pre>`).join('');
+        if (it.op) {
+            return `<div class="pal-pv-kind">Operator</div>
+                <div class="pal-pv-title mono">${esc(it.op.operator)}</div>
+                <div class="pal-pv-note">${esc(it.op.description)}</div>
+                ${examples ? `<div class="pal-pv-label">Examples</div>${examples}` : ''}`;
         }
-        const search = document.getElementById('refSearchInput');
-        if (search) search.focus();
+        const fn = it.fn;
+        const params = (fn.parameters || []).map(p => `<dt><code>${esc(p.name)}</code>${p.required ? '' : '<span class="pal-opt">optional</span>'}</dt>
+            <dd>${esc(p.description || '')}${p.type ? ` <span class="pal-type">${esc(p.type)}</span>` : ''}</dd>`).join('');
+        const aliases = (fn.aliases || []).length ? `<div class="pal-pv-note">Also written ${fn.aliases.map(a => `<code>${esc(a)}</code>`).join(', ')}</div>` : '';
+        return `<div class="pal-pv-kind">${esc(fn.category)} function</div>
+            <div class="pal-pv-title mono">${esc(fn.name)}</div>
+            <div class="pal-pv-note">${esc(fn.description)}</div>
+            ${aliases}
+            <pre class="pal-code pal-hl">${hl(fn.syntax)}</pre>
+            ${params ? `<dl class="pal-meta pal-params">${params}</dl>` : ''}
+            ${examples ? `<div class="pal-pv-label">Examples</div>${examples}` : ''}`;
     },
 
-    closeOverlay() {
-        const overlay = document.getElementById('queryRefOverlay');
-        if (overlay) overlay.classList.remove('open');
-        document.body.classList.remove('qref-overlay-active');
+    // The text to insert for an item, and how far back from its end the caret goes.
+    snippet(it, before) {
+        if (it.op) return { text: it.op.operator, back: 0 };
+        let text = BQLLang.funcInsertText(it.fn);
+        let back = BQLLang.funcCaretBack(it.fn);
+        if (text.endsWith('(')) { text += ')'; back = 1; }
+        // A pipeline command after other text starts its own stage.
+        const prev = before.trimEnd();
+        if (!it.fn.operand && prev && !prev.endsWith('|')) text = ' | ' + text;
+        else if (prev.endsWith('|') && !before.endsWith(' ')) text = ' ' + text;
+        return { text, back };
     },
 
-    async loadReference() {
-        try {
-            const response = await fetch('/api/v1/query/reference', { credentials: 'include' });
-            const data = await response.json();
-            this.functions = data.functions || [];
-            this.operators = data.operators || [];
-            this.renderReference();
-        } catch (error) {
-            console.error('Error loading query reference:', error);
-            this.renderError('Failed to load query reference');
-        }
+    insert(it) {
+        const away = !(window.App && App.currentViewLevel === 'fractal' && App.currentView === 'search');
+        if (away && window.App) App.showFractalView('search');
+        const qi = document.getElementById('queryInput');
+        if (!qi) return;
+        // Coming from another page, the old caret means nothing: add to the end.
+        const start = away ? qi.value.length : qi.selectionStart;
+        const end = away ? qi.value.length : qi.selectionEnd;
+        const { text, back } = this.snippet(it, qi.value.slice(0, start));
+        qi.setRangeText(text, start, end, 'end');
+        qi.selectionStart = qi.selectionEnd = start + text.length - back;
+        qi.dispatchEvent(new Event('input', { bubbles: true }));
+        qi.focus();
     },
 
-    getCategories() {
-        const cats = {};
-        this.functions.forEach(fn => {
-            if (!cats[fn.category]) cats[fn.category] = [];
-            cats[fn.category].push(fn);
-        });
-        return cats;
+    async copy(it) {
+        const doc = it.fn || it.op;
+        const text = (doc.examples && doc.examples[0]) || (it.fn ? it.fn.syntax : it.op.operator);
+        const ok = await Utils.copyText(text);
+        if (window.Toast) Toast.show(ok ? 'Example copied' : 'Copy needs HTTPS', ok ? 'success' : 'warning');
     },
-
-    renderReference() {
-        const container = document.getElementById('referenceContent');
-        if (!container) return;
-
-        const categories = this.getCategories();
-        const sortedCats = Object.keys(categories).sort();
-
-        // Category order: put most useful first
-        const catOrder = ['Aggregation', 'Transformation', 'Filtering', 'Detection', 'Visualization', 'Display', 'Ordering', 'Limiting', 'Extraction', 'Enrichment', 'Traversal'];
-        sortedCats.sort((a, b) => {
-            const ai = catOrder.indexOf(a);
-            const bi = catOrder.indexOf(b);
-            if (ai === -1 && bi === -1) return a.localeCompare(b);
-            if (ai === -1) return 1;
-            if (bi === -1) return -1;
-            return ai - bi;
-        });
-
-        let html = `
-            <div class="ref-layout">
-                <nav class="ref-sidebar">
-                    <div class="ref-sidebar-section">
-                        <div class="ref-sidebar-label">Categories</div>
-                        <button class="ref-cat-btn ${!this.activeCategory ? 'active' : ''}" onclick="QueryReference.setCategory(null)">
-                            All <span class="ref-cat-count">${this.functions.length}</span>
-                        </button>
-                        ${sortedCats.map(cat => `
-                            <button class="ref-cat-btn ${this.activeCategory === cat ? 'active' : ''}" onclick="QueryReference.setCategory('${cat}')">
-                                ${cat} <span class="ref-cat-count">${categories[cat].length}</span>
-                            </button>
-                        `).join('')}
-                        <div class="ref-sidebar-divider"></div>
-                        <button class="ref-cat-btn ${this.activeCategory === '_operators' ? 'active' : ''}" onclick="QueryReference.setCategory('_operators')">
-                            Operators <span class="ref-cat-count">${this.operators.length}</span>
-                        </button>
-                    </div>
-                </nav>
-                <div class="ref-main">
-                    <div class="ref-search-bar">
-                        <input type="text" id="refSearchInput" class="ref-search-input" placeholder="Search functions, operators, descriptions..." oninput="QueryReference.filterReference(this.value)">
-                        <span class="ref-result-count" id="refResultCount"></span>
-                    </div>
-                    <div id="refFunctionList" class="ref-function-list">
-                        ${this.renderFunctionList(sortedCats, categories)}
-                    </div>
-                </div>
-            </div>
-        `;
-
-        container.innerHTML = html;
-
-        // Migrate search value from old input if present
-        const oldInput = document.getElementById('referenceSearchInput');
-        if (oldInput && oldInput.value) {
-            const newInput = document.getElementById('refSearchInput');
-            if (newInput) {
-                newInput.value = oldInput.value;
-                this.filterReference(oldInput.value);
-            }
-        }
-    },
-
-    renderFunctionList(sortedCats, categories) {
-        const showOperators = !this.activeCategory || this.activeCategory === '_operators';
-        const showFunctions = this.activeCategory !== '_operators';
-
-        let html = '';
-
-        if (showFunctions) {
-            const catsToShow = this.activeCategory && this.activeCategory !== '_operators'
-                ? [this.activeCategory]
-                : sortedCats;
-
-            catsToShow.forEach(cat => {
-                if (!categories[cat]) return;
-                html += `
-                    <div class="ref-cat-group" data-category="${cat}">
-                        <div class="ref-cat-header">${cat}<span class="ref-cat-header-count">${categories[cat].length}</span></div>
-                        ${categories[cat].map(fn => this.renderCompactFunction(fn)).join('')}
-                    </div>
-                `;
-            });
-        }
-
-        if (showOperators) {
-            html += `
-                <div class="ref-cat-group" data-category="_operators">
-                    <div class="ref-cat-header">Operators<span class="ref-cat-header-count">${this.operators.length}</span></div>
-                    ${this.operators.map(op => this.renderCompactOperator(op)).join('')}
-                </div>
-            `;
-        }
-
-        return html;
-    },
-
-    renderCompactFunction(fn) {
-        const isExpanded = this.expandedCards.has(fn.name);
-        return `
-            <div class="ref-item ${isExpanded ? 'expanded' : ''}" data-name="${fn.name}" data-category="${fn.category}">
-                <div class="ref-item-header" onclick="QueryReference.toggleExpand('${fn.name}')">
-                    <div class="ref-item-title">
-                        <code class="ref-item-name">${fn.name}</code>
-                        <span class="ref-item-desc">${fn.description}</span>
-                    </div>
-                    <svg class="ref-chevron" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                </div>
-                <div class="ref-item-detail" ${isExpanded ? '' : 'style="display:none"'}>
-                    <div class="ref-detail-syntax">
-                        <code>${Utils.escapeHtml(fn.syntax)}</code>
-                    </div>
-                    ${fn.parameters.length > 0 ? `
-                        <div class="ref-detail-params">
-                            ${fn.parameters.map(p => `
-                                <div class="ref-param-row">
-                                    <code>${p.name}</code>
-                                    <span class="ref-param-type">${p.type}</span>
-                                    ${p.required ? '<span class="ref-param-req">required</span>' : '<span class="ref-param-opt">optional</span>'}
-                                    <span class="ref-param-desc">${p.description}</span>
-                                </div>
-                            `).join('')}
-                        </div>
-                    ` : ''}
-                    <div class="ref-detail-examples">
-                        ${fn.examples.map(ex => `
-                            <div class="ref-example">
-                                <code>${Utils.escapeHtml(ex)}</code>
-                                <button class="ref-copy-btn" onclick="QueryReference.copyToQuery('${Utils.escapeJs(ex)}')" title="Use in query">
-                                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M13 5.5a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5H6a.5.5 0 0 1-.5-.5V6a.5.5 0 0 1 .5-.5h7zM6 4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6z" stroke="currentColor" fill="none"/><path d="M4 3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1" stroke="currentColor" fill="none"/></svg>
-                                </button>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
-            </div>
-        `;
-    },
-
-    renderCompactOperator(op) {
-        const key = '_op_' + op.operator;
-        const isExpanded = this.expandedCards.has(key);
-        return `
-            <div class="ref-item ref-item-operator ${isExpanded ? 'expanded' : ''}" data-operator="${op.operator}">
-                <div class="ref-item-header" onclick="QueryReference.toggleExpand('${Utils.escapeJs(key)}')">
-                    <div class="ref-item-title">
-                        <code class="ref-item-name ref-op-name">${Utils.escapeHtml(op.operator)}</code>
-                        <span class="ref-item-desc">${op.description}</span>
-                    </div>
-                    <svg class="ref-chevron" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                </div>
-                <div class="ref-item-detail" ${isExpanded ? '' : 'style="display:none"'}>
-                    <div class="ref-detail-examples">
-                        ${op.examples.map(ex => `
-                            <div class="ref-example">
-                                <code>${Utils.escapeHtml(ex)}</code>
-                                <button class="ref-copy-btn" onclick="QueryReference.copyToQuery('${Utils.escapeJs(ex)}')" title="Use in query">
-                                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M13 5.5a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5H6a.5.5 0 0 1-.5-.5V6a.5.5 0 0 1 .5-.5h7zM6 4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6z" stroke="currentColor" fill="none"/><path d="M4 3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1" stroke="currentColor" fill="none"/></svg>
-                                </button>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
-            </div>
-        `;
-    },
-
-    toggleExpand(name) {
-        if (this.expandedCards.has(name)) {
-            this.expandedCards.delete(name);
-        } else {
-            this.expandedCards.add(name);
-        }
-
-        // Find the item and toggle detail visibility
-        const items = document.querySelectorAll('.ref-item');
-        items.forEach(item => {
-            const itemName = item.dataset.name || ('_op_' + item.dataset.operator);
-            if (itemName === name) {
-                const detail = item.querySelector('.ref-item-detail');
-                if (detail) {
-                    if (this.expandedCards.has(name)) {
-                        item.classList.add('expanded');
-                        detail.style.display = '';
-                    } else {
-                        item.classList.remove('expanded');
-                        detail.style.display = 'none';
-                    }
-                }
-            }
-        });
-    },
-
-    setCategory(cat) {
-        this.activeCategory = cat;
-        this.renderReference();
-    },
-
-    filterReference(searchTerm) {
-        const term = searchTerm.toLowerCase().trim();
-        const items = document.querySelectorAll('.ref-item');
-        const groups = document.querySelectorAll('.ref-cat-group');
-        let visibleCount = 0;
-
-        items.forEach(item => {
-            const name = (item.dataset.name || item.dataset.operator || '').toLowerCase();
-            const text = item.textContent.toLowerCase();
-            const visible = !term || name.includes(term) || text.includes(term);
-            item.style.display = visible ? '' : 'none';
-            if (visible) visibleCount++;
-        });
-
-        // Hide empty category groups
-        groups.forEach(group => {
-            const visibleItems = group.querySelectorAll('.ref-item:not([style*="display: none"])');
-            group.style.display = visibleItems.length > 0 ? '' : 'none';
-        });
-
-        const countEl = document.getElementById('refResultCount');
-        if (countEl) {
-            countEl.textContent = term ? `${visibleCount} result${visibleCount !== 1 ? 's' : ''}` : '';
-        }
-    },
-
-    copyToQuery(example) {
-        const queryInput = document.getElementById('queryInput');
-        if (queryInput) {
-            queryInput.value = example;
-            // Trigger the editor's input handlers (syntax highlight, validation).
-            queryInput.dispatchEvent(new Event('input', { bubbles: true }));
-            queryInput.focus();
-        }
-        this.closeOverlay();
-    },
-
-    renderError(message) {
-        const container = document.getElementById('referenceContent');
-        if (!container) return;
-        container.innerHTML = `
-            <div class="error-state">
-                <div class="error-message">${Utils.escapeHtml(message)}</div>
-            </div>
-        `;
-    }
 };
-
-document.addEventListener('DOMContentLoaded', () => {
-    QueryReference.init();
-});
 
 window.QueryReference = QueryReference;
