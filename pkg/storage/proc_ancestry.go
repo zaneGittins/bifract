@@ -97,8 +97,8 @@ func (b *ProcAncestryBuilder) Cycle(ctx context.Context) error {
 }
 
 // reflectProcAncestry reflects lineage ingested before hi into proc_ancestry, one slice at a
-// time, advancing the watermark after each. slice adapts so each holds about
-// procAncestrySliceRows lineage rows.
+// time, advancing the watermark after each. slice adapts so each holds at most
+// procAncestrySliceRows lineage rows and fits in a cycle.
 func (c *ClickHouseClient) reflectProcAncestry(ctx context.Context, hi time.Time, slice *time.Duration) error {
 	from, err := c.procAncestryWatermark(ctx)
 	if err != nil {
@@ -109,22 +109,32 @@ func (c *ClickHouseClient) reflectProcAncestry(ctx context.Context, hi time.Time
 			return err
 		}
 	}
+	// built is whether a slice finished this cycle, and last how long the latest one took. Once
+	// one has, the budget running out is the cycle's normal end rather than a failure.
+	built, last := false, time.Duration(0)
 	for from.Before(hi) && ctx.Err() == nil {
+		if deadline, ok := ctx.Deadline(); ok && built && time.Until(deadline) < last {
+			return nil
+		}
 		to := from.Add(*slice)
 		if to.After(hi) {
 			to = hi
 		}
 		n, err := c.lineageRowsBetween(ctx, from, to)
 		if err != nil {
-			return err
+			return budgetEnd(ctx, built, err)
 		}
 		if n > procAncestrySliceRows && to.Sub(from) > time.Millisecond {
 			*slice = max(time.Millisecond, *slice/2)
 			continue
 		}
+		start := time.Now()
 		if n > 0 {
 			if err := c.buildProcAncestry(ctx, from, to); err != nil {
-				// A slice too large to finish in one cycle is halved for the next.
+				if built {
+					return budgetEnd(ctx, built, err)
+				}
+				// A slice that cannot finish with the whole cycle to itself is halved.
 				if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					*slice = max(time.Millisecond, *slice/2)
 					log.Printf("[Ancestry] slice from %s did not finish in a cycle; trying %s", from.Format(time.RFC3339), *slice)
@@ -133,14 +143,39 @@ func (c *ClickHouseClient) reflectProcAncestry(ctx context.Context, hi time.Time
 			}
 		}
 		if err := c.setProcAncestryWatermark(ctx, to); err != nil {
-			return err
+			return budgetEnd(ctx, built, err)
 		}
-		if n < procAncestrySliceRows/4 {
-			*slice = min(24*time.Hour, *slice*2)
+		took := time.Since(start)
+		if n == 0 {
+			took = 0
+		} else {
+			built, last = true, took
 		}
+		*slice = nextSlice(*slice, took)
 		from = to
 	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil
+	}
 	return ctx.Err()
+}
+
+// budgetEnd is err, unless it is the cycle's budget running out after a slice finished.
+func budgetEnd(ctx context.Context, built bool, err error) error {
+	if built && (errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)) {
+		return nil
+	}
+	return err
+}
+
+// nextSlice sizes the slice after one that took took (0 when it held no rows). A slice's cost
+// is mostly fixed, so a slow one is not shrunk, which would only add fixed costs; it grows when
+// doubling still fits in the budget.
+func nextSlice(slice, took time.Duration) time.Duration {
+	if took < procAncestryCycleBudget/2 {
+		return min(24*time.Hour, slice*2)
+	}
+	return slice
 }
 
 func (c *ClickHouseClient) procAncestryWatermark(ctx context.Context) (time.Time, error) {
@@ -194,7 +229,12 @@ func chTime(t time.Time) string {
 
 // buildProcAncestry reflects the lineage rows ingested in [from, to).
 func (c *ClickHouseClient) buildProcAncestry(ctx context.Context, from, to time.Time) error {
-	for _, stmt := range procAncestrySQL(c.topo.Table("proc_lineage"), c.topo.Table(procAncestryTable), c.topo.DistributedTables, from, to) {
+	lineage, anc, distributed := c.topo.Table("proc_lineage"), c.topo.Table(procAncestryTable), c.topo.DistributedTables
+	var late uint64
+	if err := c.conn.QueryRow(ctx, lateDescendantsSQL(lineage, anc, distributed, from, to)).Scan(&late); err != nil {
+		return fmt.Errorf("build ancestry: %w", err)
+	}
+	for _, stmt := range procAncestrySQL(lineage, anc, distributed, from, to, late > 0) {
 		if err := c.conn.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("build ancestry: %w", err)
 		}
@@ -202,8 +242,21 @@ func (c *ClickHouseClient) buildProcAncestry(ctx context.Context, from, to time.
 	return nil
 }
 
-// procAncestrySQL is one slice's statements, in order.
-func procAncestrySQL(lineage, anc string, distributed bool, from, to time.Time) []string {
+// lateDescendantsSQL counts, up to one, the processes outside the slice with an ancestor in it:
+// those ingested before a parent that arrives now, or under a process ingested again.
+func lateDescendantsSQL(lineage, anc string, distributed bool, from, to time.Time) string {
+	in, notIn := "IN", "NOT IN"
+	if distributed {
+		in, notIn = "GLOBAL IN", "GLOBAL NOT IN"
+	}
+	keys := fmt.Sprintf("SELECT proc_key FROM %s WHERE %s", lineage, ingestBetween(from, to))
+	return fmt.Sprintf("SELECT count() FROM (SELECT 1 FROM %s WHERE depth >= 1 AND anc_key %s (%s) AND proc_key %s (%s) LIMIT 1)",
+		anc, in, keys, notIn, keys)
+}
+
+// procAncestrySQL is one slice's statements, in order. late is whether a process outside the
+// slice has an ancestor in it (see lateDescendantsSQL).
+func procAncestrySQL(lineage, anc string, distributed bool, from, to time.Time, late bool) []string {
 	in, join := "IN", "INNER JOIN"
 	if distributed {
 		in, join = "GLOBAL IN", "GLOBAL INNER JOIN"
@@ -236,9 +289,10 @@ func procAncestrySQL(lineage, anc string, distributed bool, from, to time.Time) 
 	}
 	// A process whose chain passes through one that just changed continues through it. Each pass
 	// reads the rows the one before wrote, so a chain extended two levels up is complete after
-	// two passes; chains are at most procAncestryDepth long.
+	// two passes; chains are at most procAncestryDepth long. Without late descendants the only
+	// such chains are the slice's own, which the depths above already completed.
 	changed, touched := batchKeys, []string{batchKeys}
-	for pass := 0; pass < procAncestryDepth; pass++ {
+	for pass := 0; late && pass < procAncestryDepth; pass++ {
 		out = append(out, insert+fmt.Sprintf("SELECT d.fractal_id, d.proc_key, d.depth + x.depth, d.process_guid, d.image, x.anc_key, x.anc_image, '', d.ingest_timestamp, now64(3) "+
 			"FROM (%s) AS d %s (%s) AS x ON x.fractal_id = d.fractal_id AND x.proc_key = d.anc_key WHERE d.anc_key != '' AND d.depth + x.depth <= %d",
 			rows(fmt.Sprintf("anc_key %s (%s)", in, changed)), join, rows(fmt.Sprintf("proc_key %s (%s)", in, changed)), procAncestryDepth)+procAncestryInsertSettings)

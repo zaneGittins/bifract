@@ -24,7 +24,7 @@ func TestClusterInitCatchesUpShardDownAtBoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	latest := all[len(all)-1].number
-	// Rewind shard 2 by one migration: its records and the table it creates.
+	// Rewind shard 2 to before 025: its records and the tables 025 creates.
 	behind := chTestHosts[1]
 	for _, stmt := range []string{
 		"DROP TABLE IF EXISTS logs.process_edges_p2p_mv SYNC",
@@ -33,17 +33,7 @@ func TestClusterInitCatchesUpShardDownAtBoot(t *testing.T) {
 	} {
 		execOnShard(t, behind, stmt)
 	}
-	// TRUNCATE and refill, since a lightweight DELETE also hides the row written back later.
-	for _, table := range []string{"_bifract_migrations", "_bifract_migration_steps"} {
-		for _, stmt := range []string{
-			"CREATE TABLE logs.keep_" + table + " ENGINE = Memory AS SELECT * FROM logs." + table + " WHERE number < " + itoa(latest),
-			"TRUNCATE TABLE logs." + table,
-			"INSERT INTO logs." + table + " SELECT * FROM logs.keep_" + table,
-			"DROP TABLE logs.keep_" + table,
-		} {
-			execOnShard(t, behind, stmt)
-		}
-	}
+	rewindMigrations(t, behind, 25)
 
 	proxy, open := blockableProxy(t, behind)
 	old := shardCatchUpDelay
@@ -64,19 +54,37 @@ func TestClusterInitCatchesUpShardDownAtBoot(t *testing.T) {
 	}
 
 	open.Store(true)
+	// The records land before the same pass creates the Distributed tables, so wait for both.
+	caughtUp := func() bool {
+		return shardUint(t, behind, "SELECT toUInt64(max(number)) FROM logs._bifract_migrations") == uint64(latest) &&
+			shardUint(t, behind, "SELECT count() FROM system.tables WHERE database = 'logs' AND name IN ('provenance_marks', 'provenance_marks_distributed')") == 2
+	}
 	deadline := time.Now().Add(60 * time.Second)
-	for shardUint(t, behind, "SELECT toUInt64(max(number)) FROM logs._bifract_migrations") != uint64(latest) {
+	for !caughtUp() {
 		if time.Now().After(deadline) {
-			t.Fatalf("shard %s never caught up to migration %d", behind, latest)
+			t.Fatalf("shard %s never caught up to migration %d with its tables", behind, latest)
 		}
 		time.Sleep(200 * time.Millisecond)
-	}
-	if n := shardUint(t, behind, "SELECT count() FROM system.tables WHERE database = 'logs' AND name IN ('provenance_marks', 'provenance_marks_distributed')"); n != 2 {
-		t.Errorf("caught-up shard has %d of the 2 provenance_marks tables", n)
 	}
 }
 
 func itoa(n uint32) string { return strconv.FormatUint(uint64(n), 10) }
+
+// rewindMigrations forgets the migrations numbered from on addr. TRUNCATE and refill, since
+// a lightweight DELETE also hides the row written back later.
+func rewindMigrations(t *testing.T, addr string, from uint32) {
+	t.Helper()
+	for _, table := range []string{"_bifract_migrations", "_bifract_migration_steps"} {
+		for _, stmt := range []string{
+			"CREATE TABLE logs.keep_" + table + " ENGINE = Memory AS SELECT * FROM logs." + table + " WHERE number < " + itoa(from),
+			"TRUNCATE TABLE logs." + table,
+			"INSERT INTO logs." + table + " SELECT * FROM logs.keep_" + table,
+			"DROP TABLE logs.keep_" + table,
+		} {
+			execOnShard(t, addr, stmt)
+		}
+	}
+}
 
 func newTestClusterClientAt(t *testing.T, addrs []string) *ClickHouseClient {
 	t.Helper()
