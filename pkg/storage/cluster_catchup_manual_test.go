@@ -23,7 +23,7 @@ func TestClusterInitCatchesUpShardDownAtBoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	latest := uint32(all[len(all)-1].number)
+	latest := all[len(all)-1].number
 	// Rewind shard 2 by one migration: its records and the table it creates.
 	behind := chTestHosts[1]
 	for _, stmt := range []string{

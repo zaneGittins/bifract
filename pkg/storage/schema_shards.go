@@ -66,7 +66,7 @@ func (c *ClickHouseClient) initializeShards(ctx context.Context, sql string, mig
 	}
 	var latest uint32
 	if len(all) > 0 {
-		latest = uint32(all[len(all)-1].number)
+		latest = all[len(all)-1].number
 	}
 
 	// A shard with no schema breaks reads and the ingest pool's health check as soon as the

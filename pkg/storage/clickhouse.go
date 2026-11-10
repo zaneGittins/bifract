@@ -604,7 +604,7 @@ func checkPartitionKey(ctx context.Context, conn driver.Conn) error {
 }
 
 type chMigrationEntry struct {
-	number int
+	number uint32
 	name   string
 	sql    string
 }
@@ -623,7 +623,7 @@ func loadClickHouseMigrations(fsys embed.FS, dir string) ([]chMigrationEntry, er
 		if len(parts) < 2 {
 			return nil
 		}
-		num, convErr := strconv.Atoi(parts[0])
+		num, convErr := strconv.ParseUint(parts[0], 10, 32)
 		if convErr != nil {
 			return nil
 		}
@@ -632,7 +632,7 @@ func loadClickHouseMigrations(fsys embed.FS, dir string) ([]chMigrationEntry, er
 			return fmt.Errorf("read migration %s: %w", path, readErr)
 		}
 		migrations = append(migrations, chMigrationEntry{
-			number: num,
+			number: uint32(num),
 			name:   strings.TrimSuffix(name, ".sql"),
 			sql:    string(content),
 		})
@@ -677,8 +677,8 @@ func migrationStmtTimeout() time.Duration {
 // statements every current migration uses; a future non-idempotent backfill
 // (INSERT...SELECT) MUST be written idempotently (guarded / dedup'd target) and cannot
 // rely on this checkpoint for exactly-once.
-func loadCompletedSteps(ctx context.Context, conn driver.Conn, number int) (map[int]bool, error) {
-	rows, err := conn.Query(ctx, "SELECT statement_index FROM logs._bifract_migration_steps WHERE number = ?", uint32(number))
+func loadCompletedSteps(ctx context.Context, conn driver.Conn, number uint32) (map[int]bool, error) {
+	rows, err := conn.Query(ctx, "SELECT statement_index FROM logs._bifract_migration_steps WHERE number = ?", number)
 	if err != nil {
 		return nil, err
 	}
@@ -762,7 +762,7 @@ func createMigrationBookkeeping(ctx context.Context, conn driver.Conn, transform
 }
 
 // recordCompletedStep marks one statement of a migration file as applied.
-func recordCompletedStep(ctx context.Context, conn driver.Conn, number, statementIndex int, name string) error {
+func recordCompletedStep(ctx context.Context, conn driver.Conn, number uint32, statementIndex int, name string) error {
 	record := fmt.Sprintf("INSERT INTO logs._bifract_migration_steps (number, statement_index, name) VALUES (%d, %d, %s)",
 		number, statementIndex, sqlquote.String(name))
 	return conn.Exec(ctx, record)
@@ -795,7 +795,7 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 
 	applied := 0
 	for _, m := range allMigrations {
-		if uint32(m.number) <= maxApplied {
+		if m.number <= maxApplied {
 			continue
 		}
 
@@ -873,7 +873,7 @@ func setClickHouseMigrationsBaseline(ctx context.Context, conn driver.Conn, tran
 		return fmt.Errorf("load migrations for baseline: %w", err)
 	}
 	for _, m := range allMigrations {
-		if upTo > 0 && uint32(m.number) > upTo {
+		if upTo > 0 && m.number > upTo {
 			continue
 		}
 		record := fmt.Sprintf("INSERT INTO logs._bifract_migrations (number, name) VALUES (%d, %s)",
