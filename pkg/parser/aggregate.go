@@ -14,6 +14,8 @@ type aggCall struct {
 	fn     string
 	params string // a parametric aggregate's parameters, "" for none
 	args   string
+	// time marks min() or max() of a time, which is a time too.
+	time bool
 }
 
 func (a aggCall) sql() string { return a.fn + a.paramList() + "(" + a.args + ")" }
@@ -153,6 +155,9 @@ func aggType(a aggregate) valueType {
 	case topShare:
 		return typeArray
 	case aggCall:
+		if a.time {
+			return typeTime
+		}
 		switch a.fn {
 		case "groupArray", "groupUniqArray", "topK", "quantiles", "approx_top_k":
 			return typeArray

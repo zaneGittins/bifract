@@ -305,6 +305,7 @@ var plannedHook func(*plannedQuery)
 func sourceRegistry(opts QueryOptions) *FieldRegistry {
 	registry := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
 	registry.normLogIndexHints = opts.NormLogIndexHints && opts.SourceMode != SourceIceberg && opts.SourceSubquery == ""
+	registry.timezone = opts.DisplayTimezone
 	for _, c := range opts.SourceColumns {
 		if slices.Contains(opts.SourceNumericColumns, c) {
 			registry.Register(c, FieldKindAssignment, c, -1)
@@ -1168,6 +1169,23 @@ func (q *plannedQuery) assembleSelects(active *QueryStage) error {
 		!hasSelectAlias(active.Layer.Selects, "fields") {
 		active.Layer.Selects = append(active.Layer.Selects, SelectExpr{Expr: "fields"})
 	}
+	// So do the log's other columns they read by name, such as ingest_timestamp.
+	if !q.ctx.Plan.IsAggregated {
+		for _, da := range q.deferredAssignments {
+			e := q.ctx.Registry.Get(da.Alias)
+			if e == nil {
+				e = q.ctx.Registry.Get(da.Field)
+			}
+			if e == nil {
+				continue
+			}
+			for _, col := range e.readCols() {
+				if scanColumns[col] && !hasSelectAlias(active.Layer.Selects, col) {
+					active.Layer.Selects = append(active.Layer.Selects, SelectExpr{Expr: col, carried: true})
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -1792,6 +1810,7 @@ func buildFormatters(selects []SelectExpr, deferredAssignments []deferredAssignm
 	var formatters []SelectExpr
 	for _, sel := range selects {
 		switch {
+		case sel.carried:
 		case sel.Name() == "timestamp":
 			formatters = append(formatters, selectAs("toString(timestamp)", "timestamp"))
 		case sel.Expr == "fields" && sel.Alias == "":
@@ -1850,6 +1869,9 @@ func outputRef(sel SelectExpr) string {
 func computeFieldOrder(selects []SelectExpr, deferredAssignments []deferredAssignment) []string {
 	fieldOrder := make([]string, 0, len(selects))
 	for _, sel := range selects {
+		if sel.carried {
+			continue
+		}
 		switch name := sel.Name(); name {
 		case "_all_fields", "fields", "_shard_num", ingestTimeColumn:
 		default:

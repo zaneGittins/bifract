@@ -35,6 +35,12 @@ func compileIn(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 		return sqlString(e.Value), TypeString, nil
 	case ExprNumber:
 		return e.Value, TypeNumber, nil
+	case ExprDuration:
+		seconds, err := durationSeconds(e.Value)
+		if err != nil {
+			return "", TypeAny, err
+		}
+		return fmt.Sprint(seconds), TypeDuration, nil
 	case ExprBoolean:
 		if strings.EqualFold(e.Value, "true") {
 			return "1", TypeBool, nil
@@ -76,6 +82,8 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 			typ = TypeText
 		case entry.typ == typeNumber:
 			typ = TypeNumberField
+		case entry.typ == typeTime, entry.Kind == FieldKindBase && isDateTimeColumn(name):
+			typ = TypeTime
 		}
 		ref := func() sqlRef { return registry.through(ctx.scope, name, func() sqlRef { return registry.Ref(name) }) }
 		fold := func(r sqlRef) string {
@@ -86,8 +94,9 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 		}
 		if entry.Inline {
 			// An inline field is a pre-aggregation assignment folded in at each
-			// reference. Its expression is already numeric.
-			return fold(ref()), TypeNumber, nil
+			// reference, with the type it was computed as; an unknown one coerces as
+			// a field does, since k := is_new or k := lower(host) is text.
+			return fold(ref()), typ, nil
 		}
 		// A row-level value is folded in as it is here, so a later reassignment
 		// of the name cannot change it.
@@ -99,6 +108,9 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 		// The bare alias, not Resolve(): an aggregate output registers with
 		// Expr == its own name, which Resolve() reads as a placeholder and turns
 		// back into a fields.`name` JSON path that does not exist in this stage.
+		if typ == TypeTime {
+			return registry.Column(name).sql, TypeTime, nil
+		}
 		return registry.Column(name).sql, TypeAny, nil
 	}
 	return registry.through(ctx.scope, name, func() sqlRef { return registry.Ref(name) }).sql, TypeText, nil
@@ -117,6 +129,9 @@ func compileUnary(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 	}
 	switch e.Value {
 	case "-":
+		if typ == TypeDuration {
+			return "-" + sql, TypeDuration, nil
+		}
 		n, err := asNumber(sql, typ, e.Arg)
 		if err != nil {
 			return "", TypeAny, err
@@ -143,6 +158,11 @@ func compileBinary(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 
 	join := func(l, r string, op string) string {
 		return parenthesise(l, e.Left, e.Value, false) + " " + op + " " + parenthesise(r, e.Right, e.Value, true)
+	}
+	if isTimeType(leftType) || isTimeType(rightType) {
+		if sql, typ, ok, err := compileTimeBinary(e, operand{leftSQL, leftType, e.Left}, operand{rightSQL, rightType, e.Right}, join); ok {
+			return sql, typ, err
+		}
 	}
 
 	switch e.Value {
@@ -249,9 +269,11 @@ func asNumber(sql string, typ ExprType, node *ExprNode) (string, error) {
 		return "", fmt.Errorf("expected a number, got the string %s", node.String())
 	case TypeBool:
 		return "", fmt.Errorf("expected a number, got the condition %s", node.String())
+	case TypeTime:
+		return "", fmt.Errorf("expected a number, got the time %s", node.String())
 	case TypeText:
 		return "toFloat64OrNull(" + sql + ")", nil
-	case TypeNumberField:
+	case TypeNumberField, TypeDuration:
 		return sql, nil
 	}
 	return "toFloat64OrNull(toString(" + sql + "))", nil
@@ -259,7 +281,7 @@ func asNumber(sql string, typ ExprType, node *ExprNode) (string, error) {
 
 // asString renders an expression as string SQL.
 func asString(sql string, typ ExprType) string {
-	if typ == TypeNumber || typ == TypeNumberField {
+	if typ == TypeNumber || typ == TypeNumberField || typ == TypeDuration || typ == TypeTime {
 		return "toString(" + sql + ")"
 	}
 	return sql
@@ -296,6 +318,13 @@ func compileCall(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 	if fn.Name == "if" {
 		return compileIf(fn, args, types)
 	}
+	if fn.Compile != nil {
+		sql, err := fn.Compile(funcCall{args: args, types: types, nodes: bound, ctx: ctx})
+		if err != nil {
+			return "", TypeAny, fmt.Errorf("%s(): %w", fn.Name, err)
+		}
+		return sql, fn.Returns, nil
+	}
 	if fn.RenderTyped != nil {
 		return fn.RenderTyped(args, types), fn.Returns, nil
 	}
@@ -309,6 +338,9 @@ func compileIf(fn *exprFunc, args []string, types []ExprType) (string, ExprType,
 	switch {
 	case then == els:
 		return fn.Render(args), then, nil
+	case isTimeType(then) || isTimeType(els):
+		// A time or a duration only meets its own kind: if(c, timestamp, user)
+		// has no common SQL type, and a bare number has no unit.
 	case then.anyType() && els.anyType():
 		return fn.Render(args), TypeAny, nil
 	case then.anyType():
@@ -321,6 +353,9 @@ func compileIf(fn *exprFunc, args []string, types []ExprType) (string, ExprType,
 
 // conform adapts an argument to the parameter type, or explains why it cannot.
 func conform(sql string, have, want ExprType, node *ExprNode) (string, error) {
+	if want == TypeTime {
+		return asTime(sql, have, node)
+	}
 	if want == TypeAny || have == want {
 		return sql, nil
 	}

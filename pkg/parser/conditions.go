@@ -63,6 +63,9 @@ func classifyConditions(conditions []Condition, registry *FieldRegistry, plan *Q
 
 	for _, cond := range conditions {
 		registry := plan.registryAt(cond.at, registry)
+		if err := checkTimeFilters(cond, registry); err != nil {
+			return err
+		}
 		// Compound nodes: inspect all leaf fields to determine the highest-priority
 		// target. A compound normally stays a unit, since its children are connected
 		// by AND/OR and the operators bind them together.
@@ -828,6 +831,10 @@ func equalitySQL(cond Condition, registry *FieldRegistry, fieldRef string, isJSO
 // by the server (illegal type UInt64).
 func orderingSQL(cond Condition, ref sqlRef) string {
 	fieldRef := ref.sql
+	// A duration such as 5m compares as the seconds it holds.
+	if seconds, err := durationSeconds(cond.Value); err == nil {
+		cond.Value = fmt.Sprint(seconds)
+	}
 	if err := validateNumeric(cond.Value); err != nil {
 		return fmt.Sprintf("%s %s %s", fieldRef, cond.Operator, sqlString(cond.Value))
 	}

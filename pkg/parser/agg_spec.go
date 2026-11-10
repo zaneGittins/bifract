@@ -49,6 +49,9 @@ func readAggOptions(spec *AggSpec) aggOptions {
 // failed at the server with "Illegal type UInt64").
 func aggOperandNumeric(a Argument, registry *FieldRegistry) (string, error) {
 	if name := a.FieldName(); name != "" {
+		if isTimeField(name, registry) {
+			return "", timeOperandError(a)
+		}
 		return numericCast(registry.Ref(name)), nil
 	}
 	if a.Kind != ArgExpr || a.Expr == nil {
@@ -58,10 +61,36 @@ func aggOperandNumeric(a Argument, registry *FieldRegistry) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if typ == TypeNumber {
+	if typ == TypeTime {
+		return "", timeOperandError(a)
+	}
+	if typ == TypeNumber || typ == TypeDuration {
 		return sql, nil
 	}
 	return fmt.Sprintf("toFloat64OrNull(%s)", sql), nil
+}
+
+func timeOperandError(a Argument) error {
+	return fmt.Errorf("%s is a time: min() and max() read one, or take a duration such as now() - %s", a, a)
+}
+
+// aggOperandTime is the operand as a time, when it is one: min() and max() of a
+// time keep it a time rather than casting it to a number.
+func aggOperandTime(a Argument, registry *FieldRegistry) (string, bool, error) {
+	if name := a.FieldName(); name != "" {
+		if !isTimeField(name, registry) {
+			return "", false, nil
+		}
+		return registry.Ref(name).sql, true, nil
+	}
+	if a.Kind != ArgExpr || a.Expr == nil {
+		return "", false, nil
+	}
+	sql, typ, err := compileExpr(a.Expr, registry)
+	if err != nil || typ != TypeTime {
+		return "", false, err
+	}
+	return sql, true, nil
 }
 
 // aggregateAlias is the column an aggregate projects: the author's as= when
@@ -187,6 +216,15 @@ func (r *aggRenderer) of(agg string, numeric bool, ofTime aggregate, build func(
 	if name := r.opts.operand.FieldName(); ofTime != nil && name != "" && r.registry.Resolve(name) == "timestamp" {
 		r.registry.Column("timestamp") // what ofTime reads
 		return r.emit(out, ofTime)
+	}
+	if agg == "max" || agg == "min" {
+		t, ok, err := aggOperandTime(r.opts.operand, r.registry)
+		if err != nil {
+			return r.fail(err)
+		}
+		if ok {
+			return r.emit(out, aggCall{fn: agg, args: t, time: true})
+		}
 	}
 	v, err := r.operand(numeric)
 	if err != nil {

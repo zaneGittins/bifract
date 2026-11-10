@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -907,44 +906,46 @@ func parseBucketSpan(span string) (int, string) {
 	}
 }
 
-// getBucketExpression returns a ClickHouse expression for time bucketing.
+// getBucketExpression returns a ClickHouse expression for bucketing timestamp.
+func getBucketExpression(n int, unit string, tz string) string {
+	return bucketExpr("timestamp", n, unit, tz)
+}
+
+// bucketExpr returns a ClickHouse expression for time bucketing a time column.
 // Uses toStartOfInterval for arbitrary intervals, or built-in functions for common ones.
 //
 // tz is the IANA zone the bucket boundaries snap to. Empty (and "UTC") emit no
 // zone argument, leaving the default install's SQL byte-identical. A qualified
 // bucket comes back typed DateTime('<tz>'), which the row scanner renders as
 // that zone's wall clock, so the label arrives already correct.
-func getBucketExpression(n int, unit string, tz string) string {
-	zone := ""
-	if tz != "" && tz != "UTC" {
-		zone = ", " + sqlString(tz)
-	}
+func bucketExpr(col string, n int, unit string, tz string) string {
+	zone := zoneArg(tz)
 	// For common 1-unit spans use the simpler built-in functions
 	if n == 1 {
 		switch unit {
 		case "MINUTE":
-			return fmt.Sprintf("toStartOfMinute(timestamp%s)", zone)
+			return fmt.Sprintf("toStartOfMinute(%s%s)", col, zone)
 		case "HOUR":
-			return fmt.Sprintf("toStartOfHour(timestamp%s)", zone)
+			return fmt.Sprintf("toStartOfHour(%s%s)", col, zone)
 		case "DAY":
-			return fmt.Sprintf("toStartOfDay(timestamp%s)", zone)
+			return fmt.Sprintf("toStartOfDay(%s%s)", col, zone)
 		case "WEEK":
 			if zone == "" {
-				return "toStartOfWeek(timestamp)"
+				return fmt.Sprintf("toStartOfWeek(%s)", col)
 			}
 			// toStartOfWeek takes mode before timezone; 0 is its own default.
-			return fmt.Sprintf("toStartOfWeek(timestamp, 0%s)", zone)
+			return fmt.Sprintf("toStartOfWeek(%s, 0%s)", col, zone)
 		}
 	}
 	// For 5 minutes ClickHouse has a built-in
 	if n == 5 && unit == "MINUTE" {
-		return fmt.Sprintf("toStartOfFiveMinutes(timestamp%s)", zone)
+		return fmt.Sprintf("toStartOfFiveMinutes(%s%s)", col, zone)
 	}
 	if n == 15 && unit == "MINUTE" {
-		return fmt.Sprintf("toStartOfFifteenMinutes(timestamp%s)", zone)
+		return fmt.Sprintf("toStartOfFifteenMinutes(%s%s)", col, zone)
 	}
 	// For arbitrary intervals use toStartOfInterval
-	return fmt.Sprintf("toStartOfInterval(timestamp, INTERVAL %d %s%s)", n, unit, zone)
+	return fmt.Sprintf("toStartOfInterval(%s, INTERVAL %d %s%s)", col, n, unit, zone)
 }
 
 // bucketTimezone reports the zone getBucketExpression should snap to, and
@@ -956,14 +957,7 @@ func getBucketExpression(n int, unit string, tz string) string {
 // written, so reaching this means the tzdata moved underneath a stored value.
 // The recorded zone is the one actually used, never the one asked for.
 func bucketTimezone(ctx *CommandContext) string {
-	tz := ctx.Opts.DisplayTimezone
-	if tz == "" {
-		tz = "UTC"
-	} else if tz != "UTC" {
-		if _, err := time.LoadLocation(tz); err != nil {
-			tz = "UTC"
-		}
-	}
+	tz := displayZone(ctx.Opts.DisplayTimezone)
 	ctx.Plan.chart.config["bucketTimezone"] = tz
 	return tz
 }
