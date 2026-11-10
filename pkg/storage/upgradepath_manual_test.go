@@ -28,8 +28,8 @@ func highestMigrationNumber() (uint32, error) {
 	}
 	var max uint32
 	for _, m := range all {
-		if uint32(m.number) > max {
-			max = uint32(m.number)
+		if m.number > max {
+			max = m.number
 		}
 	}
 	return max, nil

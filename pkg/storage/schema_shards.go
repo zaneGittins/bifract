@@ -25,6 +25,13 @@ type shardSchemaState struct {
 	migrationMax uint32
 }
 
+// shardCatchUpDelay is the first wait before re-syncing a shard left behind; it doubles
+// up to shardCatchUpMaxDelay.
+var (
+	shardCatchUpDelay    = 30 * time.Second
+	shardCatchUpMaxDelay = 5 * time.Minute
+)
+
 // initializeShards provisions every shard independently.
 //
 // A cluster is not a single thing to initialize: each shard has its own local tables and
@@ -42,23 +49,24 @@ func (c *ClickHouseClient) initializeShards(ctx context.Context, sql string, mig
 	states := c.probeShards(ctx, pool)
 
 	needsSchema, anyReachable := false, false
-	var refMax uint32
 	for _, st := range states {
-		if !st.reachable {
-			continue
-		}
-		anyReachable = true
-		if !st.hasLogs {
-			needsSchema = true
-		}
-		if st.migrationMax > refMax {
-			refMax = st.migrationMax
+		if st.reachable {
+			anyReachable = true
+			needsSchema = needsSchema || !st.hasLogs
 		}
 	}
 	// Never report the schema ready off an all-unreachable probe: that would let the
 	// server start serving against a cluster whose state was never established.
 	if !anyReachable {
 		return fmt.Errorf("no ClickHouse shard reachable for schema initialization")
+	}
+	all, err := loadClickHouseMigrations(migrations, migrationsDir)
+	if err != nil {
+		return err
+	}
+	var latest uint32
+	if len(all) > 0 {
+		latest = all[len(all)-1].number
 	}
 
 	// A shard with no schema breaks reads and the ingest pool's health check as soon as the
@@ -67,22 +75,69 @@ func (c *ClickHouseClient) initializeShards(ctx context.Context, sql string, mig
 	// upgrade, so run it in the background where a slow migration cannot become a
 	// CrashLoopBackOff.
 	if needsSchema {
-		if err := c.syncShardSchemas(ctx, states, refMax, sql, migrations, migrationsDir, pool); err != nil {
+		if err := c.syncShardSchemas(ctx, states, maxMigration(states), sql, migrations, migrationsDir, pool); err != nil {
 			return err
 		}
 		log.Printf("Cluster schema sync complete")
 		c.markSchemaReady()
+		go c.catchUpShards(ctx, latest, sql, migrations, migrationsDir, pool)
 		return nil
 	}
 
 	go func() {
-		if err := c.syncShardSchemas(ctx, states, refMax, sql, migrations, migrationsDir, pool); err != nil {
+		if err := c.syncShardSchemas(ctx, states, maxMigration(states), sql, migrations, migrationsDir, pool); err != nil {
 			log.Printf("Warning: cluster schema sync: %v", err)
 		}
-		log.Printf("Cluster schema sync complete")
 		c.markSchemaReady()
+		c.catchUpShards(ctx, latest, sql, migrations, migrationsDir, pool)
 	}()
 	return nil
+}
+
+// catchUpShards re-syncs until every shard records the latest migration. One pass at boot
+// skips migrations while any shard is unreachable and only logs a failed one, which would
+// leave a shard behind, and every query that fans out to it failing, until the next restart.
+func (c *ClickHouseClient) catchUpShards(ctx context.Context, latest uint32, sql string, migrations embed.FS, migrationsDir string, pool ClickHousePoolConfig) {
+	delay := shardCatchUpDelay
+	for {
+		states := c.probeShards(ctx, pool)
+		if ctx.Err() != nil {
+			return
+		}
+		lagging := 0
+		for _, st := range states {
+			if !st.reachable || !st.hasLogs || st.migrationMax < latest {
+				lagging++
+				log.Printf("Warning: shard %s is not at migration %d (reachable=%t, at %d); retrying in %s",
+					st.addr, latest, st.reachable, st.migrationMax, delay)
+			}
+		}
+		if lagging == 0 {
+			log.Printf("Cluster schema sync complete: every shard at migration %d", latest)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, shardCatchUpMaxDelay)
+		fresh := c.probeShards(ctx, pool)
+		if err := c.syncShardSchemas(ctx, fresh, maxMigration(fresh), sql, migrations, migrationsDir, pool); err != nil {
+			log.Printf("Warning: cluster schema sync: %v", err)
+		}
+	}
+}
+
+// maxMigration is the highest migration any reachable shard records.
+func maxMigration(states []shardSchemaState) uint32 {
+	var m uint32
+	for _, st := range states {
+		if st.reachable && st.migrationMax > m {
+			m = st.migrationMax
+		}
+	}
+	return m
 }
 
 // probeShards reports each shard's schema state. An unreachable shard is marked and
@@ -131,7 +186,7 @@ func (c *ClickHouseClient) syncShardSchemas(ctx context.Context, states []shardS
 	shardsOK := true
 	if err := c.ensureAllShardsReachable(ctx, pool); err != nil {
 		shardsOK = false
-		log.Printf("Skipping cluster migration apply (self-heals on next restart): %v", err)
+		log.Printf("Skipping cluster migration apply until every shard is reachable: %v", err)
 	}
 
 	distStmts := c.distributedTableDDL()
