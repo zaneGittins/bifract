@@ -5,6 +5,7 @@ package ruleeval
 
 import (
 	"bifract/pkg/dictionaries"
+	"bifract/pkg/sqlquote"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -116,8 +117,8 @@ type logsKeys struct {
 // identically, which keeps a rule reading the same shape it reads in production.
 func (s *Scratch) logsKeys(ctx context.Context) (logsKeys, error) {
 	rows, err := s.client.Query(ctx, fmt.Sprintf(
-		"SELECT sorting_key, partition_key FROM system.tables WHERE database = '%s' AND name = 'logs'",
-		storage.EscCHStr(s.database)))
+		"SELECT sorting_key, partition_key FROM system.tables WHERE database = %s AND name = 'logs'",
+		sqlquote.String(s.database)))
 	if err != nil {
 		return logsKeys{}, fmt.Errorf("reading logs table keys: %w", err)
 	}

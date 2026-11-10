@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -303,7 +304,7 @@ func (w *RestoreWorker) killQuery(queryID string) {
 	}
 	kctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := w.ch.Exec(kctx, fmt.Sprintf("KILL QUERY WHERE query_id = '%s'", queryID)); err != nil {
+	if err := w.ch.Exec(kctx, fmt.Sprintf("KILL QUERY WHERE query_id = %s", sqlquote.String(queryID))); err != nil {
 		log.Printf("[Restore] kill %s: %v", queryID, err)
 	}
 }
@@ -333,7 +334,7 @@ func (w *RestoreWorker) reapStale(ctx context.Context) {
 		UPDATE archive_restore_jobs
 		SET status = 'failed', error = 'restore worker stopped responding (restarted or crashed); re-run to resume',
 		    finished_at = NOW(), updated_at = NOW()
-		WHERE status = 'running' AND updated_at < NOW() - INTERVAL '%d seconds'`, int(restoreStaleAfter.Seconds())))
+		WHERE status = 'running' AND updated_at < NOW() - INTERVAL %s`, sqlquote.PGString(fmt.Sprint(int(restoreStaleAfter.Seconds()))+" seconds")))
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("[Restore] reap error: %v", err)

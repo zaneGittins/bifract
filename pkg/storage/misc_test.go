@@ -130,12 +130,6 @@ func TestClientAccessors(t *testing.T) {
 	if c.LogsDatabase() != "bf" || !reflect.DeepEqual(c.Addrs(), []string{"a:1"}) || c.Topology().Kind != DeploymentCloud {
 		t.Error("accessors must report the client's configuration")
 	}
-	if EscCHIdent("a`b\\") != "a``b\\\\" {
-		t.Errorf("EscCHIdent = %q", EscCHIdent("a`b\\"))
-	}
-	if EscCHStr(`it's \x`) != `it\'s \\x` {
-		t.Errorf("EscCHStr = %q", EscCHStr(`it's \x`))
-	}
 	f := fakedb.NewCH()
 	c.conn = f
 	if c.Conn() != f || c.HealthCheck(context.Background()) != nil {

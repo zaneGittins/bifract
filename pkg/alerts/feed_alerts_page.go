@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 
 	"github.com/lib/pq"
@@ -116,8 +117,8 @@ func (q FeedAlertQuery) where(b *argBuilder) string {
 	if s := strings.TrimSpace(q.Search); s != "" {
 		p := b.next("%" + likeEscaper.Replace(s) + "%")
 		clauses = append(clauses, fmt.Sprintf(
-			`(a.name ILIKE %[1]s ESCAPE '\' OR COALESCE(a.description,'') ILIKE %[1]s ESCAPE '\'`+
-				` OR COALESCE(a.feed_rule_path,'') ILIKE %[1]s ESCAPE '\' OR a.query_string ILIKE %[1]s ESCAPE '\')`, p))
+			`(a.name ILIKE %[1]s ESCAPE %[2]s OR COALESCE(a.description,'') ILIKE %[1]s ESCAPE %[2]s`+
+				` OR COALESCE(a.feed_rule_path,'') ILIKE %[1]s ESCAPE %[2]s OR a.query_string ILIKE %[1]s ESCAPE %[2]s)`, p, sqlquote.PGString(`\`)))
 	}
 
 	switch q.Status {

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -202,8 +203,8 @@ func (m *Manager) ensureDistTable(ctx context.Context, local string) error {
 	if !m.ch.Topology().DistributedTables {
 		return nil
 	}
-	sql := fmt.Sprintf("CREATE OR REPLACE TABLE %s AS %s ENGINE = Distributed('%s', currentDatabase(), '%s', 0)",
-		m.geoipReadTable(local), local, storage.EscCHStr(m.ch.Topology().DDLCluster), local)
+	sql := fmt.Sprintf("CREATE OR REPLACE TABLE %s AS %s ENGINE = Distributed(%s, currentDatabase(), %s, 0)",
+		m.geoipReadTable(local), local, sqlquote.String(m.ch.Topology().DDLCluster), sqlquote.String(local))
 	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(sql)); err != nil && !storage.IsDDLTimeout(err) {
 		return err
 	}
@@ -215,7 +216,7 @@ func (m *Manager) ensureDistTable(ctx context.Context, local string) error {
 // an unqualified name resolves against whatever database that node is using.
 func (m *Manager) reloadSQL(name string) string {
 	db := strings.ReplaceAll(m.ch.LogsDatabase(), "`", "")
-	return fmt.Sprintf("SYSTEM RELOAD DICTIONARY%s `%s`.`%s`", m.ch.OnClusterSQL(), db, name)
+	return fmt.Sprintf("SYSTEM RELOAD DICTIONARY%s %s.%s", m.ch.OnClusterSQL(), sqlquote.Ident(db), sqlquote.Ident(name))
 }
 
 // insertCtx makes a Distributed insert synchronous, so the dictionary created right
@@ -428,10 +429,10 @@ func (m *Manager) createCityDictionary(ctx context.Context) error {
 			postal_code String DEFAULT ''
 		)
 		PRIMARY KEY network
-		SOURCE(CLICKHOUSE(TABLE '%s' DB '%s' USER '%s' PASSWORD '%s'))
+		SOURCE(CLICKHOUSE(TABLE %s DB %s USER %s PASSWORD %s))
 		LIFETIME(MIN 0 MAX 3600)
 		LAYOUT(IP_TRIE())
-	`, m.geoipReadTable("geoip_city"), m.ch.LogsDatabase(), m.ch.User, m.ch.Password))
+	`, sqlquote.String(m.geoipReadTable("geoip_city")), sqlquote.String(m.ch.LogsDatabase()), sqlquote.String(m.ch.User), sqlquote.String(m.ch.Password)))
 
 	if err := m.ch.Exec(ctx, dictSQL); err != nil {
 		return fmt.Errorf("create geoip_city_lookup dictionary: %w", err)
@@ -553,10 +554,10 @@ func (m *Manager) createASNDictionary(ctx context.Context) error {
 			as_org String DEFAULT ''
 		)
 		PRIMARY KEY network
-		SOURCE(CLICKHOUSE(TABLE '%s' DB '%s' USER '%s' PASSWORD '%s'))
+		SOURCE(CLICKHOUSE(TABLE %s DB %s USER %s PASSWORD %s))
 		LIFETIME(MIN 0 MAX 3600)
 		LAYOUT(IP_TRIE())
-	`, m.geoipReadTable("geoip_asn"), m.ch.LogsDatabase(), m.ch.User, m.ch.Password))
+	`, sqlquote.String(m.geoipReadTable("geoip_asn")), sqlquote.String(m.ch.LogsDatabase()), sqlquote.String(m.ch.User), sqlquote.String(m.ch.Password)))
 
 	if err := m.ch.Exec(ctx, dictSQL); err != nil {
 		return fmt.Errorf("create geoip_asn_lookup dictionary: %w", err)

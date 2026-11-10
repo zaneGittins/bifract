@@ -14,16 +14,16 @@ const mitreTagAlias = "_attack_tag"
 // available as mitre(tags=norm_log) for a source that has not been normalized.
 const mitreDefaultTagField = "rule_tags"
 
-// ATT&CK tag patterns, RE2, matched against a lowercased value. Backslashes are
-// doubled because ClickHouse strips one level from string literals.
+// ATT&CK tag patterns, RE2, matched against a lowercased value. sqlString escapes
+// them for the string literal they are sent in.
 //
 // Prefixed tags (attack.t1059.004, attack.execution, mitre.t1059) are matched
 // anywhere. A bare technique ID is matched only in a dedicated tag field, where a
 // four-digit t-token cannot be arbitrary log text; scanning a whole event would
 // turn every hash and identifier containing "t1234" into a false technique.
 const (
-	mitreTagPattern     = `(?:attack|mitre)\\.[a-z0-9_.-]+`
-	mitreBareTagPattern = `\\bt[0-9]{4}(?:\\.[0-9]{3})?\\b`
+	mitreTagPattern     = `(?:attack|mitre)\.[a-z0-9_.-]+`
+	mitreBareTagPattern = `\bt[0-9]{4}(?:\.[0-9]{3})?\b`
 )
 
 // mitreHandler handles mitre(tags=field, by=field, limit=N): an ATT&CK matrix
@@ -81,7 +81,7 @@ func (h *mitreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	// arrayDistinct: a single event listing the same technique twice (a tag list
 	// plus a free-text mention) must count once, not twice.
-	tagExpr := fmt.Sprintf("arrayJoin(arrayDistinct(extractAll(lower(toString(%s)), '%s')))", tagRef, pattern)
+	tagExpr := fmt.Sprintf("arrayJoin(arrayDistinct(extractAll(lower(toString(%s)), %s)))", tagRef, sqlString(pattern))
 
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: tagExpr, Alias: mitreTagAlias})
 	source.Layer.groupBy(mitreTagAlias, mitreTagAlias)

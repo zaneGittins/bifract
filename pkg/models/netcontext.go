@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 )
 
 // The first-seen and threat intel modifiers read what the network state lacks:
@@ -220,7 +221,7 @@ func firstSeenContextSQL(table, fractalID string, pair bool, pairsSQL string) st
 		key = "concat(src, char(30), dst)"
 	}
 	return fmt.Sprintf(`SELECT entity_key AS k, toUInt64(toUnixTimestamp(min(first_seen))) AS fs
-FROM `+"`%s`"+`
+FROM %s
 WHERE %s AND entity_key GLOBAL IN (SELECT DISTINCT %s FROM (%s))
-GROUP BY entity_key`, table, fractalScopeClause(fractalID), key, pairsSQL)
+GROUP BY entity_key`, sqlquote.Ident(table), fractalScopeClause(fractalID), key, pairsSQL)
 }

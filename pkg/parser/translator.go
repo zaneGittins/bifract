@@ -768,9 +768,9 @@ func BuildHistogramNewestSQL(pipeline *PipelineNode, opts QueryOptions, bucketSe
 	}
 	sql := fmt.Sprintf(
 		"%sSELECT countResample(%d, %d, %d)(toUnixTimestamp(toStartOfInterval(timestamp, INTERVAL %d SECOND))) AS hist_counts, "+
-			"groupArraySortedIf(%d)(-toUnixTimestamp64Milli(timestamp), timestamp >= '%s' AND timestamp < '%s') AS newest_ms FROM %s WHERE %s",
+			"groupArraySortedIf(%d)(-toUnixTimestamp64Milli(timestamp), timestamp >= %s AND timestamp < %s) AS newest_ms FROM %s WHERE %s",
 		with, opts.StartTime.Unix(), opts.EndTime.Unix(), bucketSeconds, bucketSeconds,
-		newest, chTimeLiteral(from), chTimeLiteral(to), opts.EffectiveTableName(), where,
+		newest, sqlString(chTimeLiteral(from)), sqlString(chTimeLiteral(to)), opts.EffectiveTableName(), where,
 	)
 	return sql, nil
 }
@@ -1021,8 +1021,8 @@ func windowConditions(opts QueryOptions) []string {
 		endOp = "<"
 	}
 	return []string{
-		fmt.Sprintf("%s >= '%s'", col, chTimeLiteral(opts.StartTime)),
-		fmt.Sprintf("%s %s '%s'", col, endOp, chTimeLiteral(opts.EndTime)),
+		fmt.Sprintf("%s >= %s", col, sqlString(chTimeLiteral(opts.StartTime))),
+		fmt.Sprintf("%s %s %s", col, endOp, sqlString(chTimeLiteral(opts.EndTime))),
 	}
 }
 
@@ -1039,7 +1039,7 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 	if len(opts.EventTimes) > 0 {
 		lits := make([]string, len(opts.EventTimes))
 		for i, t := range opts.EventTimes {
-			lits[i] = "'" + chTimeLiteral(t) + "'"
+			lits[i] = sqlString(chTimeLiteral(t))
 		}
 		source.Layer.Where = append(source.Layer.Where, scanAtom("timestamp IN ("+strings.Join(lits, ", ")+")"))
 	}
@@ -1546,7 +1546,7 @@ func minimalProjection(ctx *CommandContext, layer *QueryLayer) bool {
 		if !isPlainFieldName(field) {
 			continue
 		}
-		layer.Selects = append(layer.Selects, selectAs(jsonFieldRef(field), "`"+EscapeCHBacktickIdent(field)+"`"))
+		layer.Selects = append(layer.Selects, selectAs(jsonFieldRef(field), backtickIdent(field)))
 	}
 	return true
 }

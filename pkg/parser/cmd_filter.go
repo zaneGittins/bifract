@@ -56,7 +56,7 @@ func (h *inHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate, 
 	}
 	var values []string
 	for _, v := range b.CSV("values") {
-		values = append(values, fmt.Sprintf("'%s'", escapeString(v)))
+		values = append(values, sqlString(v))
 	}
 	// No values would add no condition, so the filter would match every event.
 	if len(values) == 0 {
@@ -98,7 +98,7 @@ func (h *cidrHandler) predicate(cmd CommandNode, ctx *CommandContext) (predicate
 	if fieldArg.FieldName() != "" {
 		fieldRef = ref.text()
 	}
-	cidrExpr := cidrPredicateSQL(fieldRef, "'"+escapeString(cidrRange)+"'")
+	cidrExpr := cidrPredicateSQL(fieldRef, sqlString(cidrRange))
 	if cmd.Negate {
 		cidrExpr = "NOT " + cidrExpr
 	}
@@ -149,7 +149,7 @@ func (h *commentHandler) predicate(cmd CommandNode, ctx *CommandContext) (predic
 	}
 	quoted := make([]string, len(ctx.Opts.CommentLogIDs))
 	for i, id := range ctx.Opts.CommentLogIDs {
-		quoted[i] = fmt.Sprintf("'%s'", escapeString(id))
+		quoted[i] = sqlString(id)
 	}
 	return atom(fmt.Sprintf("%s IN (%s)", ctx.Registry.Column("log_id").sql, strings.Join(quoted, ", "))), nil
 }

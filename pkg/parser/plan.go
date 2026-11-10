@@ -42,7 +42,7 @@ func (s SelectExpr) Name() string {
 }
 
 // unquoteIdent returns a backtick-quoted identifier's name, undoing
-// EscapeCHBacktickIdent, or s unchanged.
+// sqlquote.Ident, or s unchanged.
 func unquoteIdent(s string) string {
 	if len(s) < 2 || s[0] != '`' || s[len(s)-1] != '`' {
 		return s

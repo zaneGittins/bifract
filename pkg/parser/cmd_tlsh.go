@@ -100,8 +100,8 @@ func renderTLSHLiterals(matches []TLSHMatch) (digests, distances, needles []stri
 	needles = make([]string, 0, len(matches))
 	budget := 0
 	for _, m := range matches {
-		d := "'" + escapeString(m.Digest) + "'"
-		n := "'" + escapeString(m.Needle) + "'"
+		d := sqlString(m.Digest)
+		n := sqlString(m.Needle)
 		dist := fmt.Sprintf("%d", m.Distance)
 		// Each digest is carried twice: the IN list and the transform key array.
 		budget += 2*len(d) + len(dist) + len(n) + 4

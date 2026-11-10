@@ -103,7 +103,7 @@ func VolumeScoredSQLAt(source, scope, timeBucket string, minSample int, lower, a
 		lower = w.lower
 	}
 	histCond := "bucket < latest_bucket"
-	nBuckets := fmt.Sprintf("dateDiff('%s', min(bucket), latest_bucket)", w.unit)
+	nBuckets := fmt.Sprintf("dateDiff(%s, min(bucket), latest_bucket)", sqlString(w.unit))
 	if timeBucket == "hour" {
 		histCond += " AND " + volumeSlotMatch("bucket")
 		nBuckets = "length(" + fmt.Sprintf(volumeSlotDays, "t >= min(bucket) AND "+volumeDayKindMatch("t")) + ")"

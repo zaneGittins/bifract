@@ -221,7 +221,7 @@ func resolveModelKeySet(cmd CommandNode, ctx *CommandContext) (*modelKeySet, err
 			ks.rightCols = []string{"value_val"}
 			ks.rawWhere = strings.TrimSuffix(modelPrefilterAlias+".partition_val = '' AND "+ks.rawWhere, " AND ")
 		}
-		ks.scoringSQL = RarityScoredSQL("`"+info.TableName+"`", scope, info.MinSample, info.HistoryDays, false)
+		ks.scoringSQL = RarityScoredSQL(backtickIdent(info.TableName), scope, info.MinSample, info.HistoryDays, false)
 		// Partitions still learning are scored away, so the raw key set is a superset.
 		ks.exact = info.MinSample <= 1
 
@@ -234,7 +234,7 @@ func resolveModelKeySet(cmd CommandNode, ctx *CommandContext) (*modelKeySet, err
 		ks.exact = true // the scoring subquery drops no key
 
 	case "volume_baseline":
-		ks.scoringSQL = VolumeScoredSQL("`"+info.TableName+"`", fractalIDInClause(fractalIDs), info.TimeBucket, info.MinSample, "", false)
+		ks.scoringSQL = VolumeScoredSQL(backtickIdent(info.TableName), fractalIDInClause(fractalIDs), info.TimeBucket, info.MinSample, "", false)
 		ks.rightCols = []string{"entity_val"}
 		ks.rawWhere = volumeScoredKeysPredicate(modelPrefilterAlias, info.TimeBucket, info.MinSample)
 		ks.exact = true // the predicate admits exactly the entities with enough history
@@ -275,7 +275,7 @@ func (k *modelKeySet) membership(keys []string, modelWhere []predicate) string {
 		if k.rawWhere != "" {
 			where += " AND " + k.rawWhere
 		}
-		set = fmt.Sprintf("SELECT %s FROM `%s` AS %s WHERE %s", cols, k.table, modelPrefilterAlias, where)
+		set = fmt.Sprintf("SELECT %s FROM %s AS %s WHERE %s", cols, backtickIdent(k.table), modelPrefilterAlias, where)
 	} else {
 		set = fmt.Sprintf("SELECT %s FROM (%s)", k.keyColumns(k.rightCols), k.scoringSQL)
 		set += whereClause(modelWhere)
@@ -337,7 +337,7 @@ func concatModelKeys(parts []string) string {
 func fractalIDInClause(fractalIDs []string) string {
 	quoted := make([]string, len(fractalIDs))
 	for i, id := range fractalIDs {
-		quoted[i] = "'" + escapeString(id) + "'"
+		quoted[i] = sqlString(id)
 	}
 	return "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
 }
@@ -345,7 +345,7 @@ func fractalIDInClause(fractalIDs []string) string {
 // buildBeaconScoringSQL is one row per pair the latest pass scored, as a
 // duplicate would multiply log rows through the join (see NetLatestSQL).
 func buildBeaconScoringSQL(tableName string, fractalIDs []string, pass *time.Time) string {
-	return NetLatestSQL("`"+tableName+"`", fractalIDInClause(fractalIDs)+" AND "+NetCurrentPredicate(pass, ""), []string{
+	return NetLatestSQL(backtickIdent(tableName), fractalIDInClause(fractalIDs)+" AND "+NetCurrentPredicate(pass, ""), []string{
 		"final_score AS beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score",
 		"prevalence", "prevalence_score", "first_seen_score", "threat_intel_score", "conn_count",
 	})
@@ -353,7 +353,7 @@ func buildBeaconScoringSQL(tableName string, fractalIDs []string, pass *time.Tim
 
 // buildLongConnScoringSQL is buildBeaconScoringSQL for a long_connection model.
 func buildLongConnScoringSQL(tableName string, fractalIDs []string, pass *time.Time) string {
-	return NetLatestSQL("`"+tableName+"`", fractalIDInClause(fractalIDs)+" AND "+NetCurrentPredicate(pass, ""), []string{
+	return NetLatestSQL(backtickIdent(tableName), fractalIDInClause(fractalIDs)+" AND "+NetCurrentPredicate(pass, ""), []string{
 		"final_score AS longconn_score", "total_duration", "conn_count",
 		"prevalence", "prevalence_score", "first_seen_score", "threat_intel_score",
 	})
@@ -444,9 +444,9 @@ type firstSeenScoring struct {
 func (k *modelKeySet) firstSeenScoringSQL(newOnly bool) string {
 	horizon := "now() - INTERVAL 1 HOUR"
 	if since := k.firstSeen.newSince; !since.IsZero() {
-		horizon = fmt.Sprintf("least(%s, toDateTime64('%s', 3, 'UTC'))", horizon, chTimeLiteral(since.UTC()))
+		horizon = fmt.Sprintf("least(%s, toDateTime64(%s, 3, 'UTC'))", horizon, sqlString(chTimeLiteral(since.UTC())))
 	}
-	table := "`" + k.table + "`"
+	table := backtickIdent(k.table)
 	scope := fractalIDInClause(k.fractalIDs)
 	if newOnly {
 		// A minute early, so the set stays a superset however each now() is read.

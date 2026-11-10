@@ -167,7 +167,7 @@ func harvestSegment(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistr
 func caseValueSQL(raw string) string {
 	v := strings.TrimSpace(raw)
 	v = strings.Trim(v, `"'`)
-	return "'" + escapeString(v) + "'"
+	return sqlString(v)
 }
 
 // caseAssignName matches a field a case branch may assign. The name becomes a

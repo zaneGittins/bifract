@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"bifract/pkg/sqlquote"
 )
 
 // IngestPGRole is the least-privilege Postgres role the ingest tier connects as. It is
@@ -35,17 +36,17 @@ func (c *PostgresClient) EnsureIngestRole(ctx context.Context, password string) 
 		log.Printf("[Postgres] WARNING: BIFRACT_INGEST_POSTGRES_PASSWORD is empty; skipping %q provisioning. The ingest tier cannot authenticate until it is set.", IngestPGRole)
 		return nil
 	}
-	pw := strings.ReplaceAll(password, "'", "''")
+	pw := sqlquote.PGString(password)
 	// CREATE ROLE has no IF NOT EXISTS; guard with a DO block, then sync password.
 	create := fmt.Sprintf(`DO $do$ BEGIN
-		IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '%s') THEN
-			CREATE ROLE %s LOGIN PASSWORD '%s';
+		IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = %s) THEN
+			CREATE ROLE %s LOGIN PASSWORD %s;
 		END IF;
-	END $do$;`, IngestPGRole, IngestPGRole, pw)
+	END $do$;`, sqlquote.PGString(IngestPGRole), IngestPGRole, pw)
 	if _, err := c.Exec(ctx, create); err != nil {
 		return fmt.Errorf("ensure ingest role: %w", err)
 	}
-	if _, err := c.Exec(ctx, fmt.Sprintf("ALTER ROLE %s WITH LOGIN PASSWORD '%s'", IngestPGRole, pw)); err != nil {
+	if _, err := c.Exec(ctx, fmt.Sprintf("ALTER ROLE %s WITH LOGIN PASSWORD %s", IngestPGRole, pw)); err != nil {
 		return fmt.Errorf("ensure ingest role password: %w", err)
 	}
 	for _, g := range ingestPGGrants {
@@ -141,7 +142,7 @@ func reconcileMVSecurityOnConn(ctx context.Context, conn driver.Conn) (int, erro
 	converted := 0
 	var firstErr error
 	for _, name := range names {
-		stmt := fmt.Sprintf("ALTER TABLE `%s` MODIFY SQL SECURITY DEFINER DEFINER = default", name)
+		stmt := fmt.Sprintf("ALTER TABLE %s MODIFY SQL SECURITY DEFINER DEFINER = default", sqlquote.Ident(name))
 		sctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		execErr := conn.Exec(sctx, stmt)
 		cancel()
@@ -171,10 +172,10 @@ func (c *ClickHouseClient) EnsureIngestUser(ctx context.Context, password string
 	// The clause sits after the user name in CREATE/ALTER USER but right after the
 	// GRANT keyword in a grant, hence the two splice positions below.
 	onCluster := c.OnClusterSQL()
-	pw := EscCHStr(password)
+	pw := sqlquote.String(password)
 	stmts := []string{
-		fmt.Sprintf("CREATE USER IF NOT EXISTS %s%s IDENTIFIED BY '%s'", IngestCHUser, onCluster, pw),
-		fmt.Sprintf("ALTER USER %s%s IDENTIFIED BY '%s'", IngestCHUser, onCluster, pw),
+		fmt.Sprintf("CREATE USER IF NOT EXISTS %s%s IDENTIFIED BY %s", IngestCHUser, onCluster, pw),
+		fmt.Sprintf("ALTER USER %s%s IDENTIFIED BY %s", IngestCHUser, onCluster, pw),
 		fmt.Sprintf("GRANT%s INSERT ON logs.* TO %s", onCluster, IngestCHUser),
 		fmt.Sprintf("GRANT%s SELECT ON system.* TO %s", onCluster, IngestCHUser),
 	}

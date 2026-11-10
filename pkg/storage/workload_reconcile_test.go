@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"bifract/internal/fakedb"
+	"bifract/pkg/sqlquote"
 )
 
 // unreachableAddr refuses connections immediately, so an identity's pool can be
@@ -21,6 +22,8 @@ func newWorkloadClient() (*ClickHouseClient, *fakedb.CH) {
 	c, f := newFakeClient()
 	c.addrs = []string{unreachableAddr}
 	c.Password = "admin"
+	// Reads without an identity go to the read-only fallback; here it is the fake.
+	c.readOnly.conn = c.conn
 	return c, f
 }
 
@@ -238,10 +241,10 @@ func TestEnsureQueryIdentityStatementOrder(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "probe as bifract_recall") {
 		t.Fatalf("err = %v, want the probe against the unreachable node to fail", err)
 	}
-	pw := EscCHStr(c.queryIdentityPassword(RecallCHUser))
+	pw := sqlquote.String(c.queryIdentityPassword(RecallCHUser))
 	want := []string{
-		"CREATE USER IF NOT EXISTS bifract_recall ON CLUSTER 'c1' IDENTIFIED BY '" + pw + "'",
-		"ALTER USER bifract_recall ON CLUSTER 'c1' IDENTIFIED BY '" + pw + "'",
+		"CREATE USER IF NOT EXISTS bifract_recall ON CLUSTER 'c1' IDENTIFIED BY " + pw,
+		"ALTER USER bifract_recall ON CLUSTER 'c1' IDENTIFIED BY " + pw,
 		"REVOKE ON CLUSTER 'c1' SELECT ON *.* FROM bifract_recall",
 		"GRANT ON CLUSTER 'c1' SELECT, dictGet ON `logs`.* TO bifract_recall",
 		"GRANT ON CLUSTER 'c1' SELECT ON system.* TO bifract_recall",

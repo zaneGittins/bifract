@@ -32,7 +32,7 @@ type exprCtx struct {
 func compileIn(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 	switch e.Kind {
 	case ExprString:
-		return "'" + escapeString(e.Value) + "'", TypeString, nil
+		return sqlString(e.Value), TypeString, nil
 	case ExprNumber:
 		return e.Value, TypeNumber, nil
 	case ExprBoolean:

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -135,8 +136,8 @@ func TestActivityStreamSQLBoundsAndFanout(t *testing.T) {
 		"LIMIT 75\n)",                                  // inner finished-side limit
 		fmt.Sprintf("LIMIT %d", activityRunningCap),    // running side
 		fmt.Sprintf("LIMIT %d", 75+activityRunningCap), // outer
-		"Settings['log_comment'] != '" + storage.EscCHStr(activityTag) + "'",
-		"log_comment != '" + storage.EscCHStr(activityTag) + "'",
+		"Settings['log_comment'] != " + sqlquote.String(activityTag),
+		"log_comment != " + sqlquote.String(activityTag),
 		`o\'brien`,
 		"hostName() = 'node-2'",
 		"= 'search'",

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/sqlquote"
 )
 
 // Tier B: the per-field distribution, from a bounded sample of recent rows.
@@ -346,7 +347,7 @@ func windowStrata(anchor time.Time, window time.Duration, n int) []string {
 }
 
 func chTime(t time.Time) string {
-	return fmt.Sprintf("toDateTime64('%s', 3, 'UTC')", t.UTC().Format("2006-01-02 15:04:05.000"))
+	return fmt.Sprintf("toDateTime64(%s, 3, 'UTC')", sqlquote.String(t.UTC().Format("2006-01-02 15:04:05.000")))
 }
 
 // probeCount reports how many rows the sample would read, without reading

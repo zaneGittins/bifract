@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
-	"bifract/pkg/storage"
+	"bifract/pkg/sqlquote"
 )
 
 // sanitizeStats replaces non-finite float values (NaN/Inf, e.g. avg() over an
@@ -195,10 +195,10 @@ func (m *Manager) Preview(ctx context.Context, fractalID string, mt ModelType, d
 			start = ws
 		}
 	}
-	fidEsc := storage.EscCHStr(fractalID)
+	fid := fractalID
 	// buildModelSelect scopes the scan to fractalID itself; whereExtra adds only the window.
-	whereExtra := fmt.Sprintf("timestamp >= '%s' AND timestamp < '%s'",
-		start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"))
+	whereExtra := fmt.Sprintf("timestamp >= %s AND timestamp < %s",
+		sqlquote.String(start.Format("2006-01-02 15:04:05")), sqlquote.String(end.Format("2006-01-02 15:04:05")))
 
 	agg, err := buildModelSelect(def, mt, m.ch.ReadTable(), whereExtra, fractalID, recordedHistory)
 	if err != nil {
@@ -209,17 +209,17 @@ func (m *Manager) Preview(ctx context.Context, fractalID string, mt ModelType, d
 	res := &PreviewResult{ModelType: mt, Window: rng.Label, Start: start, End: end}
 	switch mt {
 	case ModelTypeRarity:
-		err = m.previewRarity(ctx, res, source, fidEsc, def)
+		err = m.previewRarity(ctx, res, source, fid, def)
 	case ModelTypeFirstSeen:
-		err = m.previewFirstSeen(ctx, res, source, fidEsc, def, end, "entity_key")
+		err = m.previewFirstSeen(ctx, res, source, fid, def, end, "entity_key")
 	case ModelTypeTLSH:
-		err = m.previewFirstSeen(ctx, res, source, fidEsc, def, end, "digest")
+		err = m.previewFirstSeen(ctx, res, source, fid, def, end, "digest")
 	case ModelTypeVolumeBaseline:
 		asOf := ""
 		if !rng.endsNow(time.Now().UTC()) {
-			asOf = fmt.Sprintf("toDateTime('%s', 'UTC')", end.Format("2006-01-02 15:04:05"))
+			asOf = fmt.Sprintf("toDateTime(%s, 'UTC')", sqlquote.String(end.Format("2006-01-02 15:04:05")))
 		}
-		err = m.previewVolume(ctx, res, source, fidEsc, def, start, asOf)
+		err = m.previewVolume(ctx, res, source, fid, def, start, asOf)
 	default:
 		return nil, fmt.Errorf("unknown model type: %s", mt)
 	}
@@ -357,8 +357,8 @@ func toInt64(v interface{}) int64 {
 	return 0
 }
 
-func (m *Manager) previewRarity(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition) error {
-	scored := buildRarityScoredSQL(source, fidEsc, 0)
+func (m *Manager) previewRarity(ctx context.Context, res *PreviewResult, source, fid string, def ModelDefinition) error {
+	scored := buildRarityScoredSQL(source, fid, 0)
 
 	// The same rule the data view counts with and the alert fires on, rendered once.
 	preds := rarityFlagPredicates(def)
@@ -411,8 +411,8 @@ LIMIT 25`, scored, minSample)
 	return nil
 }
 
-func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition, end time.Time, keyCol string) error {
-	agg := firstSeenAgg(source, fidScope(fidEsc), keyCol, 0, false, true)
+func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, source, fid string, def ModelDefinition, end time.Time, keyCol string) error {
+	agg := firstSeenAgg(source, fidScope(fid), keyCol, 0, false, true)
 
 	// The is_new alert fires on entities the live model records for the first time,
 	// which nothing in history can replay. Instead we report the new-entity RATE:
@@ -423,8 +423,8 @@ func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, sour
 
 	metricsSQL := fmt.Sprintf(`SELECT
     toUInt64(count()) AS entities,
-    toUInt64(countIf(first_seen >= toDateTime64('%s', 3, 'UTC'))) AS new_recent
-FROM (%s)`, recent, agg)
+    toUInt64(countIf(first_seen >= toDateTime64(%s, 3, 'UTC'))) AS new_recent
+FROM (%s)`, sqlquote.String(recent), agg)
 
 	topSQL := fmt.Sprintf(`SELECT %s, first_seen, last_seen, event_count
 FROM (%s)
@@ -432,7 +432,7 @@ ORDER BY first_seen DESC, event_count DESC
 LIMIT 25`, keyCol, agg)
 
 	shape, metrics, top, err := m.runPreviewQueries(ctx,
-		histogramQuerySQL(firstSeenCountInner(source, fidEsc, keyCol), firstSeenHistBucketExpr), metricsSQL, topSQL)
+		histogramQuerySQL(firstSeenCountInner(source, fid, keyCol), firstSeenHistBucketExpr), metricsSQL, topSQL)
 	if err != nil {
 		return err
 	}
@@ -455,15 +455,15 @@ LIMIT 25`, keyCol, agg)
 	return nil
 }
 
-func (m *Manager) previewVolume(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition, start time.Time, asOf string) error {
+func (m *Manager) previewVolume(ctx context.Context, res *PreviewResult, source, fid string, def ModelDefinition, start time.Time, asOf string) error {
 	// History starts at the preview window; the scored bucket is the latest
 	// complete one before the window's end (asOf, "" for now), exactly as live
 	// scoring does.
-	lower := fmt.Sprintf("toDate('%s')", start.Format("2006-01-02"))
+	lower := fmt.Sprintf("toDate(%s)", sqlquote.String(start.Format("2006-01-02")))
 	if def.TimeBucket == "hour" {
-		lower = fmt.Sprintf("toStartOfHour(toDateTime('%s', 'UTC'))", start.Format("2006-01-02 15:04:05"))
+		lower = fmt.Sprintf("toStartOfHour(toDateTime(%s, 'UTC'))", sqlquote.String(start.Format("2006-01-02 15:04:05")))
 	}
-	scored := parser.VolumeScoredSQLAt(source, fidScope(fidEsc), def.TimeBucket, def.MinSample, lower, asOf, true)
+	scored := parser.VolumeScoredSQLAt(source, fidScope(fid), def.TimeBucket, def.MinSample, lower, asOf, true)
 
 	z := 3.5
 	if def.Alert != nil && def.Alert.ZThreshold > 0 {

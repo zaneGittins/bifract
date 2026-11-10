@@ -3,6 +3,8 @@ package dictionaries
 import (
 	"strings"
 	"testing"
+
+	"bifract/pkg/sqlquote"
 )
 
 // The ClickHouse dictionary source maps a query's columns onto the declared
@@ -162,17 +164,17 @@ func TestDictColumnsMatchesScanArity(t *testing.T) {
 }
 
 // ExecuteDictionaryAction builds dictionary columns from raw log field names
-// (collectLogColumns validates nothing), so escCH is handed ingested data and is
-// the boundary that keeps it from becoming DDL. ClickHouse honours a
+// (collectLogColumns validates nothing), so sqlquote.Ident is handed ingested data
+// and is the boundary that keeps it from becoming DDL. ClickHouse honours a
 // backslash-escaped backtick inside a quoted identifier, so escaping the backtick
 // alone is not enough: a name ending in a backslash escapes the closing quote and
 // the identifier swallows the rest of the statement.
-func TestEscCHCannotBreakOutOfAQuotedIdentifier(t *testing.T) {
+func TestIdentCannotBreakOutOfAQuotedIdentifier(t *testing.T) {
 	// Identifiers that need no escaping must pass through byte for byte, or every
-	// existing table and column would be renamed by this function.
+	// existing table and column would be renamed.
 	for _, safe := range []string{"indicator", "user_name", "col-1", "winlog.user", "_bf_seq", ""} {
-		if got := escCH(safe); got != safe {
-			t.Errorf("escCH(%q) = %q, ordinary identifiers must be unchanged", safe, got)
+		if got := sqlquote.Ident(safe); got != "`"+safe+"`" {
+			t.Errorf("Ident(%q) = %q, ordinary identifiers must be unchanged", safe, got)
 		}
 	}
 
@@ -184,11 +186,8 @@ func TestEscCHCannotBreakOutOfAQuotedIdentifier(t *testing.T) {
 		`x\\`,                           // even backslashes, then the quote closes
 		"x``y",
 	} {
-		got := escCH(hostile)
-		// Rendered into the quoted identifier the DDL builds.
-		rendered := "`" + got + "`"
-		if !quotedIdentifierIsClosed(rendered) {
-			t.Errorf("escCH(%q) = %q renders %s, which does not close its quote", hostile, got, rendered)
+		if rendered := sqlquote.Ident(hostile); !quotedIdentifierIsClosed(rendered) {
+			t.Errorf("Ident(%q) renders %s, which does not close its quote", hostile, rendered)
 		}
 	}
 }
@@ -216,16 +215,16 @@ func quotedIdentifierIsClosed(s string) bool {
 	return false
 }
 
-// Every ClickHouse object name is derived from the dictionary's UUID, which is what
-// lets the DDL interpolate them directly. If that ever stops holding, the escapers
-// around them stop being no-ops and each call site has to be re-read.
+// Every ClickHouse object name is derived from the dictionary's UUID, so quoting
+// leaves it as it is: an object created before the names were quoted keeps its
+// name.
 func TestGeneratedObjectNamesNeedNoEscaping(t *testing.T) {
 	const id = "8c1168bb-23b0-44e5-9486-58ed89ecc9b4"
 	for _, name := range []string{
 		chTableName(id), chDictName(id), chDistTableName(id), chColDictName(id, "indicator"),
 	} {
-		if escCH(name) != name || escCHStr(name) != name {
-			t.Errorf("%q is not escape-neutral: escCH=%q escCHStr=%q", name, escCH(name), escCHStr(name))
+		if sqlquote.Ident(name) != "`"+name+"`" || sqlquote.String(name) != "'"+name+"'" {
+			t.Errorf("%q is not escape-neutral: Ident=%s String=%s", name, sqlquote.Ident(name), sqlquote.String(name))
 		}
 		for _, r := range name {
 			if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {

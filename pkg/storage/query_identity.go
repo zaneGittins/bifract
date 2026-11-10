@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
+
+	"bifract/pkg/sqlquote"
 )
 
 // Each query class connects to ClickHouse as its own user so its memory share can be
@@ -217,7 +220,7 @@ func withinCapTolerance(live, next int64) bool {
 // failure for the user.
 func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string, memCapBytes int64) (driver.Conn, error) {
 	onCluster := c.OnClusterSQL()
-	pw := EscCHStr(c.queryIdentityPassword(user))
+	pw := sqlquote.String(c.queryIdentityPassword(user))
 
 	// Required: without these the identity does not exist or cannot read, so a
 	// failure means no identity.
@@ -226,10 +229,10 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 	// the blast radius of a SQL injection in the query path, and a search has no
 	// reason to reach another database. system is needed for profiling and for the
 	// backpressure/readiness reads the query path makes.
-	db := "`" + EscCHIdent(c.logsDatabase()) + "`"
+	db := sqlquote.Ident(c.logsDatabase())
 	create := []string{
-		fmt.Sprintf("CREATE USER IF NOT EXISTS %s%s IDENTIFIED BY '%s'", user, onCluster, pw),
-		fmt.Sprintf("ALTER USER %s%s IDENTIFIED BY '%s'", user, onCluster, pw),
+		fmt.Sprintf("CREATE USER IF NOT EXISTS %s%s IDENTIFIED BY %s", user, onCluster, pw),
+		fmt.Sprintf("ALTER USER %s%s IDENTIFIED BY %s", user, onCluster, pw),
 	}
 	for _, stmt := range create {
 		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
@@ -605,7 +608,8 @@ func (c *ClickHouseClient) readConn(ctx context.Context) (driver.Conn, context.C
 	if id != "" {
 		ctx = clickhouse.Context(context.WithValue(ctx, sentQueryIDKey{}, id), clickhouse.WithQueryID(id))
 	}
-	return c.connFor(ctx), ctx, nil
+	conn, err := c.routeRead(ctx)
+	return conn, ctx, err
 }
 
 // rawReadConn is readConn for helpers that hand the driver's rows to the caller, which
@@ -648,21 +652,76 @@ func (c *ClickHouseClient) identityState() *ClickHouseClient {
 // marker, so a marker that leaks into user SQL's context gains it nothing. Writes
 // never come through here.
 func (c *ClickHouseClient) connFor(ctx context.Context) driver.Conn {
+	conn, _ := c.routeRead(ctx)
+	return conn
+}
+
+// routeRead is the connection a read on ctx runs on: its class's identity, or for an
+// admin read the default connection. A class without an identity (access management
+// unavailable, or a grant that failed) reads on the default credentials read-only,
+// so SQL a user wrote never runs with admin's rights; when even that cannot be
+// opened the read is refused rather than run as admin.
+func (c *ClickHouseClient) routeRead(ctx context.Context) (driver.Conn, error) {
 	class := QueryClassOf(ctx)
 	if class == "" {
 		if IsAdminRead(ctx) {
-			return c.conn
+			return c.conn, nil
 		}
 		class = QueryReaderClass
 	}
-	m := c.identityState().queryConns.Load()
-	if m == nil {
-		return c.conn
+	if m := c.identityState().queryConns.Load(); m != nil {
+		if id := (*m)[class]; id != nil {
+			return id.conn, nil
+		}
 	}
-	if id := (*m)[class]; id != nil {
-		return id.conn
+	return c.readOnlyConn()
+}
+
+// readOnlyFallback is a lazily opened read-only connection on the default
+// credentials.
+type readOnlyFallback struct {
+	mu     sync.Mutex
+	conn   driver.Conn
+	closed bool
+}
+
+// close closes the connection, and a read after it is refused rather than
+// opening another nothing would close.
+func (f *readOnlyFallback) close() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.conn != nil {
+		f.conn.Close()
+		f.conn = nil
 	}
-	return c.conn
+	f.closed = true
+}
+
+// readOnlyConn is the read-only fallback, opened on first use. A client wrapping a
+// connection it was handed has no addresses to open another with, and reads on that
+// one.
+func (c *ClickHouseClient) readOnlyConn() (driver.Conn, error) {
+	if len(c.addrs) == 0 {
+		return c.conn, nil
+	}
+	f := &c.readOnly
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.conn != nil {
+		return f.conn, nil
+	}
+	if f.closed {
+		return nil, fmt.Errorf("read-only connection for a read without its identity: client closed")
+	}
+	conn, err := openClickHouseConn(ConnOptions{
+		Addrs: c.addrs, Database: c.Database, User: c.User, Password: c.Password,
+		TLS: c.tls, Pool: c.identityPool(), ReadOnly: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read-only connection for a read without its identity: %w", err)
+	}
+	f.conn = conn
+	return conn, nil
 }
 
 // closeQueryIdentities closes the class pools. Called from Close.

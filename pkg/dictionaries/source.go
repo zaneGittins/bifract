@@ -21,6 +21,7 @@ import (
 	"bifract/pkg/egress"
 	"bifract/pkg/rowfile"
 	"bifract/pkg/settings"
+	"bifract/pkg/sqlquote"
 )
 
 // keyFormatGlob marks source keys written as globs, converted to expressions for
@@ -661,7 +662,7 @@ func (m *Manager) hasRows(ctx context.Context, dict *Dictionary) bool {
 	if len(dict.Columns) == 0 {
 		return false
 	}
-	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() AS n FROM `%s`", escCH(m.rowTable(dict.ID))))
+	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() AS n FROM %s", sqlquote.Ident(m.rowTable(dict.ID))))
 	if err != nil || len(rows) == 0 {
 		return false
 	}
@@ -716,7 +717,7 @@ func (m *Manager) replaceRows(ctx context.Context, dict *Dictionary, file *sourc
 	if err := b.flush(); err != nil {
 		return err
 	}
-	if err := m.deleteRowsWhere(ctx, dict, fmt.Sprintf("`%s` < %d", seqColumn, threshold)); err != nil {
+	if err := m.deleteRowsWhere(ctx, dict, fmt.Sprintf("%s < %d", sqlquote.Ident(seqColumn), threshold)); err != nil {
 		return fmt.Errorf("new rows loaded but the old ones could not be removed: %w", err)
 	}
 	m.reloadDictionaries(ctx, dict)

@@ -79,7 +79,7 @@ func sanitizeIceName(field string) string {
 // an empty string (not NULL) for a missing key, which the existence/`!=` codegen
 // already tolerates.
 func mapFieldRef(field string) string {
-	return "JSONExtractString(norm_log, '" + escapeString(field) + "')"
+	return "JSONExtractString(norm_log, " + sqlString(field) + ")"
 }
 
 // fieldRefMode returns the field reference for the given source mode: the JSON
@@ -171,8 +171,8 @@ const icebergPromotionQueryEnabled = true
 // norm_log clause alone is always correct, so a caller that does not supply the
 // set loses pruning but never returns a wrong answer or an error.
 func icebergEqualityPredicate(field, value string, promoted map[string]bool) predicate {
-	esc := escapeString(value)
-	byMap := atom(fmt.Sprintf("%s = '%s'", mapFieldRef(field), esc))
+	lit := sqlString(value)
+	byMap := atom(mapFieldRef(field) + " = " + lit)
 	if !icebergPromotionQueryEnabled || !promoted[field] {
 		return byMap
 	}
@@ -180,5 +180,5 @@ func icebergEqualityPredicate(field, value string, promoted map[string]bool) pre
 	if !isPromoted {
 		return byMap
 	}
-	return andOf(byMap, orOf(atom(fmt.Sprintf("%s = '%s'", col, esc)), atom(col+" IS NULL")))
+	return andOf(byMap, orOf(atom(col+" = "+lit), atom(col+" IS NULL")))
 }

@@ -20,6 +20,7 @@ import (
 	"bifract/pkg/notifications"
 	"bifract/pkg/pgnotify"
 	"bifract/pkg/settings"
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -181,7 +182,7 @@ func connectIngestDBsWithRetry(config Config) (*storage.PostgresClient, *storage
 func waitForWriteTable(dbIngest *storage.ClickHouseClient) {
 	table := dbIngest.WriteTable()
 	deadline := time.Now().Add(2 * time.Minute)
-	query := "SELECT name FROM system.tables WHERE database = currentDatabase() AND name = '" + table + "'"
+	query := "SELECT name FROM system.tables WHERE database = currentDatabase() AND name = " + sqlquote.String(table)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		rows, err := dbIngest.Query(ctx, query)

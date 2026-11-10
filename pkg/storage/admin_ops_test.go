@@ -11,6 +11,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"bifract/internal/fakedb"
+	"bifract/pkg/sqlquote"
 )
 
 // Deleting a fractal drops its partitions in every partitioned table, after first
@@ -242,10 +243,10 @@ func TestKeeperHelpersEscape(t *testing.T) {
 	if got := KeeperTablePath("01", "logs", "t"); got != "/clickhouse/tables/01/logs/t" {
 		t.Errorf("path = %q", got)
 	}
-	if got := KeeperReplicasQuery("/a'b"); got != "SELECT name FROM system.zookeeper WHERE path = '/a''b/replicas'" {
+	if got := KeeperReplicasQuery("/a'b"); got != "SELECT name FROM system.zookeeper WHERE path = "+sqlquote.String("/a'b/replicas") {
 		t.Errorf("query = %q", got)
 	}
-	if got := DropKeeperReplicaStatement("r'1", "/p"); got != "SYSTEM DROP REPLICA 'r''1' FROM ZKPATH '/p'" {
+	if got := DropKeeperReplicaStatement("r'1", "/p"); got != "SYSTEM DROP REPLICA "+sqlquote.String("r'1")+" FROM ZKPATH "+sqlquote.String("/p") {
 		t.Errorf("stmt = %q", got)
 	}
 	if got := ResetKeeperTables([]string{"m"}); got[0] != "m" || len(got) != len(resetShardedTables)+2 || got[len(got)-1] != fieldPathsStage {

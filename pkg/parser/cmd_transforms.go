@@ -298,7 +298,7 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if err != nil {
 				return fmt.Errorf("regex(): invalid capture name %q: %w", name, err)
 			}
-			scalarExpr := fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d]", fieldRef, escapeString(sqlPattern), i+1)
+			scalarExpr := fmt.Sprintf("extractAllGroups(%s, %s)[1][%d]", fieldRef, sqlString(sqlPattern), i+1)
 			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: scalarExpr, Alias: safeName})
 			ctx.Registry.define(safeName, scalarExpr, readsFrom)
 		}
@@ -310,7 +310,7 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if err != nil {
 			return fmt.Errorf("regex(): invalid as name %q: %w", p.asName, err)
 		}
-		scalarExpr := fmt.Sprintf("extract(%s, '%s')", fieldRef, escapeString(sqlPattern))
+		scalarExpr := fmt.Sprintf("extract(%s, %s)", fieldRef, sqlString(sqlPattern))
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: scalarExpr, Alias: safeName})
 		ctx.Registry.define(safeName, scalarExpr, readsFrom)
 	default:
@@ -319,7 +319,7 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if captureGroupCount(sqlPattern) == 0 {
 			return fmt.Errorf("regex(): pattern has no capture group; wrap the part to extract in (?<name>...)")
 		}
-		scalarExpr := fmt.Sprintf("extractAllGroups(%s, '%s')", fieldRef, escapeString(sqlPattern))
+		scalarExpr := fmt.Sprintf("extractAllGroups(%s, %s)", fieldRef, sqlString(sqlPattern))
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: scalarExpr, Alias: regexDefaultColumn})
 		ctx.Registry.define(regexDefaultColumn, scalarExpr, readsFrom)
 	}
@@ -422,7 +422,7 @@ func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("replace(): invalid output field: %w", err)
 	}
 
-	expr := fmt.Sprintf("replaceRegexpAll(%s, '%s', '%s')", fieldRef, escapeString(pattern.Value()), escapeString(replacement.Value()))
+	expr := fmt.Sprintf("replaceRegexpAll(%s, %s, %s)", fieldRef, sqlString(pattern.Value()), sqlString(replacement.Value()))
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeOutput))
 	ctx.Registry.define(outputField, expr, readsFrom)
 	return nil
@@ -767,7 +767,7 @@ func (h *levenshteinHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 // string to compare against, anything else is a field or an expression over one.
 func levenshteinOperand(a Argument, registry *FieldRegistry) (string, error) {
 	if a.Quoted {
-		return fmt.Sprintf("'%s'", escapeString(a.Text)), nil
+		return sqlString(a.Text), nil
 	}
 	return textArg(a, registry)
 }
@@ -837,7 +837,7 @@ func (h *splitHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if err != nil {
 			return err
 		}
-		sqlExpr := fmt.Sprintf("splitByString('%s', %s)[%d]", escapeString(delimiter), fieldRef, index)
+		sqlExpr := fmt.Sprintf("splitByString(%s, %s)[%d]", sqlString(delimiter), fieldRef, index)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: sqlExpr, Alias: alias})
 		ctx.Registry.define(alias, sqlExpr, readsFrom)
 	}
@@ -1000,9 +1000,9 @@ func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	var printfArgs string
 	if len(fieldRefs) > 0 {
-		printfArgs = fmt.Sprintf("'%s', %s", escapeString(formatStr), strings.Join(fieldRefs, ", "))
+		printfArgs = sqlString(formatStr) + ", " + strings.Join(fieldRefs, ", ")
 	} else {
-		printfArgs = fmt.Sprintf("'%s'", escapeString(formatStr))
+		printfArgs = sqlString(formatStr)
 	}
 	expr := fmt.Sprintf("printf(%s)", printfArgs)
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeAlias))
@@ -1107,9 +1107,9 @@ func dictProbe(fieldRef, dictName, chLookupName string, isPattern bool, opts Que
 // rows, which an ordinary attribute holding an empty value could not do.
 func dictMembershipSQL(dictRef, probeRef string, pattern bool) string {
 	if pattern {
-		return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '') = '1'", dictRef, PatternMatchAttr, probeRef)
+		return fmt.Sprintf("dictGetOrDefault(%s, %s, %s, '') = '1'", sqlString(dictRef), sqlString(PatternMatchAttr), probeRef)
 	}
-	return fmt.Sprintf("dictHas('%s', %s)", dictRef, probeRef)
+	return fmt.Sprintf("dictHas(%s, %s)", sqlString(dictRef), probeRef)
 }
 
 // lookupRef is a lookup key column resolved to the dictionary object match()
@@ -1136,7 +1136,7 @@ func resolveLookup(dictName, keyColumn string, opts QueryOptions) (lookupRef, er
 	if object == "" {
 		return lookupRef{}, fmt.Errorf("dictionary %q has no key column %q - enable that column as a key on the Lookups page", dictName, keyColumn)
 	}
-	l := lookupRef{dict: dictName, object: object, ref: escapeString(dictRef(opts.DictionaryDatabase, object)),
+	l := lookupRef{dict: dictName, object: object, ref: dictRef(opts.DictionaryDatabase, object),
 		pattern: opts.PatternDicts[object], opts: opts}
 	if l.pattern {
 		l.prefilter = opts.PatternPrefilters[object]
@@ -1186,11 +1186,11 @@ func (l lookupRef) row(probeRef string) string {
 	names := make([]string, len(l.attrs))
 	empty := make([]string, len(l.attrs))
 	for i, a := range l.attrs {
-		names[i] = "'" + escapeString(a) + "'"
+		names[i] = sqlString(a)
 		empty[i] = "''"
 	}
 	def := "(" + strings.Join(empty, ", ") + ")"
-	get := fmt.Sprintf("dictGetOrDefault('%s', (%s), %s, %s)", l.ref, strings.Join(names, ", "), probeRef, def)
+	get := fmt.Sprintf("dictGetOrDefault(%s, (%s), %s, %s)", sqlString(l.ref), strings.Join(names, ", "), probeRef, def)
 	if s := l.screen(probeRef); s != "" {
 		return fmt.Sprintf("if(%s, %s, %s)", s, get, def)
 	}
@@ -1218,7 +1218,7 @@ func (l lookupRef) value(col, keyColumn, probeRef, displayRef string) string {
 	if i := slices.Index(l.attrs, col); i >= 0 {
 		return fmt.Sprintf("tupleElement(%s, %d)", l.row(probeRef), i+1)
 	}
-	get := fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", l.ref, escapeString(col), probeRef)
+	get := fmt.Sprintf("dictGetOrDefault(%s, %s, %s, '')", sqlString(l.ref), sqlString(col), probeRef)
 	if s := l.screen(probeRef); s != "" {
 		return fmt.Sprintf("if(%s, %s, '')", s, get)
 	}
@@ -1375,12 +1375,12 @@ func geoipIsNumeric(field string) bool {
 // geoipLookupExpr builds the lookup as a string. A numeric miss reads empty (not a
 // number) instead of 0, so asn < 1000 does not match private or non-IPv4 addresses.
 func geoipLookupExpr(db, field, fieldRef string) string {
-	dictName := escapeString(dictRef(db, geoipDictName(field)))
+	dictName := sqlString(dictRef(db, geoipDictName(field)))
 	key := fmt.Sprintf("toIPv4OrDefault(%s)", fieldRef)
 	if geoipIsNumeric(field) {
-		return fmt.Sprintf("ifNull(toString(dictGetOrNull('%s', '%s', %s)), '')", dictName, escapeString(field), key)
+		return fmt.Sprintf("ifNull(toString(dictGetOrNull(%s, %s, %s)), '')", dictName, sqlString(field), key)
 	}
-	return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", dictName, escapeString(field), key)
+	return fmt.Sprintf("dictGetOrDefault(%s, %s, %s, '')", dictName, sqlString(field), key)
 }
 
 func (h *lookupIPHandler) Declare(cmd CommandNode, ctx *CommandContext) error {

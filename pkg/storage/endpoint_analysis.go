@@ -12,6 +12,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
+
+	"bifract/pkg/sqlquote"
 )
 
 // endpointAnalysisMVNames are the materialized views gated by the "Advanced endpoint
@@ -41,7 +43,7 @@ var endpointAnalysisMVNames = []string{
 func endpointMVInList() string {
 	quoted := make([]string, len(endpointAnalysisMVNames))
 	for i, n := range endpointAnalysisMVNames {
-		quoted[i] = "'" + n + "'"
+		quoted[i] = sqlquote.String(n)
 	}
 	return strings.Join(quoted, ", ")
 }

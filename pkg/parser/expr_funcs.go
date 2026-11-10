@@ -419,7 +419,7 @@ func privateIPPredicateSQL(fieldRef string) string {
 	safeAddr := fmt.Sprintf("if(%s, %s, '0.0.0.0')", valid, fieldRef)
 	tests := make([]string, len(privateIPRanges))
 	for i, r := range privateIPRanges {
-		tests[i] = fmt.Sprintf("isIPAddressInRange(%s, '%s')", safeAddr, r)
+		tests[i] = fmt.Sprintf("isIPAddressInRange(%s, %s)", safeAddr, sqlString(r))
 	}
 	return fmt.Sprintf("((%s) AND %s)", strings.Join(tests, " OR "), valid)
 }

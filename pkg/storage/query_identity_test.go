@@ -283,3 +283,41 @@ func TestSharedIdentitiesRouteReads(t *testing.T) {
 		t.Error("closing the borrower closed the shared identities")
 	}
 }
+
+// A user read whose class has no identity runs on the read-only fallback, never on
+// admin's connection, and an admin read keeps admin's.
+func TestReadsWithoutIdentityNeverRunAsAdmin(t *testing.T) {
+	admin, readOnly := &stubConn{}, &stubConn{}
+	c := &ClickHouseClient{conn: admin, addrs: []string{"127.0.0.1:1"}}
+	c.readOnly.conn = readOnly
+	for name, ctx := range map[string]context.Context{
+		"search":   UserSearchContext(context.Background(), FractalScope{}),
+		"alert":    UncappedReadContext(context.Background()),
+		"recall":   RecallContext(context.Background()),
+		"unmarked": context.Background(),
+	} {
+		if got, err := c.routeRead(ctx); err != nil || got != readOnly {
+			t.Errorf("%s read ran on %v (%v), want the read-only fallback", name, got, err)
+		}
+	}
+	if got, _ := c.routeRead(AdminReadContext(context.Background())); got != admin {
+		t.Error("an admin read must keep the default connection")
+	}
+	// Opened on first use, on the default credentials but never as the default
+	// connection; the driver dials lazily, so an unreachable server fails the read.
+	c.readOnly.conn = nil
+	got, err := c.routeRead(UserSearchContext(context.Background(), FractalScope{}))
+	if err != nil || got == nil || got == admin {
+		t.Errorf("fallback = %v, %v", got, err)
+	}
+	c.readOnly.close()
+}
+
+// A read after Close is refused rather than opening a pool nothing would close.
+func TestReadOnlyFallbackIsNotReopenedAfterClose(t *testing.T) {
+	c := &ClickHouseClient{addrs: []string{"127.0.0.1:1"}}
+	c.readOnly.close()
+	if got, err := c.routeRead(UserSearchContext(context.Background(), FractalScope{})); err == nil || got != nil {
+		t.Errorf("read after close = %v, %v", got, err)
+	}
+}

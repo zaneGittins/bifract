@@ -53,15 +53,3 @@ func TestParseLogPartitionRejectsMalformed(t *testing.T) {
 		}
 	}
 }
-
-func TestEscCHLiteral(t *testing.T) {
-	if got := escCHLiteral("o'brien"); got != "o''brien" {
-		t.Errorf("escCHLiteral = %q, want %q", got, "o''brien")
-	}
-	if got := escCHLiteral(`o\`); got != `o\\` {
-		t.Errorf("a trailing backslash must be escaped or it escapes the closing quote, got %q", got)
-	}
-	if got := escCHLiteral("plain"); got != "plain" {
-		t.Errorf("escCHLiteral = %q, want %q", got, "plain")
-	}
-}

@@ -112,12 +112,10 @@ func TestMitreCommand(t *testing.T) {
 // JSON parsing would pass a unit test on the clean shape and drop every escaped
 // one, so the accepted shapes are pinned here.
 //
-// ClickHouse strips one level of backslashes from a string literal, so the
-// pattern is unescaped the same way before compiling.
+// The constants are the regexes themselves; sqlString escapes them for SQL.
 func TestMitreTagPatternValueShapes(t *testing.T) {
-	unescape := strings.NewReplacer(`\\`, `\`)
-	fieldRe := regexp.MustCompile(unescape.Replace(mitreTagPattern + "|" + mitreBareTagPattern))
-	scanRe := regexp.MustCompile(unescape.Replace(mitreTagPattern))
+	fieldRe := regexp.MustCompile(mitreTagPattern + "|" + mitreBareTagPattern)
+	scanRe := regexp.MustCompile(mitreTagPattern)
 
 	tests := []struct {
 		name  string

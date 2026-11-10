@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -442,10 +443,10 @@ func (b *resultBuffer) flush(ctx context.Context) error {
 		return nil
 	}
 	batch, err := b.ch.Conn().PrepareBatch(ctx, fmt.Sprintf(
-		"INSERT INTO `%s` (fractal_id, src_ip, dst_ip, dst_port, "+
+		"INSERT INTO %s (fractal_id, src_ip, dst_ip, dst_port, "+
 			"regularity_score, ts_score, ds_score, dur_score, hist_score, "+
 			"prevalence, prevalence_total, prevalence_score, first_seen_score, threat_intel_score, "+
-			"final_score, conn_count, total_duration, first_seen, last_seen, scored_at, expires_on)", b.table))
+			"final_score, conn_count, total_duration, first_seen, last_seen, scored_at, expires_on)", sqlquote.Ident(b.table)))
 	if err != nil {
 		return err
 	}

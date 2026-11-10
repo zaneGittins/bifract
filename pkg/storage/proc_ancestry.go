@@ -7,6 +7,8 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"bifract/pkg/sqlquote"
 )
 
 // procAncestryDepth is the deepest ancestor proc_ancestry records, the filters' maximum depth.
@@ -187,7 +189,7 @@ func ingestBetween(from, to time.Time) string {
 }
 
 func chTime(t time.Time) string {
-	return "toDateTime64('" + t.UTC().Format("2006-01-02 15:04:05.000") + "', 3, 'UTC')"
+	return "toDateTime64(" + sqlquote.String(t.UTC().Format("2006-01-02 15:04:05.000")) + ", 3, 'UTC')"
 }
 
 // buildProcAncestry reflects the lineage rows ingested in [from, to).

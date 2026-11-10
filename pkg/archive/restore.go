@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"bifract/pkg/objstore"
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -460,9 +461,7 @@ func scalarCount(ctx context.Context, ch *storage.ClickHouseClient, query string
 // chQuote single-quotes a string for a ClickHouse SQL literal, escaping quotes
 // and backslashes.
 func chQuote(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "'", "\\'")
-	return "'" + s + "'"
+	return sqlquote.String(s)
 }
 
 func chTime(t time.Time) string {

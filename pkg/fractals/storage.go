@@ -8,6 +8,7 @@ import (
 
 	"github.com/lib/pq"
 
+	"bifract/pkg/sqlquote"
 	"bifract/pkg/storage"
 )
 
@@ -481,7 +482,7 @@ func (s *Storage) ComputeAllFractalStats(ctx context.Context, fractals []*Fracta
 	sizeQuery := `
 		SELECT sum(data_uncompressed_bytes) AS total_bytes
 		FROM system.parts
-		WHERE database = '` + s.ch.Database + `' AND table = 'logs' AND active = 1
+		WHERE database = ` + sqlquote.String(s.ch.Database) + ` AND table = 'logs' AND active = 1
 	`
 	sizeRows, err := s.ch.Query(ctx, sizeQuery)
 	if err != nil {
