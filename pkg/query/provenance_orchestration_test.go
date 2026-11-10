@@ -162,10 +162,15 @@ func chResultOf(rows []map[string]interface{}) fakedb.CHResult {
 	for _, k := range names {
 		res.Cols = append(res.Cols, fakedb.Col{Column: k, Type: types[k]})
 	}
+	// A non-Nullable column is never NULL, so a missing key gets the type's zero.
+	zero := map[string]any{"String": "", "UInt64": uint64(0), "Int64": int64(0), "Float64": float64(0)}
 	for _, r := range rows {
 		vals := make([]any, len(names))
 		for i, k := range names {
 			vals[i] = r[k]
+			if vals[i] == nil {
+				vals[i] = zero[types[k]]
+			}
 		}
 		res.Rows = append(res.Rows, vals)
 	}

@@ -2130,7 +2130,7 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 		switch {
 		// A NULL string reads as "", the same as an empty field.
 		case inner == "String":
-			values[i] = new(string)
+			values[i] = numDest[string](nullable)
 		case inner == "UInt64":
 			values[i] = numDest[uint64](nullable)
 		case inner == "Int64":
@@ -2157,7 +2157,7 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 		case inner == "Float32":
 			values[i] = numDest[float32](nullable)
 		case isCHDateTimeType(typeName):
-			values[i] = new(time.Time)
+			values[i] = numDest[time.Time](nullable)
 		case strings.HasPrefix(typeName, "Array("):
 			inner := typeName[6 : len(typeName)-1]
 			switch inner {
@@ -2195,6 +2195,9 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 		if p, ok := nullableNum(values[i]); ok {
 			if p == nil {
 				row[colName] = nil
+				if _, text := values[i].(**string); text {
+					row[colName] = ""
+				}
 				continue
 			}
 			values[i] = p
@@ -2254,8 +2257,8 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 	return row, nil
 }
 
-// numDest is the scan destination for a number column. A Nullable one scans
-// into a **T so NULL arrives as nil rather than 0.
+// numDest is the scan destination for a number, string or time column. A
+// Nullable one scans into a **T, since the driver refuses NULL into a *T.
 func numDest[T any](nullable bool) any {
 	if nullable {
 		return new(*T)
@@ -2263,8 +2266,8 @@ func numDest[T any](nullable bool) any {
 	return new(T)
 }
 
-// nullableNum unwraps a numDest **T: ok reports whether dest was one, and p is
-// its *T, nil for NULL.
+// nullableNum unwraps a numDest **T (a number, string or time): ok reports whether
+// dest was one, and p is its *T, nil for NULL.
 func nullableNum(dest any) (p any, ok bool) {
 	v := reflect.ValueOf(dest).Elem()
 	if v.Kind() != reflect.Pointer {

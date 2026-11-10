@@ -108,6 +108,35 @@ func TestScanRowMapNullableNumbers(t *testing.T) {
 	}
 }
 
+// A NULL string reads as "", the same as an empty field, and a NULL time as no
+// value. clickhouse-go 2.50 refuses NULL into a plain *string or *time.Time, so
+// one NULL would otherwise fail the whole query.
+func TestScanRowMapNullableTextAndTimes(t *testing.T) {
+	for typ, want := range map[string]any{
+		"Nullable(String)":                       "",
+		"LowCardinality(Nullable(String))":       "",
+		"Nullable(DateTime64(3, 'UTC'))":         nil,
+		"Nullable(DateTime('America/New_York'))": nil,
+	} {
+		t.Run(typ, func(t *testing.T) {
+			got, err := scanOne(t, []fakedb.Col{{Column: "v", Type: typ}}, []any{nil})
+			if err != nil {
+				t.Fatalf("scanRowMap: %v", err)
+			}
+			if v, ok := got["v"]; !ok || v != want {
+				t.Errorf("v = %#v, want %#v", v, want)
+			}
+		})
+	}
+	got, err := scanOne(t, []fakedb.Col{{Column: "v", Type: "Nullable(String)"}}, []any{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["v"] != "x" {
+		t.Errorf("v = %#v, want \"x\"", got["v"])
+	}
+}
+
 func TestScanRowMapParsesFieldColumnsOnly(t *testing.T) {
 	cols := []fakedb.Col{{Column: "fields", Type: "String"}, {Column: "_all_fields", Type: "String"}, {Column: "note", Type: "String"}}
 	got, err := scanOne(t, cols, []any{`{"user":"alice"}`, `{"n":1}`, `{"x":1}`})

@@ -398,7 +398,9 @@ func (r *chRow) Scan(dest ...any) error {
 func (r *chRow) ScanStruct(any) error { return fmt.Errorf("fakedb: ScanStruct unsupported") }
 
 // assignRow copies a scripted row into scan destinations the way the driver does:
-// exact Go types only, except that an *interface{} destination takes anything.
+// exact Go types only, except that an *interface{} destination takes anything. A
+// NULL (nil) clears a pointer, interface, slice or map destination and is an error
+// for any other, as clickhouse-go's scanNullInto is.
 func assignRow(vals []any, dest []any) error {
 	if len(dest) != len(vals) {
 		return fmt.Errorf("scan: %d destinations for %d columns", len(dest), len(vals))
@@ -410,8 +412,12 @@ func assignRow(vals []any, dest []any) error {
 		}
 		target := dv.Elem()
 		if vals[i] == nil {
-			target.Set(reflect.Zero(target.Type()))
-			continue
+			switch target.Kind() {
+			case reflect.Pointer, reflect.Interface, reflect.Slice, reflect.Map:
+				target.Set(reflect.Zero(target.Type()))
+				continue
+			}
+			return fmt.Errorf("converting NULL to %s is unsupported", dv.Type())
 		}
 		v := reflect.ValueOf(vals[i])
 		if target.Kind() == reflect.Interface {
