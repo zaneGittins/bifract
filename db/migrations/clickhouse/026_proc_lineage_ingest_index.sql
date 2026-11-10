@@ -1,3 +1,3 @@
--- 024 added idx_ingest_ts, which covers only parts written after it, so the ancestry builder's
--- ingest-time filters read every older part in full. Indexes them; a background mutation.
-ALTER TABLE proc_lineage MATERIALIZE INDEX idx_ingest_ts;
+-- Indexed proc_lineage by ingest time for the ancestry builder, removed before release. A no-op
+-- drop so the numbering holds; 027 covers installs that ran the earlier version.
+ALTER TABLE proc_lineage DROP INDEX IF EXISTS idx_ingest_ts;

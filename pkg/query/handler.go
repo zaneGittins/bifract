@@ -183,8 +183,6 @@ func (h *QueryHandler) logsQueryOptions() parser.QueryOptions {
 		ProcLineageTable:       h.procLineageTableName(),
 		ProcFreqTable:          h.procFreqTableName(),
 		ProcEdgesTable:         h.procEdgesTableName(),
-		ProcAncestryTable:      h.readTable("proc_ancestry"),
-		ProcAncestryMarkTable:  h.readTable("proc_ancestry_watermark"),
 		ProvenanceMarksTable:   h.readTable("provenance_marks"),
 		ProvenanceSummaryTable: h.provenanceSummaryTableName(),
 		IncludeShardNum:        h.db != nil && h.db.Topology().DistributedTables,

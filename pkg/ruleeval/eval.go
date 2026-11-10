@@ -212,9 +212,6 @@ func (s *Scratch) resolveTLSH(ctx context.Context, pipeline *parser.PipelineNode
 // Evaluate runs a parsed rule against one unit and reports how many rows it returned.
 // The SQL is returned for explain output whether or not the query succeeded.
 func (s *Scratch) Evaluate(ctx context.Context, pipeline *parser.PipelineNode, u Unit, w Window) (rows int, sql string, err error) {
-	if name := parser.FirstPgrFilter(pipeline); name != "" {
-		return 0, "", fmt.Errorf("%s() cannot be evaluated in this test runner: it reads the provenance tables, which test events never reach", name)
-	}
 	// Only the rule's own reads: the client still creates and writes the scratch table.
 	ctx = storage.UncappedReadContext(storage.ScopeContext(ctx, storage.FractalScope{FractalIDs: []string{u.FractalID}}))
 	opts := s.QueryOptions(u, w)

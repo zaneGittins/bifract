@@ -170,13 +170,8 @@ func TestDistributedTableDDLMatchesResetSet(t *testing.T) {
 		t.Fatalf("%d statements for %d sharded tables", len(got), len(resetShardedTables))
 	}
 	for _, table := range resetShardedTables {
-		// Ancestry rows replace each other by process, so a process stays on one shard.
-		key := "rand()"
-		if table == procAncestryTable {
-			key = "cityHash64(proc_key)"
-		}
 		want := "CREATE TABLE IF NOT EXISTS " + table + "_distributed AS " + table +
-			" ENGINE = Distributed('it\\'s', currentDatabase(), '" + table + "', " + key + ")"
+			" ENGINE = Distributed('it\\'s', currentDatabase(), '" + table + "', rand())"
 		if !got[want] {
 			t.Errorf("missing %q", want)
 		}

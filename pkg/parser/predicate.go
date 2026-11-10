@@ -20,9 +20,6 @@ const (
 type predicate struct {
 	sql  string
 	prec precedence
-	// candidates is set on a provenance filter that reads its plan's candidate
-	// set, so narrowing that set can rebuild it (see narrowPgrCandidates).
-	candidates *candidateFilter
 	// deps is what the predicate reads, recorded where it was built.
 	deps deps
 }

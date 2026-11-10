@@ -148,3 +148,77 @@ func TestUpgradeFromV002(t *testing.T) {
 		t.Errorf("checkPartitionKey on the current schema = %v, want nil", err)
 	}
 }
+
+// TestUpgradeFromV008AndV009 replays v0.0.8 and v0.0.9 installs, with process lineage already
+// recorded, through the current migrations: none of the removed ancestry objects may appear,
+// and the lineage pgr() reads must survive untouched.
+func TestUpgradeFromV008AndV009(t *testing.T) {
+	for _, tc := range []struct {
+		release string
+		last    uint32 // the release's last migration, which its install stamps
+	}{{"v008", 17}, {"v009", 21}} {
+		t.Run(tc.release, func(t *testing.T) {
+			old, err := os.ReadFile("testdata/" + tc.release + "-init-clickhouse.sql")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			root := upgradeConn(t, "default")
+			for _, stmt := range []string{"DROP DATABASE IF EXISTS logs SYNC", "CREATE DATABASE logs"} {
+				if err := root.Exec(ctx, stmt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			conn, err := openClickHouseConn(ConnOptions{Addrs: []string{upgradeAddr}, Database: "logs", User: "default", Password: "bifract", Pool: ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			for _, stmt := range splitClickHouseSQL(string(old)) {
+				if err := conn.Exec(ctx, stmt); err != nil {
+					t.Fatalf("%s init statement failed: %v\n%s", tc.release, err, stmt)
+				}
+			}
+			if err := createMigrationBookkeeping(ctx, conn, nil); err != nil {
+				t.Fatal(err)
+			}
+			for n := uint32(1); n <= tc.last; n++ {
+				if err := conn.Exec(ctx, "INSERT INTO logs._bifract_migrations (number, name) VALUES (?, 'baseline')", n); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := conn.Exec(ctx, `INSERT INTO logs (fractal_id, timestamp, ingest_timestamp, log_id, fields) SELECT 'f', t, t, concat('l', toString(number)), `+
+				`CAST(toJSONString(map('bifract_category', 'process_creation', 'process_guid', concat('g', toString(number)), 'parent_process_guid', concat('g', toString(intDiv(number, 2))), `+
+				`'image', 'C:\\w\\p.exe', 'computer_name', 'WS1')) AS JSON) FROM (SELECT number, toDateTime64('2026-10-01 00:00:00', 3, 'UTC') + toIntervalSecond(number) AS t FROM numbers(1, 500))`); err != nil {
+				t.Fatal(err)
+			}
+			lineage := func() (n uint64) {
+				conn.QueryRow(ctx, "SELECT uniqExact(process_guid) FROM proc_lineage").Scan(&n)
+				return n
+			}
+			before := lineage()
+
+			if _, err := runMigrationsOnConn(ctx, conn, nil, false, dbsql.ClickHouseMigrations, dbsql.ClickHouseMigrationsDir); err != nil {
+				t.Fatalf("upgrade from %s: %v", tc.release, err)
+			}
+			want, _ := highestMigrationNumber()
+			var got uint32
+			conn.QueryRow(ctx, "SELECT max(number) FROM logs._bifract_migrations").Scan(&got)
+			if got != want {
+				t.Errorf("ended at migration %d, want %d", got, want)
+			}
+			var ancestry, lineageIndex, logsIndex uint64
+			conn.QueryRow(ctx, "SELECT count() FROM system.tables WHERE database = 'logs' AND name LIKE 'proc_ancestry%'").Scan(&ancestry)
+			conn.QueryRow(ctx, "SELECT countIf(table = 'proc_lineage'), countIf(table = 'logs') FROM system.data_skipping_indices WHERE database = 'logs' AND name = 'idx_ingest_ts'").Scan(&lineageIndex, &logsIndex)
+			if ancestry != 0 || lineageIndex != 0 {
+				t.Errorf("after upgrade: %d proc_ancestry tables and %d lineage ingest indexes, want none", ancestry, lineageIndex)
+			}
+			if logsIndex != 1 {
+				t.Errorf("the logs ingest index from 017 is gone")
+			}
+			if before == 0 || lineage() != before {
+				t.Errorf("lineage held %d processes before the upgrade and %d after", before, lineage())
+			}
+		})
+	}
+}

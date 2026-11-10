@@ -62,4 +62,4 @@ ptg(start="{GUID}", direction=forward) | _depth <= 3
 
 ## Beyond the spawn tree
 
-`ptg()` covers process creation only. For file, network and DNS activity around the tree, anomaly scoring and cross-tree links, use `pgr()`: see [Provenance Graph](../features/provenance-graph.md). To filter ordinary logs by a process's ancestors, descendants or connections, see [`pgrHasAncestor()`](enrichment.md#pgrhasancestor), [`pgrHasDescendant()`](enrichment.md#pgrhasdescendant) and [`pgrHasNetwork()`](enrichment.md#pgrhasnetwork), and for its command line as a column, [`pgrContext()`](enrichment.md#pgrcontext).
+`ptg()` covers process creation only. For file, network and DNS activity around the tree, anomaly scoring and cross-tree links, use `pgr()`: see [Provenance Graph](../features/provenance-graph.md).

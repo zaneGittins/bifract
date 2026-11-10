@@ -103,8 +103,6 @@ type QueryOptions struct {
 	ProcFreqTable          string       // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
 	ProcEdgesTable         string       // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
 	ProvenanceSummaryTable string       // Fleet-totals read table for pgr() ("provenance_summary" or "provenance_summary_distributed")
-	ProcAncestryTable      string       // Ancestry read table for the pgrHas filters ("proc_ancestry" or "proc_ancestry_distributed")
-	ProcAncestryMarkTable  string       // The ancestry builder's watermark ("proc_ancestry_watermark" or its _distributed table)
 	ProvenanceMarksTable   string       // When each provenance rollup began ("provenance_marks" or its _distributed table)
 	IncludeShardNum        bool         // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
 	// IncludeIngestTime projects ingest_timestamp as the hidden _ingest_timestamp
@@ -356,7 +354,7 @@ func (q *plannedQuery) declare() error {
 // validate refuses what the pipeline's commands cannot do, before any runs.
 func (q *plannedQuery) validate() error {
 	pipeline := q.ctx.Pipeline
-	for _, check := range []func(*PipelineNode) error{validateCommandSchemas, validateProcessTreeTail, ValidatePgrFilters} {
+	for _, check := range []func(*PipelineNode) error{validateCommandSchemas, validateProcessTreeTail} {
 		if err := check(pipeline); err != nil {
 			return err
 		}
@@ -468,7 +466,6 @@ func (q *plannedQuery) planFilters() error {
 		return err
 	}
 	materializeConditions(registry, plan)
-	narrowPgrCandidates(ctx)
 	return nil
 }
 

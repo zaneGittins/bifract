@@ -42,8 +42,6 @@ var resetShardedTables = []string{
 	"proc_lineage",
 	"proc_freq",
 	"process_edges",
-	procAncestryTable,
-	procAncestryWatermarkTable,
 	provenanceMarksTable,
 	provenanceSummaryTable,
 }

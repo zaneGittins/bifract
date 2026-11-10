@@ -132,26 +132,19 @@ func TestErrorsQuoteARegexAsWritten(t *testing.T) {
 	if got := describeToken(Token{Type: TokenRegex, Value: "(?i)abc", Text: "/abc/i"}); got != "'/abc/i'" {
 		t.Errorf("describeToken = %s, want '/abc/i'", got)
 	}
-	pl, err := ParseQuery(`* | pgrHasNetwork(/10\./i)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := BindCommand(*pl.Filters()[0].Command)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if arg, _ := b.First("value"); arg.String() != `/10\./i` {
-		t.Errorf("argument renders as %s, want /10\\./i", arg.String())
-	}
-	// A regex a let binding holds renders as written where it is substituted.
-	pl, err = ParseQuery(`let &r := /10\./i; * | pgrHasNetwork(&r)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b, err = BindCommand(*pl.Filters()[0].Command); err != nil {
-		t.Fatal(err)
-	}
-	if arg, _ := b.First("value"); arg.String() != `/10\./i` {
-		t.Errorf("bound argument renders as %s, want /10\\./i", arg.String())
+	// A regex argument, and one a let binding holds, render as written.
+	for _, q := range []string{`* | head(/10\./i)`, `let &r := /10\./i; * | head(&r)`} {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmds := pl.Commands()
+		if len(cmds) != 1 {
+			t.Fatalf("%s: %d commands", q, len(cmds))
+		}
+		cmd := cmds[0]
+		if len(cmd.Args) != 1 || cmd.Args[0].String() != `/10\./i` {
+			t.Errorf("%s: argument renders as %v, want /10\\./i", q, cmd.Args)
+		}
 	}
 }

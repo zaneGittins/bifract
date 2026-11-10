@@ -513,16 +513,3 @@ func TestEvaluateResolvesTLSHFromScratchRows(t *testing.T) {
 		t.Errorf("a distant digest must not be in the final filter:\n%s", sql)
 	}
 }
-
-// A scratch table never feeds the provenance tables, so a rule using a provenance filter would
-// report no_match for a reason unrelated to the rule.
-func TestEvaluateRefusesPgrFilters(t *testing.T) {
-	pipeline, err := parser.ParseQuery(`user=x OR pgrHasNetwork()`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = (&Scratch{}).Evaluate(context.Background(), pipeline, Unit{}, Window{})
-	if err == nil || !strings.Contains(err.Error(), "cannot be evaluated") {
-		t.Errorf("err = %v", err)
-	}
-}
