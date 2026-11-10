@@ -30,6 +30,8 @@ const (
 	typeString
 	typeNumber
 	typeArray
+	// typeTime is a DateTime or DateTime64.
+	typeTime
 )
 
 // deps is what a value reads, as far as placing it is concerned.
@@ -74,7 +76,7 @@ func (s sqlRef) typed(t valueType) sqlRef {
 // text is the reference where only a String will do: a number is converted, and
 // anything else is read as it is.
 func (s sqlRef) text() string {
-	if s.typ == typeNumber {
+	if s.typ == typeNumber || s.typ == typeTime {
 		return "toString(" + s.sql + ")"
 	}
 	return s.sql

@@ -101,6 +101,9 @@ type FieldRegistry struct {
 	rowLevel bool
 	// normLogIndexHints allows norm_log index hints on scan filters (see normLogHint).
 	normLogIndexHints bool
+	// timezone is the viewer's zone, which calendar functions snap to (see
+	// displayZone). Empty is UTC.
+	timezone string
 	// rec records the references the registry hands out (see track).
 	rec *refRecorder
 }
@@ -149,6 +152,7 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 		rec:         r.rec,
 	}
 	c.normLogIndexHints = r.normLogIndexHints
+	c.timezone = r.timezone
 	for k, v := range r.groupKeys {
 		c.groupKeys[k] = v
 	}
@@ -298,6 +302,11 @@ func (r *FieldRegistry) isText(name string) bool {
 	return r.typeOf(name) == typeText
 }
 
+// zone is the zone calendar functions snap to when a call names none.
+func (r *FieldRegistry) zone() string {
+	return displayZone(r.timezone)
+}
+
 // setType records the SQL type a field's expression has, when it is known.
 func (r *FieldRegistry) setType(name string, t valueType) {
 	if entry, ok := r.fields[name]; ok && t != typeUnknown {
@@ -366,9 +375,11 @@ func (r *FieldRegistry) inline(name, expr string, producedBy int) {
 		prior = *e
 	}
 	r.RegisterInlineExpr(name, expr, producedBy)
-	if e := r.fields[name]; prior.readsKnown {
+	e := r.fields[name]
+	if prior.readsKnown {
 		e.reads, e.readsKnown, e.cols = prior.reads, true, prior.cols
 	}
+	e.typ = prior.typ
 }
 
 // RegisterInlineExpr registers a field whose value is always folded in at each

@@ -29,6 +29,24 @@ var bqlExpressionFunctionDocs = []FunctionDoc{
 	boolFn("isPrivateIP", "True when an address is in a private or non-routable range: RFC1918, loopback, link-local, CGNAT, and the IPv6 equivalents. A value that is not an address is not private.", "isPrivateIP(field)", `event_id=3 | isPrivateIP(dst_ip) = false`),
 	strFn("ipPrefix", "The enclosing network of an address as \"network/bits\", or empty when the value is not an address. Group by it to find which subnets are active, which a membership test cannot answer.", "ipPrefix(field, bits)", `event_id=3 | groupby(ipPrefix(src_ip, 24), function=count())`),
 	numFn("dateDiff", "Whole units between two times. Units follow ClickHouse: second, minute, hour, day, week, month, quarter, year. Either side may be a log field holding a time in any of the usual shapes.", `dateDiff("unit", start, end)`, `* | age := dateDiff("second", first_seen, last_seen)`),
+	{
+		Name:        "bin",
+		Operand:     true,
+		Category:    "Expressions",
+		Description: "The start of the time bucket a time falls in, for grouping by time without a chart. Days and weeks follow your time zone, as timechart() does; weeks start on Sunday. A log field holding a time is parsed.",
+		Syntax:      `bin(field, span, timezone="zone")`,
+		Parameters: []Param{
+			{Name: "field", Type: "time", Required: true, Description: "A time: timestamp, a time field or a computed time"},
+			{Name: "span", Type: "duration", Required: true, Description: "Bucket size, a whole number and s, m, h, d or w, such as 5m"},
+			{Name: "timezone", Type: "string", Required: false, Description: "IANA zone the buckets snap to, such as \"Europe/Berlin\". Default: your time zone, UTC for alerts"},
+		},
+		Examples: []string{
+			`* | groupBy([bin(timestamp, 5m), host])`,
+			`event_id=4625 | groupBy([bin(timestamp, 10m), src_ip]) | _count > 20`,
+		},
+	},
+	timeFn("hourOfDay", "The hour of the day a time falls in, 0 to 23.", `event_id=4624 | hourOfDay(timestamp) < 6`),
+	timeFn("dayOfWeek", "The day of the week a time falls on, 1 (Monday) to 7 (Sunday).", `event_id=4624 | dayOfWeek(timestamp) >= 6`),
 
 	boolFn("isEmpty", "True when a field is missing or empty. Missing fields read as empty text.", "isEmpty(field)", `* | known := if(isEmpty(user), "no", "yes")`),
 	boolFn("startsWith", "True when a value begins with the given text, case sensitive.", "startsWith(field, prefix)", `* | sys := if(startsWith(image, "C:\\Windows"), "system", "other")`),
@@ -62,6 +80,22 @@ func exprFn(name, returns, description, syntax, example string) FunctionDoc {
 		Syntax:      syntax,
 		Parameters:  []Param{{Name: "field", Type: returns, Required: true, Description: "See syntax"}},
 		Examples:    []string{example},
+	}
+}
+
+// timeFn documents a calendar function of one time with an optional zone.
+func timeFn(name, description, example string) FunctionDoc {
+	return FunctionDoc{
+		Name:        name,
+		Operand:     true,
+		Category:    "Expressions",
+		Description: description + " It follows your time zone unless timezone= names one; alerts use UTC.",
+		Syntax:      name + `(field, timezone="zone")`,
+		Parameters: []Param{
+			{Name: "field", Type: "time", Required: true, Description: "A time: timestamp, a time field or a computed time"},
+			{Name: "timezone", Type: "string", Required: false, Description: "IANA zone, such as \"America/New_York\""},
+		},
+		Examples: []string{example},
 	}
 }
 

@@ -4,19 +4,21 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // ExprKind discriminates the expression AST.
 type ExprKind int
 
 const (
-	ExprString  ExprKind = iota // quoted literal
-	ExprNumber                  // numeric literal, kept as text so it round-trips exactly
-	ExprField                   // bare identifier: a log field or a computed column
-	ExprCall                    // function call
-	ExprBinary                  // a <op> b
-	ExprUnary                   // <op> a
-	ExprBoolean                 // true / false
+	ExprString   ExprKind = iota // quoted literal
+	ExprNumber                   // numeric literal, kept as text so it round-trips exactly
+	ExprField                    // bare identifier: a log field or a computed column
+	ExprCall                     // function call
+	ExprBinary                   // a <op> b
+	ExprUnary                    // <op> a
+	ExprBoolean                  // true / false
+	ExprDuration                 // a whole number and a unit: 30s, 5m, 1h, 7d, 2w
 )
 
 // ExprNode is a scalar expression. It replaces the flat expression string the
@@ -212,6 +214,10 @@ func (p *exprParser) parsePrimary() (*ExprNode, error) {
 		switch {
 		case isNumericLiteral(tok.Value):
 			kind = ExprNumber
+		case isDurationLiteral(tok.Value):
+			kind = ExprDuration
+		case startsWithDigit(tok.Value) && unicode.IsLetter(rune(tok.Value[len(tok.Value)-1])):
+			return nil, newPosError(tok, "%q is not a valid number or duration: %s", tok.Value, durationHelp)
 		case startsWithDigit(tok.Value):
 			// A token that opens with a digit is a number or a mistake. Reading it
 			// as a field name compiled 1e6 to fields.`1e6`, NULL on every row.
@@ -360,7 +366,7 @@ func (e *ExprNode) String() string {
 	switch e.Kind {
 	case ExprString:
 		return `"` + e.Value + `"`
-	case ExprNumber, ExprField, ExprBoolean:
+	case ExprNumber, ExprField, ExprBoolean, ExprDuration:
 		return e.Value
 	case ExprUnary:
 		return e.Value + e.Arg.String()

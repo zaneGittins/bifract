@@ -55,10 +55,15 @@ Use these inside `:=`, `eval()`, filters and command arguments.
 | `ipPrefix(field, bits)` | The enclosing network as `network/bits`, empty for a non-address |
 | `cidr(field, range)` | True when the address is in the range |
 | `dateDiff(unit, start, end)` | Whole units between two times: `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`. Unparseable times give no result |
+| `bin(field, span)` | The start of the time bucket a time falls in, such as `bin(timestamp, 5m)`. See [bin()](time-functions.md#bin) |
+| `hourOfDay(field)`, `dayOfWeek(field)` | The hour, `0` to `23`, or the weekday, `1` (Monday) to `7` (Sunday), in your time zone |
+| `now()` | The current time |
 | `isEmpty(field)` | True when missing or empty |
 | `startsWith(field, prefix)`, `endsWith(field, suffix)` | True on a match, case-sensitive |
 | `contains(field, text)` | True on a match, case-insensitive |
 | `if(condition, then, else)` | `then` or `else`. For more outcomes use `case` |
+
+Times and durations have operators of their own, such as `timestamp - 1h` and `gap > 5m`: see [Times and durations](time-functions.md#times-and-durations).
 
 ```
 * | mb := round(bytes / 1048576, 2)

@@ -23,6 +23,10 @@ const (
 	// TypeNumberField is a field computed as a number: a TypeAny whose SQL is
 	// known to be numeric, so text positions convert it.
 	TypeNumberField
+	// TypeTime is a point in time: a DateTime or DateTime64.
+	TypeTime
+	// TypeDuration is a length of time, in SQL a number of seconds.
+	TypeDuration
 )
 
 // valueType is what the expression's SQL is known to be.
@@ -34,6 +38,11 @@ func (t ExprType) valueType() valueType {
 		return typeText
 	case TypeString:
 		return typeString
+	case TypeTime:
+		return typeTime
+	case TypeDuration:
+		// Stored, a duration is the number of seconds it holds.
+		return typeNumber
 	}
 	return typeUnknown
 }
@@ -49,6 +58,10 @@ func (t ExprType) String() string {
 		return "number"
 	case TypeBool:
 		return "boolean"
+	case TypeTime:
+		return "time"
+	case TypeDuration:
+		return "duration"
 	}
 	return "field"
 }
@@ -77,6 +90,18 @@ type exprFunc struct {
 	// MinArgs, when non-zero, overrides the required-argument count derived from
 	// Params. Used by variadic functions that need at least N.
 	MinArgs int
+	// Compile, when set, renders instead of Render, for a function whose SQL needs
+	// a literal argument as written or the query's options.
+	Compile func(c funcCall) (string, error)
+}
+
+// funcCall is a call with its arguments compiled: the SQL, its type and the node
+// each came from, nil for an omitted optional.
+type funcCall struct {
+	args  []string
+	types []ExprType
+	nodes []*ExprNode
+	ctx   exprCtx
 }
 
 var exprFuncs = map[string]*exprFunc{}
@@ -202,6 +227,7 @@ func str(name string) exprParam    { return exprParam{Name: name, Type: TypeStri
 func num(name string) exprParam    { return exprParam{Name: name, Type: TypeNumber} }
 func anyp(name string) exprParam   { return exprParam{Name: name, Type: TypeAny} }
 func optNum(name string) exprParam { return exprParam{Name: name, Type: TypeNumber, Optional: true} }
+func timep(name string) exprParam  { return exprParam{Name: name, Type: TypeTime} }
 
 func init() {
 	// String functions. `field` is the conventional first parameter name, matching
@@ -353,10 +379,10 @@ func init() {
 	// Time.
 	registerExprFunc(&exprFunc{
 		Name:    "datediff",
-		Params:  []exprParam{str("unit"), str("start"), str("end")},
+		Params:  []exprParam{str("unit"), timep("start"), timep("end")},
 		Returns: TypeNumber,
-		RenderTyped: func(a []string, t []ExprType) string {
-			return fmt.Sprintf("dateDiff(%s, %s, %s)", a[0], lenientDateTime(a[1], t[1] == TypeText), lenientDateTime(a[2], t[2] == TypeText))
+		Render: func(a []string) string {
+			return fmt.Sprintf("dateDiff(%s, %s, %s)", a[0], a[1], a[2])
 		},
 	})
 

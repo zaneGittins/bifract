@@ -714,10 +714,11 @@ func groupByKey(ctx *CommandContext, source *QueryStage, key Argument, computedF
 	if key.FieldName() == "" {
 		// An expression key is projected under a derived name and grouped by that
 		// alias, so the rest of the pipeline sees an ordinary column.
-		sql, err := ResolveArg(key, ctx.Registry)
+		ref, err := resolveArgRef(key, ctx.Registry)
 		if err != nil {
 			return fmt.Errorf("groupby(): %w", err)
 		}
+		sql := ref.sql
 		alias, err := ArgAlias(key)
 		if err != nil {
 			return fmt.Errorf("groupby(): %w", err)
@@ -728,6 +729,7 @@ func groupByKey(ctx *CommandContext, source *QueryStage, key Argument, computedF
 		source.Layer.UpsertSelect(SelectExpr{Expr: sql, Alias: alias})
 		ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
 		ctx.Registry.define(alias, alias, readsFrom)
+		ctx.Registry.setType(alias, ref.typ)
 		fieldRef, keyAlias = alias, alias
 	} else {
 		safe, err := sanitizeIdentifier(arg)

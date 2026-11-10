@@ -952,7 +952,7 @@ var bqlFunctionDocs = []FunctionDoc{
 	{
 		Name:        "now",
 		Category:    "Transformation",
-		Description: "Returns the current timestamp as a computed field",
+		Description: "Returns the current timestamp as a computed field. Inside an expression, now() is the current time, so now() - timestamp is how long ago an event happened.",
 		Syntax:      "| now(outputField)",
 		Parameters: []Param{
 			{Name: "outputField", Type: "string", Required: false, Description: "Output field name (default: _now)"},
@@ -960,6 +960,7 @@ var bqlFunctionDocs = []FunctionDoc{
 		Examples: []string{
 			"| now()",
 			"| now(snapshot_time)",
+			"| age := now() - timestamp",
 		},
 	},
 	{

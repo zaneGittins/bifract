@@ -161,6 +161,10 @@ func probeGrid() []string {
 		{"k := is_new | ", "model"},
 		{"eval(k = lower(is_new)) | ", "model"},
 		{"k := event_count * 2 | ", "model"},
+		{"k := bin(timestamp, 5m) | ", ""},
+		{"k := timestamp - 1h | ", ""},
+		{"k := now() - timestamp | ", ""},
+		{"k := hourOfDay(timestamp) | ", ""},
 	}
 	consumers := []string{
 		`k = "x"`, `k != "x"`, `k = *`, `k > 1`, `k =~ "x"`, `lower(k) = "x"`, `NOT k = "x" OR a = "1"`,
@@ -171,6 +175,8 @@ func probeGrid() []string {
 		"groupby(k) | head(3) | max(_count)", "groupby(k) | n := _count * 2 | max(n)",
 		"table(k)", "top(k)", "count(k)", `k2 := concat(k, "a") | table(k2)`, `strftime("%Y", field=k, as=y)`,
 		`chain(user) { k="x"; b="y" }`,
+		`x := dateDiff("second", k, timestamp) | table(x)`, `hourOfDay(k) < 6`, `(now() - k) < 1h`, `k > "2026-01-01"`,
+		`groupby(bin(k, 1h))`, `x := k + 1h | groupby(x)`, `groupby(user, function=max(k))`, `k > 5m`,
 	}
 	var out []string
 	for _, c := range contexts {

@@ -19,6 +19,9 @@ type SelectExpr struct {
 	// colsKnown is set once they are.
 	cols      []string
 	colsKnown bool
+	// carried marks a column held only for the formatter's computations, never
+	// shown in the result.
+	carried bool
 }
 
 // selectAs is the column computing expr under alias.
