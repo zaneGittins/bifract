@@ -851,11 +851,11 @@ const RecallPalette = {
 
     init() {
         const btn = document.getElementById('recallPaletteBtn');
-        if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); Palette.toggle({ scope: 'recall' }); });
+        if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); Palette.toggle({ tab: 'recall' }); });
 
         const onRecall = ctx => ctx.view === 'recall';
         Palette.register({
-            id: 'recall', group: 'Recall', order: 100, scope: 'recall',
+            id: 'recall', group: 'Recall', order: 100, tab: 'recall',
             when: onRecall,
             idle: () => Infinity,
             items: () => this.items(),

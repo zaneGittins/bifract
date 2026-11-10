@@ -33,6 +33,8 @@ const GoTo = {
         } else {
             App.showFractalView(r.tab, r.sub);
         }
+        // A page with an editor takes the cursor, so typing carries on there.
+        [...document.querySelectorAll('[data-page-focus]')].find(el => el.offsetParent)?.focus();
     },
 
     pages() {
@@ -77,7 +79,7 @@ const GoTo = {
     register() {
         const openAction = (label) => [{ label, run: r => this.open(r) }];
         Palette.register({
-            id: 'pages', group: 'Pages', order: 300, scope: 'goto', icon: Palette.ICONS.page,
+            id: 'pages', group: 'Pages', order: 300, tab: 'goto', icon: Palette.ICONS.page,
             // Every top-level page when idle, except on Query and Recall where the
             // page's own rows lead.
             idle: ctx => (ctx.workspace ? 0 : Infinity),
@@ -85,14 +87,14 @@ const GoTo = {
             actions: () => openAction('Open'),
         });
         Palette.register({
-            id: 'fractals', group: 'Fractals', order: 310, scope: 'goto', icon: Palette.ICONS.scope,
+            id: 'fractals', group: 'Fractals', order: 310, tab: 'goto', icon: Palette.ICONS.scope,
             idle: ctx => (ctx.workspace ? 0 : Palette.PER_GROUP),
             items: () => this.scopes(),
             actions: () => openAction('Switch'),
         });
         this.OBJECTS.forEach((source, i) => {
             Palette.register({
-                id: `obj:${source.tab}`, group: source.group, order: 320 + i, scope: 'goto', icon: Palette.ICONS.object,
+                id: `obj:${source.tab}`, group: source.group, order: 320 + i, tab: 'goto', icon: Palette.ICONS.object,
                 search: !!source.search,
                 when: ctx => ctx.hasScope && !(source.fractalOnly && ctx.isPrism),
                 // Objects only appear once there is something to search for.

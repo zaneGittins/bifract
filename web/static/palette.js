@@ -1,6 +1,7 @@
 // Command palette: the one Cmd/Ctrl+K surface on every page. Sources register
 // the rows they offer and the page in view decides which lead, so Query shows
-// its history first and still reaches every page, fractal and object.
+// its history first and still reaches every page, fractal and object. A row of
+// tabs narrows it to one kind of row, so each list is a click away.
 
 const Palette = {
     PER_GROUP: 6,
@@ -9,18 +10,22 @@ const Palette = {
     LIST_CACHE_MS: 60000,
     WORKSPACE: new Set(['search', 'recall']),
 
-    // A scope narrows the palette to one kind of row, entered by prefix or Tab.
-    SCOPES: {
-        queries: { label: 'Queries', prefix: '#' },
-        actions: { label: 'Actions', prefix: '>' },
-        ai: { label: 'Ask AI', prefix: '?' },
-        goto: { label: 'Go to' },
-        recall: { label: 'Recall' },
+    // Tabs after All, in order, shown when one of their sources is enabled. A
+    // prefix typed first opens the tab; count shows how many rows it holds.
+    TABS: {
+        recall: { label: 'Recall', placeholder: 'Search recalls...' },
+        saved: { label: 'Saved', prefix: '#', count: true, placeholder: 'Search saved queries...' },
+        recent: { label: 'Recent', count: true, placeholder: 'Search recent queries...' },
+        functions: { label: 'Functions', prefix: '/', count: true, placeholder: 'Search functions and operators...' },
+        goto: { label: 'Go to', placeholder: 'Search pages, fractals, objects...' },
+        actions: { label: 'Actions', prefix: '>', placeholder: 'Search actions...' },
+        ai: { label: 'Ask AI', prefix: '?', placeholder: 'Describe what you want to find...' },
     },
 
     _sources: [],
     _open: false,
-    _scope: null,
+    _tab: null,         // null is All
+    _counts: new Map(), // tab -> rows it holds for the current text
     _results: [],
     _active: 0,
     _moved: false,      // the user picked a row, so late results must not move it
@@ -28,7 +33,6 @@ const Palette = {
     _data: new Map(),   // source id -> { token, q, items, pending, at }
     _seq: 0,
     _panel: null,       // { onSubmit } while a form replaces the preview
-    _browse: null,      // { tabs: [{ id, label }], tab } while browsing one source per tab
 
     register(source) {
         this._sources.push(source);
@@ -61,6 +65,8 @@ const Palette = {
             }
         });
         list.addEventListener('click', (e) => {
+            const see = e.target.closest('[data-tab]');
+            if (see) return this.setTab(see.dataset.tab);
             const row = e.target.closest('[data-index]');
             if (!row) return;
             const r = this._results[Number(row.dataset.index)];
@@ -70,9 +76,8 @@ const Palette = {
         });
         document.getElementById('paletteTabs').addEventListener('click', (e) => {
             const tab = e.target.closest('[data-tab]');
-            if (tab) this._switchTab(tab.dataset.tab);
+            if (tab) this.setTab(tab.dataset.tab || null);
         });
-        document.getElementById('paletteScope').addEventListener('click', () => this.setScope(null));
         document.getElementById('palettePreview').addEventListener('click', (e) => this._onPreviewClick(e));
         document.getElementById('palettePreview').addEventListener('keydown', (e) => this._onPanelKey(e));
 
@@ -112,15 +117,13 @@ const Palette = {
         return [...document.querySelectorAll('.modal, .modal-overlay')].some(m => getComputedStyle(m).display !== 'none');
     },
 
-    // opts.scope narrows to one scope, opts.text pre-fills the input, and
-    // opts.browse ({ tabs: [{ id, label }] }) shows one source per tab in full rows.
+    // opts.tab opens on one tab instead of All; opts.text pre-fills the input.
     open(opts = {}) {
         if (this._open || this._modalOpen()) return;
         this._open = true;
         this._returnFocus = document.activeElement;
         this._panel = null;
-        this._scope = opts.scope || null;
-        this._browse = opts.browse ? { tabs: opts.browse.tabs, tab: opts.browse.tabs[0].id } : null;
+        this._tab = opts.tab || null;
         this._active = 0;
         this._moved = false;
         this._results = [];
@@ -155,11 +158,9 @@ const Palette = {
 
     get isOpen() { return this._open; },
 
-    setScope(scope, text) {
-        this._scope = scope;
+    setTab(tab, text) {
+        this._tab = tab;
         this._panel = null;
-        // Browsing belongs to the scope it opened on.
-        this._browse = null;
         const input = document.getElementById('paletteInput');
         if (text !== undefined) input.value = text;
         input.focus();
@@ -168,16 +169,22 @@ const Palette = {
         this._update();
     },
 
-    // step moves to the next (1) or previous (-1) tab; a string picks a tab.
-    _switchTab(target) {
-        const b = this._browse;
-        if (!b) return;
-        const i = b.tabs.findIndex(t => t.id === b.tab);
-        b.tab = typeof target === 'string' ? target : b.tabs[(i + target + b.tabs.length) % b.tabs.length].id;
-        this._panel = null;
-        this._active = 0;
-        this._moved = false;
-        this._update();
+    // The tabs this page offers, All (null) first.
+    _tabs(ctx) {
+        return [null, ...Object.keys(this.TABS).filter(t => this._sources.some(s => s.tab === t && this._enabled(s, ctx)))];
+    },
+
+    _stepTab(step) {
+        const tabs = this._tabs(this.context());
+        const i = Math.max(0, tabs.indexOf(this._tab));
+        this.setTab(tabs[(i + step + tabs.length) % tabs.length]);
+    },
+
+    // A tab whose every source draws full rows (saved, recent) has no preview.
+    _rich() {
+        const ctx = this.context();
+        const own = this._sources.filter(s => this._tab && s.tab === this._tab && this._enabled(s, ctx));
+        return own.length > 0 && own.every(s => s.row);
     },
 
     // Re-render after a source's data changed underneath an open palette.
@@ -201,7 +208,7 @@ const Palette = {
             level: app.currentViewLevel,
             hasScope: !!(fc && fc.hasScope()),
             isPrism: !!(fc && fc.isPrism && fc.isPrism()),
-            scope: this._scope,
+            tab: this._tab,
             workspace: app.currentViewLevel === 'fractal' && this.WORKSPACE.has(app.currentView),
         };
     },
@@ -214,11 +221,11 @@ const Palette = {
 
     _onInput() {
         const input = document.getElementById('paletteInput');
-        if (!this._scope) {
-            const scope = Object.keys(this.SCOPES).find(k => this.SCOPES[k].prefix && input.value.startsWith(this.SCOPES[k].prefix));
-            if (scope && this._sources.some(s => s.scope === scope && this._enabled(s, this.context()))) {
-                this._scope = scope;
-                input.value = input.value.slice(this.SCOPES[scope].prefix.length).replace(/^\s+/, '');
+        if (!this._tab) {
+            const tab = this._tabs(this.context()).find(t => t && this.TABS[t].prefix && input.value.startsWith(this.TABS[t].prefix));
+            if (tab) {
+                this._tab = tab;
+                input.value = input.value.slice(this.TABS[tab].prefix.length).replace(/^\s+/, '');
             }
         }
         this._panel = null;
@@ -240,20 +247,12 @@ const Palette = {
             e.preventDefault();
             if (takeover) takeover.enter(this.query(), { secondary: mod, force: e.shiftKey });
             else this.run(this._active, mod ? 1 : 0);
-        } else if (e.key === 'Tab' && this._browse) {
+        } else if (e.key === 'Tab') {
             e.preventDefault();
-            this._switchTab(e.shiftKey ? -1 : 1);
-        } else if (e.key === 'Tab' && !e.shiftKey) {
-            // Tab narrows to the row's section; otherwise it moves focus on to the
-            // preview's buttons as usual.
-            const r = this._results[this._active];
-            if (!this._scope && r && r.source.scope) {
-                e.preventDefault();
-                this.setScope(r.source.scope);
-            }
-        } else if (e.key === 'Backspace' && this._scope && !e.target.value) {
+            this._stepTab(e.shiftKey ? -1 : 1);
+        } else if (e.key === 'Backspace' && this._tab && !e.target.value) {
             e.preventDefault();
-            this.setScope(null);
+            this.setTab(null);
         } else if (mod && !e.shiftKey && !e.altKey && e.key.length === 1 && !takeover) {
             const hit = this._shortcut(e.key.toLowerCase());
             if (hit) {
@@ -274,10 +273,10 @@ const Palette = {
         return null;
     },
 
-    // A scope whose source draws the whole body itself (Ask AI).
+    // A tab whose source draws the whole body itself (Ask AI).
     _takeover() {
-        if (!this._scope) return null;
-        return this._sources.find(s => s.scope === this._scope && s.takeover) || null;
+        if (!this._tab) return null;
+        return this._sources.find(s => s.tab === this._tab && s.takeover) || null;
     },
 
     _enabled(s, ctx) {
@@ -326,6 +325,20 @@ const Palette = {
         return this._data.get(source.id)?.items || [];
     },
 
+    // A source's rows for q, best first.
+    _rows(source, q, ctx) {
+        const items = this._items(source, q, ctx);
+        const ql = q.toLowerCase();
+        let rows = items.map(item => ({ source, item, score: 0 }));
+        if (ql && !source.unscored) {
+            rows = rows
+                .map(r => ({ ...r, score: this._scoreItem(r.item, ql) }))
+                .filter(r => r.score)
+                .sort((a, b) => b.score - a.score);
+        }
+        return rows;
+    },
+
     _pending() {
         for (const d of this._data.values()) if (d.pending) return true;
         return false;
@@ -341,6 +354,13 @@ const Palette = {
         let j = 0;
         for (let k = 0; k < l.length && j < q.length; k++) if (l[k] === q[j]) j++;
         return j === q.length ? 1 : 0;
+    },
+
+    // The label matches loosely; the longer search text (descriptions, query
+    // text) only as written, since scattered letters match almost any paragraph.
+    _scoreItem(item, q) {
+        const label = this._score(item.label, q);
+        return label > 1 ? label : Math.max(label, item.search && item.search.toLowerCase().includes(q) ? 1.5 : 0);
     },
 
     // Sections keep their order, so the first row is not always the best match:
@@ -359,10 +379,29 @@ const Palette = {
     _update() {
         const ctx = this.context();
         const q = this.query();
-        const ql = q.toLowerCase();
+        const takeover = this._takeover();
+
+        const keep = this._moved ? this._key(this._results[this._active]) : null;
+        this._results = [];
+        this._counts = new Map();
+        for (const source of this._sources) {
+            if (!this._enabled(source, ctx)) continue;
+            const shown = !takeover && (!this._tab || source.tab === this._tab);
+            const limit = !shown ? 0
+                : this._tab ? this.SCOPED_LIMIT
+                    : q ? (!source.inAll || source.inAll(ctx) ? this.PER_GROUP : 0)
+                        : (source.idle ? source.idle(ctx) : 0);
+            // Counted tabs load even when hidden, so every tab says what it holds.
+            const counted = source.tab && this.TABS[source.tab].count;
+            if (!limit && !counted) continue;
+            const rows = this._rows(source, q, ctx);
+            // A first load has no rows yet, which is not the same as none.
+            const loading = !rows.length && this._data.get(source.id)?.pending;
+            if (counted && !loading) this._counts.set(source.tab, (this._counts.get(source.tab) || 0) + rows.length);
+            this._results.push(...rows.slice(0, limit));
+        }
         this._renderChrome(ctx);
 
-        const takeover = this._takeover();
         if (takeover) {
             this._results = [];
             const view = takeover.render(q, ctx);
@@ -376,28 +415,6 @@ const Palette = {
             return;
         }
 
-        const keep = this._moved ? this._key(this._results[this._active]) : null;
-        this._results = [];
-        const tabs = this._browse ? this._browse.tabs.map(t => t.id) : null;
-        for (const source of this._sources) {
-            if (!this._enabled(source, ctx)) continue;
-            if (this._scope && source.scope !== this._scope) continue;
-            if (tabs && source.id !== this._browse.tab) {
-                // Other tabs load too, so their counts are right before a switch.
-                if (tabs.includes(source.id)) this._items(source, q, ctx);
-                continue;
-            }
-            const limit = this._scope ? this.SCOPED_LIMIT : (ql ? this.PER_GROUP : (source.idle ? source.idle(ctx) : 0));
-            if (!limit) continue;
-            let rows = this._items(source, q, ctx).map(item => ({ source, item, score: 0 }));
-            if (ql && !source.unscored) {
-                rows = rows
-                    .map(r => ({ ...r, score: this._score(`${r.item.label} ${r.item.search || ''}`, ql) }))
-                    .filter(r => r.score)
-                    .sort((a, b) => b.score - a.score);
-            }
-            this._results.push(...rows.slice(0, limit));
-        }
         const kept = this._results.findIndex(r => this._key(r) === keep);
         this._renderList(q, kept >= 0 ? kept : this._best());
     },
@@ -405,35 +422,26 @@ const Palette = {
     // ---- Rendering ----
 
     _renderChrome(ctx) {
-        const chip = document.getElementById('paletteScope');
-        const scope = this._scope && this.SCOPES[this._scope];
-        chip.hidden = !scope;
-        chip.classList.toggle('ai', this._scope === 'ai');
-        if (scope) chip.innerHTML = `${this._scope === 'ai' ? this.ICONS.spark : ''}${Utils.escapeHtml(scope.label)}<span aria-hidden="true">&times;</span>`;
+        const tabs = this._tabs(ctx);
         const input = document.getElementById('paletteInput');
-        input.placeholder = this._scope === 'ai'
-            ? 'Describe what you want to find...'
-            : scope ? `Search ${scope.label.toLowerCase()}...`
-                : `Search ${ctx.view === 'search' ? 'queries, ' : ''}pages, fractals, objects${this._sources.some(s => s.scope === 'ai' && this._enabled(s, ctx)) ? ', or ask AI' : ''}...`;
-        document.querySelector('#palette .pal-dialog').classList.toggle('browse', !!this._browse);
+        input.placeholder = this._tab ? this.TABS[this._tab].placeholder
+            : `Search ${ctx.view === 'search' ? 'queries, ' : ''}pages, fractals, objects${tabs.includes('ai') ? ', or ask AI' : ''}...`;
+        document.querySelector('#palette .pal-dialog').classList.toggle('rich', this._rich());
         document.getElementById('palettePreview').classList.toggle('has-panel', !!this._panel);
-        this._renderTabs();
+        this._renderTabs(tabs);
         const ctxLabel = document.getElementById('paletteContext');
         const active = document.querySelector('#sidebar a[data-nav][aria-current="page"]');
         ctxLabel.textContent = active ? active.dataset.tip : '';
-        ctxLabel.hidden = !active || !!scope;
+        ctxLabel.hidden = !active;
     },
 
-    _renderTabs() {
-        const bar = document.getElementById('paletteTabs');
-        bar.hidden = !this._browse;
-        if (!this._browse) return;
-        bar.innerHTML = this._browse.tabs.map(t => {
-            const source = this._sources.find(s => s.id === t.id);
-            const n = source && source.items ? source.items(this.context(), '').length : this._data.get(t.id)?.items.length;
-            const on = t.id === this._browse.tab;
-            return `<button type="button" role="tab" class="pal-tab" data-tab="${Utils.escapeHtml(t.id)}" aria-selected="${on}" tabindex="-1">` +
-                `${Utils.escapeHtml(t.label)}${n !== undefined ? `<span>${n}</span>` : ''}</button>`;
+    _renderTabs(tabs) {
+        document.getElementById('paletteTabs').innerHTML = tabs.map(t => {
+            const tab = t ? this.TABS[t] : { label: 'All' };
+            const n = this._counts.get(t);
+            const tip = tab.prefix ? ` title="Type ${Utils.escapeHtml(tab.prefix)} to open"` : '';
+            return `<button type="button" role="tab" class="pal-tab${t === 'ai' ? ' ai' : ''}" data-tab="${t || ''}" aria-selected="${t === this._tab}" tabindex="-1"${tip}>` +
+                `${t === 'ai' ? this.ICONS.spark : ''}${Utils.escapeHtml(tab.label)}${n !== undefined ? `<span>${n}</span>` : ''}</button>`;
         }).join('');
     },
 
@@ -444,7 +452,7 @@ const Palette = {
         input.setAttribute('aria-expanded', String(this._results.length > 0));
         if (!this._results.length) {
             list.innerHTML = '';
-            status.textContent = this._pending() ? 'Searching...' : 'No matches';
+            status.textContent = this._pending() ? 'Searching...' : q ? 'No matches' : 'Nothing here yet';
             status.classList.add('visible');
             input.removeAttribute('aria-activedescendant');
             if (!this._panel) {
@@ -457,11 +465,13 @@ const Palette = {
         status.classList.remove('visible');
 
         const ql = q.toLowerCase();
+        const rich = this._rich();
+        const linked = new Set();
         let html = '';
         let group = null;
         let gi = 0;
         this._results.forEach((r, i) => {
-            if (this._browse) {
+            if (rich) {
                 html += this._richRow(r, i, ql);
                 return;
             }
@@ -470,18 +480,27 @@ const Palette = {
                 group = r.source;
                 gi++;
                 const hint = typeof r.source.hint === 'function' ? r.source.hint() : r.source.hint;
+                // In All, the first section of each tab links to that tab.
+                const t = r.source.tab;
+                let see = '';
+                if (!this._tab && t && !r.source.takeover && !linked.has(t)) {
+                    linked.add(t);
+                    const n = this._counts.get(t);
+                    see = `<button type="button" class="pal-see" data-tab="${t}" tabindex="-1">See all${n !== undefined ? ` ${n}` : ''}</button>`;
+                }
                 html += `<div role="group" aria-labelledby="palGroup${gi}">` +
-                    `<div class="pal-group" id="palGroup${gi}">${Utils.escapeHtml(r.source.group)}${hint ? `<em>${Utils.escapeHtml(hint)}</em>` : ''}</div>`;
+                    `<div class="pal-group"><span id="palGroup${gi}">${Utils.escapeHtml(r.source.group)}</span>` +
+                    `<span class="pal-group-end">${hint ? `<em>${Utils.escapeHtml(hint)}</em>` : ''}${see}</span></div>`;
             }
             const it = r.item;
             const label = it.labelHtml !== undefined ? it.labelHtml : this._highlight(it.label, ql);
-            html += `<div class="pal-item${r.source.scope === 'ai' ? ' ai' : ''}" id="palOpt${i}" role="option" data-index="${i}" aria-selected="false">
+            html += `<div class="pal-item${r.source.tab === 'ai' ? ' ai' : ''}" id="palOpt${i}" role="option" data-index="${i}" aria-selected="false">
                 <span class="pal-ic" aria-hidden="true">${it.icon || r.source.icon || ''}</span>
                 <span class="pal-label${it.mono ? ' mono pal-hl' : ''}">${label}</span>
                 ${it.hintHtml ? `<span class="pal-hint">${it.hintHtml}</span>` : it.hint ? `<span class="pal-hint">${Utils.escapeHtml(it.hint)}</span>` : ''}
             </div>`;
         });
-        list.innerHTML = this._browse ? html : html + '</div>';
+        list.innerHTML = rich ? html : html + '</div>';
         this._setActive(Math.min(active, this._results.length - 1), true);
     },
 
@@ -522,7 +541,7 @@ const Palette = {
             if (scroll) row.scrollIntoView({ block: 'nearest' });
         }
         if (!this._panel) {
-            if (!this._browse) this._renderPreview();
+            if (!this._rich()) this._renderPreview();
             this._renderFoot();
         }
     },
@@ -567,16 +586,9 @@ const Palette = {
             parts = ['<kbd>↑</kbd><kbd>↓</kbd> navigate'];
             if (acts[0]) parts.push(`<kbd>↵</kbd> ${Utils.escapeHtml(acts[0].label.toLowerCase())}`);
             if (acts[1]) parts.push(`<kbd>${mod}</kbd><kbd>↵</kbd> ${Utils.escapeHtml(acts[1].label.toLowerCase())}`);
-            if (this._browse) parts.push('<kbd>Tab</kbd> next list');
-            if (this._scope) parts.push('<kbd>⌫</kbd> all results');
-            else if (this._results[this._active]?.source.scope) parts.push('<kbd>Tab</kbd> only this section');
-            const ctx = this.context();
-            const prefixes = Object.keys(this.SCOPES)
-                .filter(k => this.SCOPES[k].prefix && this._sources.some(s => s.scope === k && this._enabled(s, ctx)))
-                .map(k => `<kbd>${this.SCOPES[k].prefix}</kbd> ${this.SCOPES[k].label.toLowerCase()}`);
-            parts.push('|');
-            if (!this._scope && prefixes.length) parts.push(prefixes.join(' '));
-            else parts.push('<kbd>esc</kbd> close');
+            parts.push('<kbd>Tab</kbd> next tab');
+            if (this._tab) parts.push('<kbd>⌫</kbd> all');
+            parts.push('|', '<kbd>esc</kbd> close');
         }
         foot.innerHTML = parts.map(p => (p === '|' ? '<span class="pal-sp"></span>' : `<span>${p}</span>`)).join('');
     },

@@ -53,7 +53,7 @@ function tags(html) {
 function fire(handler) {
   const calls = [];
   const recorder = name => new Proxy({}, { get: (_, k) => (...args) => { calls.push([`${name}.${String(k)}`, ...args]); } });
-  const names = ['AlertFeeds', 'AlertList', 'AlertTests', 'Alerts', 'Notebooks', 'Normalizers', 'CommentedLogs', 'InstructionLibraries', 'QueryReference', 'App'];
+  const names = ['AlertFeeds', 'AlertList', 'AlertTests', 'Alerts', 'Notebooks', 'Normalizers', 'CommentedLogs', 'InstructionLibraries', 'App'];
   const event = { stopPropagation() {}, preventDefault() {} };
   const alert = (...args) => calls.push(['alert', ...args]);
   try {
@@ -222,7 +222,7 @@ test.describe('Attack chain links', () => {
   });
 });
 
-test.describe('Format panel and query reference', () => {
+test.describe('Format panel', () => {
   test('a series colour override is only used when it is #rrggbb', () => {
     const BifractCharts = { SERIES_COLORS: ['#111111'], PIE_COLORS: ['#222222'], PALETTES: {} };
     const w = load(['utils.js', 'format-panel.js'], { BifractCharts });
@@ -232,17 +232,6 @@ test.describe('Format panel and query reference', () => {
     expect(tags(html).map(t => t.name)).not.toContain('img');
     const inputs = tags(html).filter(t => t.attrs.class === 'rule-color-custom').map(t => t.attrs.value);
     expect(inputs).toEqual(['#111111', '#abcdef']);
-  });
-
-  test('a reference example with double quotes copies intact', () => {
-    const w = load(['utils.js', 'queryReference.js']);
-    w.QueryReference.expandedCards = new Set();
-    const ex = 'action="denied" | join(src_ip) { action="login" }';
-    const html = w.QueryReference.renderCompactFunction({
-      name: 'join', category: 'x', description: 'd', syntax: 's', parameters: [], examples: [ex],
-    });
-    const copy = tags(html).find(t => t.attrs.class === 'ref-copy-btn');
-    expect(fire(copy.attrs.onclick)).toEqual([['QueryReference.copyToQuery', ex]]);
   });
 });
 

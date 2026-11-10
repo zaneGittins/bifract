@@ -17,7 +17,7 @@ const QueryAssist = {
         // An answer written for one fractal must not be loaded into another.
         if (window.FractalContext) FractalContext.subscribe('QueryAssist', () => this.reset());
         Palette.register({
-            id: 'ai', group: 'Ask AI', order: 1000, scope: 'ai', takeover: true, unscored: true,
+            id: 'ai', group: 'Ask AI', order: 1000, tab: 'ai', takeover: true, unscored: true,
             icon: Palette.ICONS.spark,
             when: ctx => ctx.hasScope && this.enabled(),
             idle: ctx => (ctx.view === 'search' ? 1 : 0),
@@ -64,7 +64,7 @@ const QueryAssist = {
     },
 
     start(text) {
-        Palette.setScope('ai', text);
+        Palette.setTab('ai', text);
         if (text) this.generate(text);
     },
 

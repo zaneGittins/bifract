@@ -43,6 +43,7 @@ const App = {
             Palette.init();
             GoTo.register();
             QueryAssist.init();
+            QueryReference.init();
         }
 
         // Initialize all modules

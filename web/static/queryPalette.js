@@ -1,6 +1,6 @@
 // Query rows for the command palette: Recent (history), Saved queries, and the
 // Query page's actions. Cmd/Ctrl+K searches them alongside everything else; the
-// Queries button opens them to browse, one list per tab in full rows.
+// Queries button opens the Saved tab, where rows show each query in full.
 //
 // History is sourced from the backend (/api/v1/query-history) so it follows the
 // user across devices, with a localStorage cache for instant render. Saved
@@ -12,12 +12,11 @@ const QueryPalette = {
     // and Ask AI stay in view.
     IDLE_RECENT: 4,
     IDLE_SAVED: 3,
-    // Saved leads: the button is for the queries kept on purpose.
-    BROWSE_TABS: [{ id: 'saved', label: 'Saved' }, { id: 'recent', label: 'Recent' }],
 
     init() {
         const btn = document.getElementById('queriesMenuBtn');
-        if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); Palette.toggle({ scope: 'queries', browse: { tabs: this.BROWSE_TABS } }); });
+        // Saved leads: the button is for the queries kept on purpose.
+        if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); Palette.toggle({ tab: 'saved' }); });
         this.register();
         this.migrateLegacyRecent();
     },
@@ -31,7 +30,7 @@ const QueryPalette = {
         ];
 
         Palette.register({
-            id: 'recent', group: 'Recent queries', hint: 'this fractal', order: 100, scope: 'queries',
+            id: 'recent', group: 'Recent queries', hint: 'this fractal', order: 100, tab: 'recent',
             icon: Palette.ICONS.clock, fresh: true, search: true,
             when: ctx => ctx.hasScope,
             idle: ctx => (onQuery(ctx) ? this.IDLE_RECENT : 0),
@@ -47,7 +46,7 @@ const QueryPalette = {
         });
 
         Palette.register({
-            id: 'saved', group: 'Saved', order: 110, scope: 'queries', fresh: true, search: true,
+            id: 'saved', group: 'Saved', order: 110, tab: 'saved', fresh: true, search: true,
             when: ctx => ctx.hasScope,
             idle: ctx => (onQuery(ctx) ? this.IDLE_SAVED : 0),
             fetch: q => this.loadSaved(q).then(rows => rows.map(r => ({
@@ -76,7 +75,7 @@ const QueryPalette = {
             { key: 'clear', label: 'Clear query history', keepOpen: true, run: () => this.clearHistory() },
         ];
         Palette.register({
-            id: 'query-actions', group: 'Actions', order: 120, scope: 'actions', icon: Palette.ICONS.bolt,
+            id: 'query-actions', group: 'Actions', order: 120, tab: 'actions', icon: Palette.ICONS.bolt,
             when: onQuery,
             idle: () => 2,
             items: () => actions.map(a => ({ key: a.key, label: a.label, hintHtml: a.hintHtml, shortcut: a.shortcut, kind: 'Action', act: a })),

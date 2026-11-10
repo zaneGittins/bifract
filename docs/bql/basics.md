@@ -11,7 +11,7 @@ BQL is Bifract's query language for searching and analyzing logs. A query is a f
 3. Type a query in the query bar, for example `event_id=4625 | groupBy(src_ip)`.
 4. Press **Enter** or click **Run**. **Shift+Enter** adds a new line.
 
-While typing, type `?` inside a function's parentheses to see its signature, then click **Browse all** for the full reference. **Ctrl+/** comments out the current line.
+While typing, type `?` inside a function's parentheses to see its signature, then click **Browse all** for the full reference. The **Functions** button opens the same reference, where Enter inserts a function at the cursor. **Ctrl+/** comments out the current line.
 
 ## Query structure
 
