@@ -635,13 +635,6 @@ func main() {
 	stateMaintainer.Start(models.StateMaintInterval())
 	defer stateMaintainer.Stop()
 
-	// Ancestry is built in the background from lineage up to the ingest watermark. Readers fall
-	// back to lineage for whatever it has not reached, so its lag never changes a result.
-	ancestryBuilder := storage.NewProcAncestryBuilder(pg, db, ingestWatermark)
-	ancestryBuilder.SetIngestPressureFunc(backlogged)
-	ancestryBuilder.Start(time.Duration(max(1, getEnvInt("BIFRACT_PROC_ANCESTRY_INTERVAL", 10))) * time.Second)
-	defer ancestryBuilder.Stop()
-
 	// Distribution queue monitor (cluster mode only) — polls system.distribution_queue
 	// every 60s and writes ch.distribution.* events to the system fractal on health changes.
 	distMonitor := storage.NewDistributionMonitor(dbIngest, pg, func(event string, fields map[string]string) {
@@ -1385,7 +1378,7 @@ func convertAndBackfill(db *storage.ClickHouseClient, pg *storage.PostgresClient
 	}
 	// Lineage reaches back to process creations logged before Collect baselines was on.
 	if v, _ := pg.GetSetting(ctx, storage.AdvancedEndpointAnalysisSetting); v == "true" {
-		if err := db.BackfillLineage(ctx, pg); err != nil {
+		if err := db.BackfillLineage(ctx); err != nil {
 			log.Printf("Warning: lineage backfill incomplete, will resume: %v", err)
 			return false
 		}

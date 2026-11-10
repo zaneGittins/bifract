@@ -241,24 +241,11 @@ func (c *ClickHouseClient) ReconcileProcLineageTTL(ctx context.Context, days int
 		"ALTER TABLE proc_lineage%s MODIFY TTL toDateTime(ingest_timestamp) + INTERVAL %d DAY SETTINGS materialize_ttl_after_modify = 0",
 		c.OnClusterSQL(), days,
 	)
-	if err := c.conn.Exec(ctx, stmt); err != nil {
-		return err
-	}
-	// Ancestry expires with its process's lineage.
-	return c.conn.Exec(ctx, fmt.Sprintf(
-		"ALTER TABLE %s%s MODIFY TTL toDateTime(ingest_timestamp) + INTERVAL %d DAY SETTINGS materialize_ttl_after_modify = 0",
-		procAncestryTable, c.OnClusterSQL(), days))
+	return c.conn.Exec(ctx, stmt)
 }
 
 // provenanceSummaryTable holds the fleet-wide facts pgr reads per call (see migration 019).
 const provenanceSummaryTable = "provenance_summary"
-
-// procAncestryTable holds each process's ancestors, and procAncestryWatermarkTable how far
-// the builder has reflected proc_lineage into it (see migration 024).
-const (
-	procAncestryTable          = "proc_ancestry"
-	procAncestryWatermarkTable = "proc_ancestry_watermark"
-)
 
 // provenanceMarksTable records when each provenance rollup began (see migration 025).
 const provenanceMarksTable = "provenance_marks"
@@ -1666,7 +1653,7 @@ func (c *ClickHouseClient) Exec(ctx context.Context, query string) error {
 
 // fractalPartitionedTables are partitioned with fractal_id first, so a fractal's rows leave
 // with its partitions.
-var fractalPartitionedTables = []string{"logs", "logs_raw", "logs_field_paths", procAncestryTable}
+var fractalPartitionedTables = []string{"logs", "logs_raw", "logs_field_paths"}
 
 // logsRollupTables are fed from logs by a materialized view and partitioned like it,
 // so dropping a logs partition drops the same partition here.

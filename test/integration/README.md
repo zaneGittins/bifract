@@ -38,8 +38,6 @@ Mint a key under **Settings > API Keys > New key**, with **Tenant admin** ticked
 | `TestOperations` | Topology, ingest pressure, fractal statistics, retention |
 | `TestContractErrors` | The failure envelope: status and machine-readable code |
 | `TestContractPagination` | The page envelope, and that limit and offset move the window |
-| `TestPgrFilters` | `pgrHasAncestor()`, `pgrHasDescendant()` and `pgrHasNetwork()` keep exactly the events of the processes they describe |
-| `TestPgrContext` | `pgrContext()` adds each process's facts by Sysmon-shaped GUIDs, and its columns filter and group |
 | `TestPatternLookup` | A Patterns lookup matches the same with and without its Hyperscan screen |
 
 ## Notes

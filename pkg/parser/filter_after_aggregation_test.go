@@ -131,7 +131,7 @@ func TestDroppedFieldErrorListsOnlyVisibleOutputs(t *testing.T) {
 	}
 }
 
-// tlsh() and the pgrHas filters read log rows, so they keep their own rejection.
+// tlsh() reads log rows, so it keeps its own rejection.
 func TestRowOnlyFiltersStayRejectedAfterAggregation(t *testing.T) {
 	const tlshAfter = "tlsh() must come before groupby/stats"
 	cases := []struct{ query, want string }{
@@ -140,8 +140,6 @@ func TestRowOnlyFiltersStayRejectedAfterAggregation(t *testing.T) {
 		{`* | groupby(user) | tlsh(hash="T1A", field=sha)`, tlshAfter},
 		{`* | chain(sha) { a=1; b=2 } | tlsh(field=sha, hash="T1A")`, tlshAfter},
 		{`* | timechart(span=1h) | tlsh(field=sha, hash="T1A")`, tlshAfter},
-		{`* | groupby(user) | pgrHasNetwork()`, "put them before groupby()"},
-		{`* | chain(user) { a=1; b=2 } | !pgrHasAncestor("cmd.exe")`, "put them before chain()"},
 	}
 	for _, tc := range cases {
 		pl, err := ParseQuery(tc.query)
@@ -149,10 +147,7 @@ func TestRowOnlyFiltersStayRejectedAfterAggregation(t *testing.T) {
 			t.Fatalf("parse %s: %v", tc.query, err)
 		}
 		opts := QueryOptions{MaxRows: 100, FractalID: "f1", HasTLSHFilter: true, TLSHMatches: []TLSHMatch{{Digest: "d", Distance: 1, Needle: "n"}}}
-		err = ValidatePgrFilters(pl)
-		if err == nil {
-			_, err = TranslateToSQLWithOrder(pl, opts)
-		}
+		_, err = TranslateToSQLWithOrder(pl, opts)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: got %v, want %q", tc.query, err, tc.want)
 		}

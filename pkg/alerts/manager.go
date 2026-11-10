@@ -515,9 +515,6 @@ func validateRunsInEngine(pipeline *parser.PipelineNode) error {
 	if cmd, found := parser.FirstSourceCommand(pipeline); found {
 		return fmt.Errorf("%w: alerts cannot use %s(); it only works in a search", ErrInvalidAlert, cmd.Name)
 	}
-	if err := parser.ValidatePgrFilters(pipeline); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidAlert, err)
-	}
 	return nil
 }
 

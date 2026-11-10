@@ -468,7 +468,6 @@ func TestReconcileTTLsAreMetadataOnly(t *testing.T) {
 	c.ReconcileProcFreqTTL(context.Background(), 30)
 	want := []string{
 		"ALTER TABLE proc_lineage MODIFY TTL toDateTime(ingest_timestamp) + INTERVAL 400 DAY SETTINGS materialize_ttl_after_modify = 0",
-		"ALTER TABLE proc_ancestry MODIFY TTL toDateTime(ingest_timestamp) + INTERVAL 400 DAY SETTINGS materialize_ttl_after_modify = 0",
 		"ALTER TABLE proc_freq MODIFY TTL day + INTERVAL 30 DAY SETTINGS materialize_ttl_after_modify = 0",
 	}
 	if got := f.Executed(); !reflect.DeepEqual(got, want) {

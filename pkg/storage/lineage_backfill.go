@@ -24,24 +24,19 @@ const lineageBackfillSettings = " SETTINGS max_threads = 2, max_insert_threads =
 // from its own logs, with the lineage view's own SELECT. A process the view already wrote is the
 // same row, which ReplacingMergeTree keeps once. Callers run it at startup while Collect
 // baselines is on.
-func (c *ClickHouseClient) BackfillLineage(ctx context.Context, pg *PostgresClient) error {
+func (c *ClickHouseClient) BackfillLineage(ctx context.Context) error {
 	sel, err := initViewSelect("proc_lineage_mv")
 	if err != nil {
 		return err
 	}
-	// Under the builder's lock, so a cycle in progress cannot write its watermark over this one.
-	rewind := func(at time.Time) error {
-		return pg.WithAdvisoryLock(ctx, LockProcAncestry, func() error { return c.rewindProcAncestry(ctx, at) })
-	}
 	return c.onEveryShardPinned(ctx, "backfill lineage", func(conn driver.Conn) error {
-		return backfillLineageOnShard(ctx, conn, sel, rewind)
+		return backfillLineageOnShard(ctx, conn, sel)
 	})
 }
 
 // backfillLineageOnShard copies, per logs partition, the rows ingested after what an earlier run
-// copied. The ancestry watermark is moved back to them before the partition is recorded, so a
-// crash in between copies again instead of leaving rows the builder never reflects.
-func backfillLineageOnShard(ctx context.Context, conn driver.Conn, sel string, rewind func(time.Time) error) error {
+// copied.
+func backfillLineageOnShard(ctx context.Context, conn driver.Conn, sel string) error {
 	cols, err := selectColumns(ctx, conn, sel)
 	if err != nil {
 		return err
@@ -55,9 +50,9 @@ func backfillLineageOnShard(ctx context.Context, conn driver.Conn, sel string, r
 	}
 	copied := 0
 	for _, id := range parts {
-		var done, first, last time.Time
-		if err := conn.QueryRow(ctx, "SELECT (SELECT max(upto) FROM "+lineageBackfillDone+" WHERE partition_id = ?) AS done, minIf(ingest_timestamp, ingest_timestamp > done), max(ingest_timestamp) "+
-			"FROM logs WHERE _partition_id = ?", id, id).Scan(&done, &first, &last); err != nil {
+		var done, last time.Time
+		if err := conn.QueryRow(ctx, "SELECT (SELECT max(upto) FROM "+lineageBackfillDone+" WHERE partition_id = ?) AS done, max(ingest_timestamp) "+
+			"FROM logs WHERE _partition_id = ?", id, id).Scan(&done, &last); err != nil {
 			return fmt.Errorf("read partition %s: %w", id, err)
 		}
 		if !last.After(done) {
@@ -66,9 +61,6 @@ func backfillLineageOnShard(ctx context.Context, conn driver.Conn, sel string, r
 		window := " AND _partition_id = " + sqlquote.String(id) + " AND ingest_timestamp > " + chTime(done) + " AND ingest_timestamp <= " + chTime(last)
 		if err := conn.Exec(ctx, "INSERT INTO proc_lineage ("+cols+") "+sel+window+lineageBackfillSettings); err != nil {
 			return fmt.Errorf("backfill partition %s: %w", id, err)
-		}
-		if err := rewind(first.UTC()); err != nil {
-			return fmt.Errorf("rewind ancestry for partition %s: %w", id, err)
 		}
 		if err := conn.Exec(ctx, "INSERT INTO "+lineageBackfillDone+" VALUES (?, ?)", id, last); err != nil {
 			return fmt.Errorf("record partition %s: %w", id, err)
@@ -81,13 +73,8 @@ func backfillLineageOnShard(ctx context.Context, conn driver.Conn, sel string, r
 	return nil
 }
 
-// rewindProcAncestry moves the ancestry watermark back to at, if it is past it.
-func (c *ClickHouseClient) rewindProcAncestry(ctx context.Context, at time.Time) error {
-	cur, err := c.procAncestryWatermark(ctx)
-	if err != nil || cur.IsZero() || !cur.After(at) {
-		return err
-	}
-	return c.setProcAncestryWatermark(ctx, at)
+func chTime(t time.Time) string {
+	return "toDateTime64(" + sqlquote.String(t.UTC().Format("2006-01-02 15:04:05.000")) + ", 3, 'UTC')"
 }
 
 // selectColumns names the columns sel returns, as ClickHouse resolves them.

@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS proc_lineage (
     commandline      String CODEC(ZSTD(1)),
     -- '\0' marks a row written before the column existed (see migration 019).
     proc_user        String DEFAULT '\0',
-    -- Read by pgrContext(); rows written before the columns read ''.
+    -- Rows written before these columns read ''.
     hash             String DEFAULT '',
     original_file_name String DEFAULT '',
     computer_name    LowCardinality(String),
@@ -307,8 +307,6 @@ CREATE TABLE IF NOT EXISTS proc_lineage (
     proc_key         String MATERIALIZED if(match(process_guid, '^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}$'), concat(substring(process_guid, 1, 10), substring(process_guid, 16, 5), substring(process_guid, 11, 5), substring(process_guid, 21)), process_guid),
     parent_key       String MATERIALIZED if(match(parent_guid, '^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}$'), concat(substring(parent_guid, 1, 10), substring(parent_guid, 16, 5), substring(parent_guid, 11, 5), substring(parent_guid, 21)), parent_guid),
     INDEX idx_parent_guid parent_guid TYPE bloom_filter(0.001) GRANULARITY 1,
-    -- The ancestry builder and its readers find recent rows by ingest time.
-    INDEX idx_ingest_ts ingest_timestamp TYPE minmax GRANULARITY 1,
     PROJECTION by_parent (SELECT fractal_id, parent_key, parent_guid, process_guid, timestamp, child_image, child_cmd_key ORDER BY (fractal_id, parent_key)),
     PROJECTION by_image (SELECT _part_offset ORDER BY (fractal_id, image_lc))
 ) ENGINE = ReplacingMergeTree(timestamp)
@@ -341,40 +339,6 @@ SELECT
     fields.computer_name::String       AS computer_name
 FROM logs
 WHERE fields.bifract_category = 'process_creation' AND fields.process_guid != '';
-
--- proc_ancestry: each process's ancestors to depth 8, one row per (process, depth), filled by the
--- background builder (storage.ProcAncestryBuilder) from proc_lineage so the ancestor and
--- descendant filters are one key lookup instead of a walk. Depth 0 is the process itself:
--- open_key names the ancestor its known chain stops at when that ancestor has no lineage yet,
--- so readers know which rows a late creation could still extend. Rows are replaced on
--- (process, depth), and readers fall back to proc_lineage for anything not yet built.
-CREATE TABLE IF NOT EXISTS proc_ancestry (
-    fractal_id   LowCardinality(String),
-    proc_key     String,
-    depth        UInt8,
-    process_guid String,
-    image        LowCardinality(String),
-    anc_key      String,
-    anc_image    LowCardinality(String),
-    open_key     String,
-    -- The process's own lineage ingest, so its ancestry expires with its lineage.
-    ingest_timestamp DateTime64(3, 'UTC'),
-    version      DateTime64(3, 'UTC'),
-    PROJECTION by_ancestor (SELECT _part_offset ORDER BY (fractal_id, anc_key))
-) ENGINE = ReplacingMergeTree(version)
-PARTITION BY fractal_id
-ORDER BY (fractal_id, proc_key, depth)
-TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY
-SETTINGS index_granularity = 1024, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
-
--- The builder's progress: every lineage row ingested before at is reflected in proc_ancestry. The
--- latest write wins, so a lineage backfill can move it back to rows it added.
-CREATE TABLE IF NOT EXISTS proc_ancestry_watermark (
-    id     UInt8,
-    at     DateTime64(3, 'UTC'),
-    set_at DateTime64(3, 'UTC') DEFAULT now64(3)
-) ENGINE = ReplacingMergeTree(set_at)
-ORDER BY id;
 
 -- proc_freq: NoDoze frequency baseline for pgr() edge scoring. Abstracted + aggregated
 -- behavioral patterns (src process -> relationship -> abstracted target) with count + host

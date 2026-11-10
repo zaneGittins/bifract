@@ -182,16 +182,14 @@ func (p *Parser) parseBindingValue(name string, nameTok Token, end int) (*Bindin
 }
 
 // queryResolvedCommand names a command a binding cannot run, or "". comment() and
-// tlsh() are resolved for the outer query alone, and every read of a binding would
-// repeat a pgrHas walk that ClickHouse could not cancel.
+// tlsh() are resolved for the outer query alone.
 func queryResolvedCommand(pipeline *PipelineNode) string {
 	name := ""
 	ForEachCommand(pipeline, func(cmd CommandNode) {
 		if name != "" {
 			return
 		}
-		_, pgr := getCommandHandler(cmd.Name).(pgrFilter)
-		if c := strings.ToLower(cmd.Name); pgr || c == "comment" || c == "comments" || c == "tlsh" {
+		if c := strings.ToLower(cmd.Name); c == "comment" || c == "comments" || c == "tlsh" {
 			name = CommandDisplayName(cmd.Name)
 		}
 	})

@@ -261,7 +261,6 @@ func (c *ClickHouseClient) syncShardSchemas(ctx context.Context, states []shardS
 			{"process_edges_distributed", "process_edges"},
 			{"logs_raw_distributed", "logs_raw"},
 			{provenanceSummaryTable + "_distributed", provenanceSummaryTable},
-			{procAncestryTable + "_distributed", procAncestryTable},
 		} {
 			syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
 			if err := syncDistributedColumns(syncCtx, conn, c.logsDatabase(), pair[0], pair[1]); err != nil {
@@ -288,17 +287,12 @@ func (c *ClickHouseClient) syncShardSchemas(ctx context.Context, states []shardS
 // run directly on each host. These cannot live in the init SQL because they need the
 // cluster name, which is only known to the running server.
 func (c *ClickHouseClient) distributedTableDDL() []string {
-	locals := []string{"logs", "logs_histogram", "logs_field_paths", "logs_hot", "proc_lineage", "proc_freq", "process_edges", "logs_raw", provenanceSummaryTable, procAncestryTable, procAncestryWatermarkTable, provenanceMarksTable}
+	locals := []string{"logs", "logs_histogram", "logs_field_paths", "logs_hot", "proc_lineage", "proc_freq", "process_edges", "logs_raw", provenanceSummaryTable, provenanceMarksTable}
 	stmts := make([]string, 0, len(locals))
 	for _, t := range locals {
-		// A process's ancestry rows replace each other, so they must land on one shard.
-		key := "rand()"
-		if t == procAncestryTable {
-			key = "cityHash64(proc_key)"
-		}
 		stmts = append(stmts, fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS %s_distributed AS %s ENGINE = Distributed(%s, currentDatabase(), %s, %s)",
-			t, t, sqlquote.String(c.topo.DDLCluster), sqlquote.String(t), key))
+			"CREATE TABLE IF NOT EXISTS %s_distributed AS %s ENGINE = Distributed(%s, currentDatabase(), %s, rand())",
+			t, t, sqlquote.String(c.topo.DDLCluster), sqlquote.String(t)))
 	}
 	return stmts
 }

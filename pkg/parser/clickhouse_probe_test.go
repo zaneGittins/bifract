@@ -141,13 +141,12 @@ func probeOptions(q, variant string, grid bool) parser.QueryOptions {
 
 // probeGrid crosses each place a field can come from with each way a command reads
 // it, in each context that changes where it is read: the raw scan, the scan-level
-// model join, a provenance filter that narrows by the scan's filters, and a row cap.
+// model join, and a row cap.
 func probeGrid() []string {
 	contexts := []string{
 		"* | ",
 		`* | modelLookup(model="probe_seen", key=[user]) | `,
 		`* | modelLookup(model="probe_seen", key=[user], strict=false) | `,
-		`pgrHasAncestor("cmd.exe") | `,
 		"* | head(50) | ",
 	}
 	producers := []struct{ src, needsModel string }{
@@ -236,7 +235,7 @@ func probeSchema(t *testing.T) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimRight(strings.TrimSpace(db.ClickHouseSQL), ";"))
 	b.WriteString(";\nUSE logs;\n")
-	for _, table := range []string{"logs", "proc_lineage", "proc_ancestry", "process_edges", "proc_ancestry_watermark"} {
+	for _, table := range []string{"logs", "proc_lineage", "process_edges"} {
 		fmt.Fprintf(&b, "CREATE TABLE IF NOT EXISTS %[1]s_distributed AS %[1]s;\n", table)
 	}
 	// Golden queries model every model as rarity; the grid's has a name of its own.

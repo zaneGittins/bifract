@@ -284,15 +284,3 @@ func TestBuildQueryOptsReadsProvenanceAcrossShards(t *testing.T) {
 		t.Errorf("lineage=%q edges=%q", opts.ProcLineageTable, opts.ProcEdgesTable)
 	}
 }
-
-func TestValidateRunsInEngineRefusesBadPgrFilters(t *testing.T) {
-	for _, q := range []string{`groupBy(user) | pgrHasNetwork()`} {
-		pipeline, err := parser.ParseQuery(q)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := validateRunsInEngine(pipeline); !errors.Is(err, ErrInvalidAlert) {
-			t.Errorf("%s: err = %v", q, err)
-		}
-	}
-}

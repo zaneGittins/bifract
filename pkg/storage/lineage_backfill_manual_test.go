@@ -1,21 +1,25 @@
-//go:build chancestry
+//go:build chlineage
+
+// Needs a single-node ClickHouse on lineageAddr:
+//
+//	go test -tags chlineage ./pkg/storage -run BackfillLineageFromLogs -v
 
 package storage
 
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
+const lineageAddr = "localhost:19011"
+
 // Process creations already in logs reach lineage with the view's columns, a second run adds
-// nothing, and the ancestry builder is moved back so it reflects them.
+// nothing, and a late row in a copied partition is copied on the next run.
 func TestBackfillLineageFromLogs(t *testing.T) {
 	ctx := context.Background()
-	root, err := openClickHouseConn(ConnOptions{Addrs: []string{ancestryAddr}, Database: "default", User: "default", Password: "bifract", Pool: ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}})
+	root, err := openClickHouseConn(ConnOptions{Addrs: []string{lineageAddr}, Database: "default", User: "default", Password: "bifract", Pool: ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,12 +29,12 @@ func TestBackfillLineageFromLogs(t *testing.T) {
 		}
 	}
 	root.Close()
-	conn, err := openClickHouseConn(ConnOptions{Addrs: []string{ancestryAddr}, Database: "logs", User: "default", Password: "bifract", Pool: ClickHousePoolConfig{MaxOpenConns: 2, MaxIdleConns: 2}})
+	conn, err := openClickHouseConn(ConnOptions{Addrs: []string{lineageAddr}, Database: "logs", User: "default", Password: "bifract", Pool: ClickHousePoolConfig{MaxOpenConns: 2, MaxIdleConns: 2}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	for _, table := range []string{"logs", "proc_lineage", procAncestryTable, procAncestryWatermarkTable} {
+	for _, table := range []string{"logs", "proc_lineage"} {
 		ddl, err := initTableDDL(table)
 		if err != nil {
 			t.Fatal(err)
@@ -52,35 +56,25 @@ func TestBackfillLineageFromLogs(t *testing.T) {
 	if err := conn.Exec(ctx, "INSERT INTO logs (fractal_id, timestamp, ingest_timestamp, log_id, fields) VALUES "+strings.Join(rows, ", ")); err != nil {
 		t.Fatal(err)
 	}
-	c := &ClickHouseClient{conn: conn}
-	if err := c.setProcAncestryWatermark(ctx, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)); err != nil {
-		t.Fatal(err)
-	}
 	sel, err := initViewSelect("proc_lineage_mv")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rewound []time.Time
-	rewind := func(at time.Time) error {
-		rewound = append(rewound, at)
-		return c.rewindProcAncestry(ctx, at)
-	}
 	for run := 0; run < 2; run++ {
-		if err := backfillLineageOnShard(ctx, conn, sel, rewind); err != nil {
+		if err := backfillLineageOnShard(ctx, conn, sel); err != nil {
 			t.Fatal(err)
 		}
 	}
-	earliest := slices.MinFunc(rewound, func(a, b time.Time) int { return a.Compare(b) })
-	if len(rewound) != 3 || !earliest.Equal(time.Date(2026, 10, 1, 2, 0, 0, 0, time.UTC)) {
-		t.Errorf("rewound %v, want once per partition from the first, and nothing on the second run", rewound)
-	}
-	// New rows in an already copied partition are copied on the next run, and only they.
+	// New rows in an already copied partition are copied on the next run.
 	if err := conn.Exec(ctx, `INSERT INTO logs (fractal_id, timestamp, ingest_timestamp, log_id, fields) VALUES ('f1', toDateTime64('2026-10-01 01:00:00', 3, 'UTC'), toDateTime64('2026-10-01 03:00:00', 3, 'UTC'), 'late', '{"bifract_category": "process_creation", "process_guid": "g999", "image": "late.exe", "commandline": "late", "computer_name": "WS1"}')`); err != nil {
 		t.Fatal(err)
 	}
-	rewound = nil
-	if err := backfillLineageOnShard(ctx, conn, sel, rewind); err != nil || len(rewound) != 1 || !rewound[0].Equal(time.Date(2026, 10, 1, 3, 0, 0, 0, time.UTC)) {
-		t.Errorf("late row: rewound %v (%v), want once to its own ingest", rewound, err)
+	if err := backfillLineageOnShard(ctx, conn, sel); err != nil {
+		t.Fatal(err)
+	}
+	var late, copies uint64
+	if err := conn.QueryRow(ctx, "SELECT countIf(process_guid = 'g999'), count() FROM proc_lineage").Scan(&late, &copies); err != nil || late != 1 || copies != 151 {
+		t.Errorf("late row copied %d times, %d lineage rows before merging (want 1 and 151): %v", late, copies, err)
 	}
 	var n, wrong uint64
 	if err := conn.QueryRow(ctx, "SELECT count(), countIf(commandline != concat('p', substring(process_guid, 2), ' -x') OR proc_user != 'CORP\\\\u' OR hash != concat('SHA256=', substring(process_guid, 2)) OR computer_name != 'WS1') FROM proc_lineage FINAL WHERE process_guid != 'g999'").Scan(&n, &wrong); err != nil {
@@ -88,16 +82,5 @@ func TestBackfillLineageFromLogs(t *testing.T) {
 	}
 	if n != 150 || wrong != 0 {
 		t.Errorf("lineage rows %d (want 150), %d with fields unlike the log", n, wrong)
-	}
-	if w, _ := c.procAncestryWatermark(ctx); !w.Equal(time.Date(2026, 10, 1, 2, 0, 0, 0, time.UTC)) {
-		t.Errorf("ancestry watermark %s, want it moved back to the earliest backfilled row", w)
-	}
-	slice := time.Hour
-	if err := c.reflectProcAncestry(ctx, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), &slice); err != nil {
-		t.Fatal(err)
-	}
-	var status uint64
-	if err := conn.QueryRow(ctx, "SELECT uniqExact(proc_key) FROM proc_ancestry WHERE depth = 0").Scan(&status); err != nil || status != 151 {
-		t.Errorf("ancestry status rows %d (%v), want one per backfilled process", status, err)
 	}
 }

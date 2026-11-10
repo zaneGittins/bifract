@@ -559,3 +559,18 @@ func conditionsReference(conds []Condition, field string) bool {
 	}
 	return false
 }
+
+// claimLookup takes the plan's one lookup join for the named command.
+func claimLookup(plan *QueryPlan, name string) error {
+	if plan.join != nil {
+		return fmt.Errorf("%s() cannot be combined with join()", name)
+	}
+	if plan.hasModelLookup() {
+		if plan.lookup.name == name {
+			return fmt.Errorf("%s() cannot be used more than once", name)
+		}
+		return fmt.Errorf("%s() cannot be combined with %s() in one query", name, plan.lookup.name)
+	}
+	plan.lookup.name = name
+	return nil
+}

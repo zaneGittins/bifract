@@ -276,7 +276,7 @@ type QueryPlan struct {
 	Chain *ChainMeta
 	// join is the plan's join() of its rows with a subquery's, nil without one.
 	join *joinPlan
-	// lookup is the model join modelLookup() or pgrContext() adds.
+	// lookup is the model join modelLookup() adds.
 	lookup lookupPlan
 
 	// What renders around the stages, and table()'s request.
@@ -299,9 +299,6 @@ type QueryPlan struct {
 	// fractal) rather than filter it. First-stage conditions follow them, ahead of
 	// anything a command adds.
 	baseWhereLen int
-	// pgr holds the provenance filters and what narrows their candidates.
-	pgr pgrPlan
-
 	// rowLimitByCommand records that a command (head, limit, dedup, a
 	// limit= option) bounded the row set, rather than the caller's MaxRows.
 	rowLimitByCommand bool
@@ -394,21 +391,13 @@ type positions struct {
 	commands []CommandNode
 }
 
-// pgrPlan holds the provenance filters this plan compiled, and the scan filters
-// that narrow their candidates (see narrowPgrCandidates).
-type pgrPlan struct {
-	filters   []*candidateFilter
-	narrowing []predicate
-}
-
-// lookupPlan is the join of a model's scores, or pgrContext()'s context, onto the
-// rows, set by modelLookup() or pgrContext().
+// lookupPlan is the join of a model's scores onto the rows, set by modelLookup().
 type lookupPlan struct {
 	Fields   []string // output field names added to outer SELECT
 	KeyExprs []string // key expressions over the log scan: the scan-level ON's left side and the prefilter's
 	Strict   bool     // true (default) = INNER JOIN: keep only rows the model scored
 	Cmd      int      // index of the lookup command
-	name     string   // the command holding the lookup join: modelLookup or pgrContext
+	name     string   // the command holding the lookup join
 	// Where: filters on model columns alone, applied to the model side of a strict
 	// join (and so to its scan prefilter) rather than to the joined rows. Each is a
 	// property of the key, so the join keeps exactly the rows it would have kept.

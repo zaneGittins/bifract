@@ -1153,7 +1153,7 @@ func (e notConditionError) Error() string { return string(e) }
 
 // conditionCommandFields names the fields a condition command reads: the fields
 // its schema's field parameters name (cidr(dst_ip, ...), in(user, [...])), or
-// modelLookup()'s keys. A value such as pgrHasAncestor()'s is not a field.
+// modelLookup()'s keys.
 func conditionCommandFields(cmd CommandNode) []string {
 	if canonicalCommandName(cmd.Name) == canonicalCommandName("modelLookup") {
 		if _, keys, _, err := parseModelLookupArgs(cmd); err == nil {
@@ -1198,10 +1198,10 @@ func commandIndex(commands []CommandNode, name string) int {
 }
 
 // lookupCommandIndex returns the index of the first command that joins a lookup's columns,
-// modelLookup() or pgrContext(), or -1.
+// modelLookup(), or -1.
 func lookupCommandIndex(commands []CommandNode) int {
 	for i, cmd := range commands {
-		if n := canonicalCommandName(cmd.Name); n == canonicalCommandName("modelLookup") || n == canonicalCommandName("pgrContext") {
+		if n := canonicalCommandName(cmd.Name); n == canonicalCommandName("modelLookup") {
 			return i
 		}
 	}

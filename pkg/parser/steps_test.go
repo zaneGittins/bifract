@@ -114,11 +114,9 @@ func TestConditionFieldsIncludeCommandsAndExpressions(t *testing.T) {
 	}
 }
 
-// A condition command's fields come from its schema: pgrHasAncestor("a.exe") reads
-// no field named a.exe, and in(lower(user), ...) reads user.
+// A condition command's fields come from its schema: in(lower(user), ...) reads user.
 func TestConditionCommandFieldsFollowTheSchema(t *testing.T) {
 	for q, want := range map[string][]string{
-		`pgrHasAncestor("a.exe")`:                   nil,
 		`cidr(dst_ip, "10.0.0.0/8")`:                {"dst_ip"},
 		`in(lower(user), values=["a"])`:             {"user"},
 		`in(values=["a"], field=host)`:              {"host"},

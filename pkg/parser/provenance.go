@@ -352,14 +352,6 @@ func procLineageTable(opts QueryOptions) string {
 	return "proc_lineage"
 }
 
-// procAncestryTable and procAncestryMarkTable name the ancestry tables to read.
-func procAncestryTable(opts QueryOptions) string {
-	if opts.ProcAncestryTable != "" {
-		return opts.ProcAncestryTable
-	}
-	return "proc_ancestry"
-}
-
 // p2pBeforeRollup bounds a logs read of injection and handle-access events to those ingested
 // before the rollup began recording them, the history only logs hold.
 func p2pBeforeRollup(opts QueryOptions) string {
@@ -368,13 +360,6 @@ func p2pBeforeRollup(opts QueryOptions) string {
 		table = "provenance_marks"
 	}
 	return "ingest_timestamp < (SELECT argMax(at, set_at) FROM " + table + " WHERE name = 'p2p_edges')"
-}
-
-func procAncestryMarkTable(opts QueryOptions) string {
-	if opts.ProcAncestryMarkTable != "" {
-		return opts.ProcAncestryMarkTable
-	}
-	return "proc_ancestry_watermark"
 }
 
 func procFreqTable(opts QueryOptions) string {

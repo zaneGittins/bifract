@@ -1,4 +1,4 @@
--- Process-creation facts pgrContext() reads beside the command line and user. Metadata-only:
+-- Process-creation facts (hash, original file name) kept beside the command line and user. Metadata-only:
 -- rows written before them read ''. MODIFY QUERY swaps the SELECT in place (see 016); keep it
 -- identical to db/init-clickhouse.sql.
 ALTER TABLE proc_lineage ADD COLUMN IF NOT EXISTS hash String DEFAULT '' AFTER proc_user;
