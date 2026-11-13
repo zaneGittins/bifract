@@ -6,6 +6,7 @@ Deploy Bifract to a Kubernetes cluster (EKS, AKS, GKE and similar) when you need
 
 - Kubernetes 1.28 or later, with `kubectl` connected to it
 - `helm` 3
+- On amd64, ClickHouse nodes with x86-64-v3 (AVX2) CPUs
 - A domain name you can point at a load balancer
 
 ## Architecture
