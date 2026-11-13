@@ -5,6 +5,7 @@ Install Bifract on a single Linux host with Docker Compose. The `bifract` CLI ru
 ## Requirements
 
 - Linux on amd64 or arm64.
+- On amd64, a CPU with x86-64-v3 (AVX2), which ClickHouse requires. Without it ClickHouse never becomes healthy and logs `cd: null directory`. On Proxmox, set the VM's CPU type to `host`.
 - Docker with the Compose plugin (`docker compose`). The wizard checks both before it continues.
 - Ports 443 (UI and API) and 8443 (log ingest) reachable by users and log sources. Port 80 is also published; Let's Encrypt needs it.
 
