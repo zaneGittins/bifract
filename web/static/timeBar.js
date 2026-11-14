@@ -69,7 +69,9 @@ const TimeBar = {
             if (row) this.selectZone(row.dataset.zone);
         });
 
-        document.addEventListener('click', (e) => {
+        // pointerdown, not click: a click that opens the picker from elsewhere
+        // (the user menu) would otherwise bubble here and close it at once.
+        document.addEventListener('pointerdown', (e) => {
             if (!this._pickerOpen) return;
             const wrap = e.target.closest('.tz-picker-wrap');
             if (!wrap) this.closePicker();
