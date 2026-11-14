@@ -150,6 +150,7 @@ const Sidebar = {
                 !document.documentElement.classList.contains('sb-drawer-open')) return;
             this.closeDrawer();
         });
+        document.addEventListener('keydown', (e) => this._onKey(e));
         const onBreakpoint = () => {
             this._narrowExpanded = false;
             if (!this.MOBILE.matches) this.closeDrawer();
@@ -277,6 +278,21 @@ const Sidebar = {
         this._applyCollapsed(true);
     },
 
+    setCollapsed(collapsed) {
+        if (this.isCollapsed() !== collapsed) this.toggleCollapsed();
+    },
+
+    // `[` collapses and `]` expands, except while typing or behind a modal.
+    _onKey(e) {
+        if ((e.key !== '[' && e.key !== ']') || e.defaultPrevented) return;
+        if (e.metaKey || e.ctrlKey || e.altKey || this.MOBILE.matches) return;
+        const t = e.target;
+        if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+        if (t && t.closest && t.closest('.cm-editor, .modal-overlay')) return;
+        e.preventDefault();
+        this.setCollapsed(e.key === '[');
+    },
+
     openDrawer() {
         document.documentElement.classList.add('sb-drawer-open');
         document.getElementById('sidebarOpen').setAttribute('aria-expanded', 'true');
@@ -313,8 +329,11 @@ const Sidebar = {
         const label = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
         btn.setAttribute('aria-label', label);
         btn.setAttribute('aria-expanded', String(!collapsed));
+        const key = collapsed ? ']' : '[';
+        btn.setAttribute('aria-keyshortcuts', key);
         btn.dataset.tip = label;
-        btn.innerHTML = `${this.icon(collapsed ? 'expand' : 'collapse')}<span class="sb-label">Collapse</span>`;
+        btn.dataset.kbd = key;
+        btn.innerHTML = `${this.icon(collapsed ? 'expand' : 'collapse')}<span class="sb-label">Collapse</span><kbd class="sb-kbd" aria-hidden="true">${key}</kbd>`;
     },
 
     _toggleAdmin() {
@@ -344,6 +363,12 @@ const Sidebar = {
         }
         const r = el.getBoundingClientRect();
         this._tip.textContent = el.dataset.tip;
+        if (el.dataset.kbd) {
+            const kbd = document.createElement('kbd');
+            kbd.className = 'sb-tip-kbd';
+            kbd.textContent = el.dataset.kbd;
+            this._tip.append(kbd);
+        }
         this._tip.style.top = `${Math.round(r.top + r.height / 2)}px`;
         this._tip.style.left = `${Math.round(r.right + 8)}px`;
         this._tip.classList.add('show');
