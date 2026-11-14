@@ -8,6 +8,11 @@ const { test, expect } = require('@playwright/test');
 const { login, listFractals, openNav } = require('./fixtures');
 
 const nav = (page, key) => page.locator(`#sidebar a[data-nav="${key}"]`);
+// A key pressed with nothing focused, as after clicking empty page space.
+async function pressOnPage(page, key) {
+  await page.evaluate(() => document.activeElement && document.activeElement.blur());
+  await page.keyboard.press(key);
+}
 const collapsed = page => page.evaluate(() => document.documentElement.classList.contains('sb-collapsed'));
 
 async function openPage(page, tab) {
@@ -65,6 +70,46 @@ test.describe('sidebar', () => {
     await page.reload();
     await expect(nav(page, 'search')).toHaveAttribute('aria-current', 'page', { timeout: 15000 });
     expect(await collapsed(page)).toBe(false);
+  });
+
+  test('[ collapses and ] expands, saved like the toggle', async ({ page }) => {
+    await openPage(page, 'alerts');
+    expect(await collapsed(page)).toBe(false);
+
+    await pressOnPage(page, '[');
+    expect(await collapsed(page)).toBe(true);
+    await expect(page.locator('#sidebarToggle')).toHaveAttribute('aria-expanded', 'false');
+    // Collapsing again is a no-op, not a toggle.
+    await pressOnPage(page, '[');
+    expect(await collapsed(page)).toBe(true);
+
+    await page.reload();
+    await expect(nav(page, 'alerts')).toHaveAttribute('aria-current', 'page', { timeout: 15000 });
+    expect(await collapsed(page)).toBe(true);
+
+    await pressOnPage(page, ']');
+    expect(await collapsed(page)).toBe(false);
+    await pressOnPage(page, ']');
+    expect(await collapsed(page)).toBe(false);
+  });
+
+  test('[ and ] type normally in the query editor and inputs', async ({ page }) => {
+    await openPage(page, 'search');
+    await pressOnPage(page, ']');
+    expect(await collapsed(page)).toBe(false);
+
+    const editor = page.locator('#queryInput');
+    await editor.click();
+    await page.keyboard.type('[');
+    expect(await collapsed(page)).toBe(false);
+    await expect(editor).toHaveValue(/\[/);
+
+    await pressOnPage(page, '[');
+    expect(await collapsed(page)).toBe(true);
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k');
+    await page.locator('#paletteInput').press(']');
+    expect(await collapsed(page)).toBe(true);
+    await expect(page.locator('#paletteInput')).toHaveValue(']');
   });
 
   test('the listing has no scoped items and admin pages keep the selected fractal', async ({ page }) => {
