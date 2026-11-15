@@ -152,8 +152,8 @@ func TestLinkedFirstSeenValidation(t *testing.T) {
 		"nope":      "is not a first/last seen model",
 	} {
 		err := env.mgr.validateModifierLinks(ctx, fracA, ModelTypeBeacon, link(name), nil)
-		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
-			t.Errorf("%s: %v, want %q", name, err, want)
+		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(err.Error(), want) || !IsInvalidRequest(err)) {
+			t.Errorf("%s: %v, want a request error %q", name, err, want)
 		}
 	}
 
@@ -176,17 +176,23 @@ func TestLinkedFirstSeenValidation(t *testing.T) {
 	if err := env.mgr.validateModifierLinks(ctx, fracA, ModelTypeBeacon, gone, &prev); err != nil {
 		t.Errorf("a deleted link blocked a field map edit: %v", err)
 	}
+
+	// A store that cannot answer is a server failure, not the request's fault.
+	env.db.failOn("model_type = 'first_seen'", errors.New("pg down"))
+	if err := env.mgr.validateModifierLinks(ctx, fracA, ModelTypeBeacon, link("dst_seen"), nil); err == nil || IsInvalidRequest(err) {
+		t.Errorf("store failure: %v, want a server error", err)
+	}
 }
 
 func TestValidateModifierLinksThreatIntel(t *testing.T) {
 	m := &Manager{}
 	ctx := context.Background()
 	half := ModelDefinition{Modifiers: &ModifierParams{ThreatIntelLookup: "iocs"}}
-	if err := m.validateModifierLinks(ctx, "f", ModelTypeBeacon, half, nil); err == nil || !strings.Contains(err.Error(), "both a lookup and its key column") {
+	if err := m.validateModifierLinks(ctx, "f", ModelTypeBeacon, half, nil); err == nil || !strings.Contains(err.Error(), "both a lookup and its key column") || !IsInvalidRequest(err) {
 		t.Errorf("lookup without a column: %v", err)
 	}
 	missing := ModelDefinition{Modifiers: &ModifierParams{ThreatIntelLookup: "iocs", ThreatIntelColumn: "ip"}}
-	if err := m.validateModifierLinks(ctx, "f", ModelTypeBeacon, missing, nil); err == nil || !strings.Contains(err.Error(), `"iocs" not found`) {
+	if err := m.validateModifierLinks(ctx, "f", ModelTypeBeacon, missing, nil); err == nil || !strings.Contains(err.Error(), `"iocs" not found`) || !IsInvalidRequest(err) {
 		t.Errorf("unknown lookup: %v", err)
 	}
 	if err := m.validateModifierLinks(ctx, "f", ModelTypeBeacon, missing, &missing); err != nil {

@@ -297,3 +297,29 @@ func TestHandlePreviewAndTestExtraction(t *testing.T) {
 		t.Errorf("extraction: %+v", ext)
 	}
 }
+
+// A definition the request got wrong is a 400 on create and update alike; a
+// failing store is a 500 on both, not blamed on the request.
+func TestSaveErrorStatus(t *testing.T) {
+	env, h, r := handlerEnv(t)
+	for name, body := range map[string]string{
+		"shape":        `{"name":"x","definition":{"value_key":""}}`,
+		"half days":    `{"name":"x","definition":{"value_key":"proc","alert":{"estimate_half_days":1}}}`,
+		"source query": `{"name":"x","definition":{"value_key":"proc","source_bql":"| groupby("}}`,
+	} {
+		if w := callModel(t, h.HandleUpdate, "/", body, r.id, analystA); w.Code != http.StatusBadRequest {
+			t.Errorf("update %s: %d %s, want 400", name, w.Code, w.Body.String())
+		}
+	}
+
+	env.db.failOn("UPDATE analytics_models SET name=$1", errors.New("pg down"))
+	upd := `{"name":"x","definition":{"value_key":"proc"}}`
+	if w := callModel(t, h.HandleUpdate, "/", upd, r.id, analystA); w.Code != http.StatusInternalServerError {
+		t.Errorf("update on a failing store: %d %s, want 500", w.Code, w.Body.String())
+	}
+	env.db.failOn("INSERT INTO analytics_models", errors.New("pg down"))
+	create := `{"name":"firsts","model_type":"first_seen","definition":{"key_fields":["user"]}}`
+	if w := callModel(t, h.HandleCreate, "/", create, "", analystA); w.Code != http.StatusInternalServerError {
+		t.Errorf("create on a failing store: %d %s, want 500", w.Code, w.Body.String())
+	}
+}

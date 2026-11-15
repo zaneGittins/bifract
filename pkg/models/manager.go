@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -223,12 +224,12 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 // Create creates a new model and its ClickHouse objects.
 func (m *Manager) Create(ctx context.Context, fractalID string, req CreateRequest, createdBy string) (*Model, error) {
 	if err := validateCreateRequest(req); err != nil {
-		return nil, err
+		return nil, invalid(err)
 	}
 	// Compile the source here so a query the translator refuses is a rejected
 	// request, not a stored model that fails later in the background.
 	if _, err := m.ResolveSource(ctx, req.Definition, fractalID, ""); err != nil {
-		return nil, err
+		return nil, invalid(err)
 	}
 	if err := m.validateModifierLinks(ctx, fractalID, req.ModelType, req.Definition, nil); err != nil {
 		return nil, err
@@ -320,10 +321,10 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 	// with a benign definition followed by an edit reaches the same DDL. The model
 	// type cannot change, so the existing one is what the shape is checked against.
 	if err := validateDefinitionShape(existing.ModelType, req.Definition); err != nil {
-		return nil, err
+		return nil, invalid(err)
 	}
 	if _, err := m.ResolveSource(ctx, req.Definition, existing.FractalID, existing.PrismID); err != nil {
-		return nil, err
+		return nil, invalid(err)
 	}
 	if err := m.validateModifierLinks(ctx, existing.FractalID, existing.ModelType, req.Definition, &existing.Definition); err != nil {
 		return nil, err
@@ -1930,6 +1931,27 @@ func validateDefinitionFieldNames(def ModelDefinition) error {
 		}
 	}
 	return nil
+}
+
+// invalidRequestError is a save the request itself got wrong, as opposed to a
+// store or ClickHouse failure.
+type invalidRequestError struct{ error }
+
+func (e invalidRequestError) Unwrap() error { return e.error }
+
+func invalid(err error) error {
+	if err == nil {
+		return nil
+	}
+	return invalidRequestError{err}
+}
+
+func invalidf(format string, args ...any) error { return invalid(fmt.Errorf(format, args...)) }
+
+// IsInvalidRequest reports whether a Create or Update error was caused by the request.
+func IsInvalidRequest(err error) bool {
+	var e invalidRequestError
+	return errors.As(err, &e)
 }
 
 func validateCreateRequest(req CreateRequest) error {
