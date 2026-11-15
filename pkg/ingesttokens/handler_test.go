@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"bifract/pkg/storage"
+
+	"github.com/lib/pq"
 )
 
 var (
@@ -145,7 +147,7 @@ func TestCreateTokenRejectsBadInput(t *testing.T) {
 	}{
 		{"malformed", `{"name":`, http.StatusBadRequest},
 		{"no name", `{"parser_type":"json"}`, http.StatusBadRequest},
-		{"bad parser", `{"name":"x","parser_type":"xml"}`, http.StatusInternalServerError},
+		{"bad parser", `{"name":"x","parser_type":"xml"}`, http.StatusBadRequest},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			db := newTokenDB()
@@ -155,6 +157,36 @@ func TestCreateTokenRejectsBadInput(t *testing.T) {
 			}
 			if len(db.writes()) != 0 {
 				t.Fatal("rejected request wrote a token")
+			}
+		})
+	}
+}
+
+// Names are unique per fractal. Reusing one is the caller's conflict, not a
+// server failure, while other unique keys (prefix, hash) stay server errors.
+func TestDuplicateNameConflicts(t *testing.T) {
+	nameTaken := &pq.Error{Code: "23505", Constraint: "ingest_tokens_fractal_id_name_key"}
+	for _, tt := range []struct {
+		name  string
+		route route
+		fail  string
+		err   error
+		want  int
+	}{
+		{"create", routes[1], "INSERT", nameTaken, http.StatusConflict},
+		{"rename", routes[3], "UPDATE", nameTaken, http.StatusConflict},
+		{"create prefix collision", routes[1], "INSERT", &pq.Error{Code: "23505", Constraint: "ingest_tokens_token_prefix_key"}, http.StatusInternalServerError},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newTokenDB()
+			seedTokens(db)
+			db.failTokens[tt.fail] = tt.err
+			rec := call(tt.route.fn(newTestHandler(db, nil)), tt.route.method, tt.route.body, asUser(tenantAdmin), "id", fractalA, "tokenId", "a2")
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body.String())
+			}
+			if tt.want == http.StatusConflict && decode(t, rec).Error != ErrNameTaken.Error() {
+				t.Errorf("error = %q", decode(t, rec).Error)
 			}
 		})
 	}

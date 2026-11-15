@@ -3,6 +3,7 @@ package ingesttokens
 import (
 	"bifract/pkg/api"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -36,6 +37,17 @@ func NewHandler(s *Storage, fractalManager *fractals.Manager, cache *TokenCache)
 		fractalManager: fractalManager,
 		cache:          cache,
 	}
+}
+
+// clientError maps storage errors caused by the request to their status.
+func clientError(err error) (int, string, bool) {
+	switch {
+	case errors.Is(err, ErrNameTaken):
+		return http.StatusConflict, err.Error(), true
+	case errors.Is(err, ErrInvalidParserType):
+		return http.StatusBadRequest, err.Error(), true
+	}
+	return 0, "", false
 }
 
 func (h *Handler) HandleListTokens(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +120,10 @@ func (h *Handler) HandleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token, fullToken, err := h.storage.CreateToken(r.Context(), req, fractalID, storage.AttributionUser(r.Context()))
+	if status, msg, ok := clientError(err); ok {
+		h.sendError(w, status, msg)
+		return
+	}
 	if err != nil {
 		log.Printf("[IngestTokens] Failed to create token: %v", err)
 		h.sendError(w, http.StatusInternalServerError, "Failed to create ingest token")
@@ -179,6 +195,10 @@ func (h *Handler) HandleUpdateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token, err := h.storage.UpdateToken(r.Context(), tokenID, fractalID, req)
+	if status, msg, ok := clientError(err); ok {
+		h.sendError(w, status, msg)
+		return
+	}
 	if err != nil {
 		log.Printf("[IngestTokens] Failed to update token: %v", err)
 		h.sendError(w, http.StatusBadRequest, "Failed to update ingest token")

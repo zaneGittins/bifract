@@ -15,7 +15,20 @@ import (
 	"bifract/pkg/fractals"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
+
+	"github.com/lib/pq"
 )
+
+var (
+	ErrNameTaken         = errors.New("an ingest token with this name already exists in this fractal")
+	ErrInvalidParserType = errors.New("invalid parser_type: must be 'json', 'kv', or 'syslog'")
+)
+
+// nameTaken reports whether err is the per-fractal unique name violation.
+func nameTaken(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "23505" && pqErr.Constraint == "ingest_tokens_fractal_id_name_key"
+}
 
 type Storage struct {
 	pg *storage.PostgresClient
@@ -66,7 +79,7 @@ func (s *Storage) CreateToken(ctx context.Context, req CreateTokenRequest, fract
 		parserType = "json"
 	}
 	if parserType != "json" && parserType != "kv" && parserType != "syslog" {
-		return nil, "", fmt.Errorf("invalid parser_type: must be 'json', 'kv', or 'syslog'")
+		return nil, "", ErrInvalidParserType
 	}
 
 	// Determine normalizer_id: use provided, explicitly none, or default
@@ -105,6 +118,9 @@ func (s *Storage) CreateToken(ctx context.Context, req CreateTokenRequest, fract
 		&token.CreatedBy, &token.CreatedAt, &token.UpdatedAt, &token.LastUsedAt,
 		&token.UsageCount, &token.LogCount,
 	)
+	if nameTaken(err) {
+		return nil, "", ErrNameTaken
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create ingest token: %w", err)
 	}
@@ -324,7 +340,7 @@ func (s *Storage) UpdateToken(ctx context.Context, tokenID, fractalID string, re
 	}
 	if req.ParserType != nil {
 		if *req.ParserType != "json" && *req.ParserType != "kv" && *req.ParserType != "syslog" {
-			return nil, fmt.Errorf("invalid parser_type: must be 'json', 'kv', or 'syslog'")
+			return nil, ErrInvalidParserType
 		}
 		setParts = append(setParts, fmt.Sprintf("parser_type = $%d", idx))
 		args = append(args, *req.ParserType)
@@ -353,6 +369,9 @@ func (s *Storage) UpdateToken(ctx context.Context, tokenID, fractalID string, re
 		strings.Join(setParts, ", "), idx, idx+1)
 
 	_, err := s.pg.DB().ExecContext(ctx, query, args...)
+	if nameTaken(err) {
+		return nil, ErrNameTaken
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to update ingest token: %w", err)
 	}
