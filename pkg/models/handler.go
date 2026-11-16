@@ -140,7 +140,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	model, err := h.manager.Create(r.Context(), fractalID, req, createdBy)
 	if err != nil {
 		log.Printf("[Models] create: %v", err)
-		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Failed to create model: %v", err))
+		h.respondSaveError(w, "create", err)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -166,7 +166,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	updated, err := h.manager.Update(r.Context(), model.ID, req)
 	if err != nil {
 		log.Printf("[Models] update %s: %v", model.ID, err)
-		h.respondError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update model: %v", err))
+		h.respondSaveError(w, "update", err)
 		return
 	}
 	h.respondSuccess(w, updated)
@@ -549,7 +549,7 @@ func (h *Handler) HandleImport(w http.ResponseWriter, r *http.Request) {
 	model, err := h.manager.Create(r.Context(), fractalID, req, auth.AttributionUsername(r.Context()))
 	if err != nil {
 		log.Printf("[Models] import: %v", err)
-		h.respondError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to import model: %v", err))
+		h.respondSaveError(w, "import", err)
 		return
 	}
 	h.respondSuccess(w, model)
@@ -624,6 +624,16 @@ func (h *Handler) requireAnalyst(w http.ResponseWriter, r *http.Request) bool {
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
 	api.WriteSuccess(w, data)
+}
+
+// respondSaveError answers 400 with the reason for a request the manager
+// refused, and 500 without internals for anything else.
+func (h *Handler) respondSaveError(w http.ResponseWriter, verb string, err error) {
+	if IsInvalidRequest(err) {
+		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Failed to %s model: %v", verb, err))
+		return
+	}
+	h.respondError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to %s model", verb))
 }
 
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {

@@ -178,7 +178,7 @@ func TestImportValidation(t *testing.T) {
 	}{
 		{"name: [unclosed", http.StatusBadRequest, "Invalid YAML"},
 		{"model_type: rarity\n", http.StatusBadRequest, "Model name is required"},
-		{"name: n\nmodel_type: rarity\ndefinition:\n  partition_key: p\n", http.StatusInternalServerError, "value_key is required"},
+		{"name: n\nmodel_type: rarity\ndefinition:\n  partition_key: p\n", http.StatusBadRequest, "value_key is required"},
 		// A misspelled group would otherwise build an ungrouped model without a word.
 		{"name: n\nmodel_type: rarity\ndefinition:\n  partition_keys: p\n  value_key: v\n", http.StatusBadRequest, "partition_keys"},
 		{"", http.StatusBadRequest, "Model name is required"},

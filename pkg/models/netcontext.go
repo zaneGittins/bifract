@@ -75,7 +75,7 @@ func (m *Manager) linkedFirstSeen(ctx context.Context, fractalID, name string, n
 		 WHERE fractal_id = $1 AND name = $2 AND model_type = 'first_seen' AND status IN ('active', 'rebuilding')
 		 ORDER BY created_at LIMIT 1`, fractalID, name).Scan(&lm.id, &raw, &created, &anchor, &bfStatus, &bfFrom)
 	if errors.Is(err, sql.ErrNoRows) {
-		return lm, fmt.Errorf("first_seen_model %q %w", name, errLinkMissing)
+		return lm, invalid(fmt.Errorf("first_seen_model %q %w", name, errLinkMissing))
 	}
 	if err != nil {
 		return lm, fmt.Errorf("resolve first_seen_model %q: %w", name, err)
@@ -91,18 +91,18 @@ func (m *Manager) linkedFirstSeen(ctx context.Context, fractalID, name string, n
 	case slices.Equal(def.KeyFields, []string{nf.SrcField, nf.DstField}):
 		lm.pair = true
 	default:
-		return lm, fmt.Errorf("first_seen_model %q is keyed on %v; link one keyed on [%s] (the destination) or [%s, %s] (the pair), in that order",
+		return lm, invalidf("first_seen_model %q is keyed on %v; link one keyed on [%s] (the destination) or [%s, %s] (the pair), in that order",
 			name, def.KeyFields, nf.DstField, nf.SrcField, nf.DstField)
 	}
 	if def.HistoryDaysFor(ModelTypeFirstSeen) > 0 {
-		return lm, fmt.Errorf("first_seen_model %q has a %d-day history window, so it cannot say a destination has been known for longer; link one that keeps all history",
+		return lm, invalidf("first_seen_model %q has a %d-day history window, so it cannot say a destination has been known for longer; link one that keeps all history",
 			name, def.HistoryDays)
 	}
 	computed := func(k string) bool { return isExtractionOutput(k, def.Extractions) }
 	if checkSource {
 		resolved, err := m.ResolveSource(ctx, def, fractalID, "")
 		if err != nil {
-			return lm, fmt.Errorf("first_seen_model %q: %w", name, err)
+			return lm, invalidf("first_seen_model %q: %w", name, err)
 		}
 		computed = func(k string) bool {
 			return isExtractionOutput(k, def.Extractions) ||
@@ -111,7 +111,7 @@ func (m *Manager) linkedFirstSeen(ctx context.Context, fractalID, name string, n
 	}
 	for _, k := range def.KeyFields {
 		if computed(k) {
-			return lm, fmt.Errorf("first_seen_model %q keys on %s as its source query computes it, which the network state never holds; key it on the stored field", name, k)
+			return lm, invalidf("first_seen_model %q keys on %s as its source query computes it, which the network state never holds; key it on the stored field", name, k)
 		}
 	}
 
@@ -151,7 +151,7 @@ func (m *Manager) validateModifierLinks(ctx context.Context, fractalID string, m
 	case lookup == "" && column == "":
 		return nil
 	case lookup == "" || column == "":
-		return fmt.Errorf("the threat intel modifier needs both a lookup and its key column")
+		return invalidf("the threat intel modifier needs both a lookup and its key column")
 	case prev != nil && lookup == was.ThreatIntelLookup && column == was.ThreatIntelColumn:
 		return nil
 	}
@@ -165,7 +165,8 @@ func (m *Manager) threatIntelHit(ctx context.Context, fractalID, lookup, column 
 	if err != nil {
 		return "", fmt.Errorf("resolve threat intel lookup: %w", err)
 	}
-	return parser.LookupMembership("dst", lookup, column, opts)
+	hit, err := parser.LookupMembership("dst", lookup, column, opts)
+	return hit, invalid(err)
 }
 
 // threatIntelColumn is the threat intel expression a pair read selects as
