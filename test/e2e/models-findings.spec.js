@@ -46,9 +46,9 @@ test.describe('Model findings view', () => {
 
     // Findings render as rows or as an explained empty state, never a bare table.
     const wrap = page.locator('#modelsDataTableWrap');
-    await expect(wrap.locator('tbody tr, .es').first()).toBeVisible({ timeout: 20000 });
-    if (await wrap.locator('.es').count()) {
-      await expect(wrap.locator('.es-title')).toHaveText(/Nothing would alert|Nothing new this week|No alert thresholds set/);
+    await expect(wrap.locator('tbody tr, .admin-empty').first()).toBeVisible({ timeout: 20000 });
+    if (await wrap.locator('.admin-empty').count()) {
+      await expect(wrap.locator('.admin-empty > strong')).toHaveText(/Nothing would alert|Nothing new this week|No alert thresholds set/);
     }
 
     // Column headers carry the label only; the stored name moved to the tooltip.

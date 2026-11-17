@@ -82,7 +82,7 @@ test.describe('Models listing', () => {
 
     // Choosing a template runs the score preview.
     await expect(page.locator('#modelResultTabs .ert-tab[data-mode="scores"]')).toHaveClass(/active/);
-    await expect(page.locator('#modelScorePreview .score-preview, #modelScorePreview .query-error, #modelScorePreview .es'))
+    await expect(page.locator('#modelScorePreview .score-preview, #modelScorePreview .query-error, #modelScorePreview .admin-empty'))
       .toBeVisible({ timeout: 45000 });
   });
 
