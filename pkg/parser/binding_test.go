@@ -93,6 +93,11 @@ func TestUnknownBindingIsAnError(t *testing.T) {
 		`let &a := 1; * | table(&b)`,
 		`let &a := 1; * | x := &b + 1`,
 		`let &a := &a + 1; * | &a > 1`,
+		`* | in(user, &a)`,
+		`* | table(&a)`,
+		`let &b := * | in(user, &a) | groupby(host); * | in(host, &b)`,
+		`let &w := * | !in(image, &w) | groupby(image); * | in(image, &w)`,
+		`let &a := user=y | groupby(user); z=1 | join(user){ b=2 | in(user,&b) | groupby(user) }`,
 	}
 	for _, query := range cases {
 		if _, err := ParseQuery(query); err == nil {
