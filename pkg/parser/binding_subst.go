@@ -13,10 +13,10 @@ import (
 // substitutePipeline resolves every binding reference left in the tree after the
 // pipeline is parsed. Filter leaves and expression stage heads substitute as they
 // are read; this covers the rest, chiefly command arguments and := assignments.
-// Anything it misses is caught at compile time, where an unresolved & is an
-// error rather than a JSON field that matches nothing.
+// It runs even when nothing is declared, so an undeclared or self-referencing &
+// is an error rather than a literal that matches nothing.
 func (p *Parser) substitutePipeline(pipeline *PipelineNode) error {
-	if len(p.bindings) == 0 || pipeline == nil {
+	if pipeline == nil {
 		return nil
 	}
 	for _, st := range pipeline.Steps {
