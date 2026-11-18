@@ -916,47 +916,23 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 
 	log.Printf("[QueryHandler] Received request - Query: %s, FractalID: %s", req.Query, req.FractalID)
 
-	// Comments are blanked before anything reads the text, so substitution and
-	// parsing never see them; a query that is only comments is no query at all.
-	stripped, blanked := parser.StripComments(req.Query)
-	req.Query = stripped
-	if strings.TrimSpace(req.Query) == "" {
+	prepared, err := prepareText(req.Query, bqlvars.ToValueMap(bqlvars.ParseVariables(req.Variables)))
+	if errors.Is(err, errEmptyQuery) {
 		respondJSON(w, http.StatusBadRequest, QueryResponse{
 			Success: false,
 			Error:   "Query parameter is required",
 		})
 		return
 	}
-
-	// Input size limit: reject excessively long queries. Comments do not count.
-	const maxQueryLength = 10000 // 10KB
-	if n := len(req.Query) - blanked; n > maxQueryLength {
-		respondJSON(w, http.StatusBadRequest, QueryResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Query too long (%d chars, max %d)", n, maxQueryLength),
-		})
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, QueryResponse{Success: false, Error: err.Error()})
 		return
 	}
-
-	// Substitute @name query variables (quote/boundary-aware, empty -> "*")
-	// before parsing, so search, dashboards and notebooks share identical
-	// semantics and the parser never sees @var.
-	req.Query = bqlvars.Substitute(req.Query, req.Variables)
-
-	// Re-check the size limit on the expanded query: variable values can grow it
-	// well past the raw-input limit, and the parser/translator must stay bounded.
-	if n := len(req.Query) - blanked; n > maxQueryLength {
-		respondJSON(w, http.StatusBadRequest, QueryResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Query too long after variable expansion (%d chars, max %d)", n, maxQueryLength),
-		})
-		return
-	}
+	req.Query = prepared
 
 	// Parse time range. A live poll's start is its cursor; the server's clock
 	// decides the rest, so a client cannot widen the read past the live window.
 	var startTime, endTime time.Time
-	var err error
 	if purpose == purposeLive {
 		var since time.Time
 		if req.Start != "" {
@@ -1450,37 +1426,19 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// An empty query, or one that is only comments, is not an error to flag
-	// while typing.
-	stripped, blanked := parser.StripComments(req.Query)
-	req.Query = stripped
-	if strings.TrimSpace(req.Query) == "" {
+	// Validate the substituted query (what would actually run), so live editors
+	// do not flag @var tokens as syntax errors. An empty query, or one that is
+	// only comments, is not an error to flag while typing.
+	prepared, err := prepareText(req.Query, bqlvars.ToValueMap(bqlvars.ParseVariables(req.Variables)))
+	if errors.Is(err, errEmptyQuery) {
 		respondJSON(w, http.StatusOK, ValidateResponse{Valid: true})
 		return
 	}
-	const maxQueryLength = 10000
-	if n := len(req.Query) - blanked; n > maxQueryLength {
-		respondJSON(w, http.StatusOK, ValidateResponse{
-			Valid:     false,
-			Error:     fmt.Sprintf("Query too long (%d chars, max %d)", n, maxQueryLength),
-			ErrorType: "parse",
-		})
+	if err != nil {
+		respondJSON(w, http.StatusOK, ValidateResponse{Valid: false, Error: err.Error(), ErrorType: "parse"})
 		return
 	}
-
-	// Validate the substituted query (what would actually run), so live editors
-	// do not flag @var tokens as syntax errors.
-	req.Query = bqlvars.Substitute(req.Query, req.Variables)
-
-	// Variable values can expand the query past the raw-input limit.
-	if n := len(req.Query) - blanked; n > maxQueryLength {
-		respondJSON(w, http.StatusOK, ValidateResponse{
-			Valid:     false,
-			Error:     fmt.Sprintf("Query too long after variable expansion (%d chars, max %d)", n, maxQueryLength),
-			ErrorType: "parse",
-		})
-		return
-	}
+	req.Query = prepared
 
 	pipeline, err := parser.ParseQuery(req.Query)
 	if err != nil {

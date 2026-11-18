@@ -22,7 +22,7 @@ var errWidgetMismatch = errors.New("widget does not belong to dashboard")
 // scopeOf builds the execution scope for one of a dashboard's widgets. Time
 // buckets snap to the dashboard's zone, not any viewer's: one widget result is
 // cached and served to everyone, including share links with no user at all.
-func scopeOf(d *storage.Dashboard, start, end time.Time, widget *storage.DashboardWidget, bql string) query.ExecuteScope {
+func scopeOf(d *storage.Dashboard, start, end time.Time, widget *storage.DashboardWidget, vars map[string]string) query.ExecuteScope {
 	label := d.Name
 	if widget != nil && widget.Title != nil && *widget.Title != "" {
 		label += " / " + *widget.Title
@@ -37,8 +37,8 @@ func scopeOf(d *storage.Dashboard, start, end time.Time, widget *storage.Dashboa
 			Source:  storage.SourceDashboard,
 			Fractal: d.FractalID,
 			Label:   label,
-			BQL:     bql,
 		},
+		Variables: vars,
 	}
 }
 
@@ -336,9 +336,8 @@ func (e *Executor) refreshDashboard(d *storage.Dashboard) {
 // and the resolved chart type so on-demand callers can return them directly.
 func (e *Executor) executeWidget(ctx context.Context, d *storage.Dashboard, w *storage.DashboardWidget, excludeClientID string) ([]byte, string, error) {
 	start, end := computeTimeRange(d)
-	queryStr := bqlvars.Substitute(w.QueryContent, d.Variables)
-
-	res, err := e.runner.ExecuteBQL(ctx, queryStr, scopeOf(d, start, end, w, queryStr))
+	vars := bqlvars.ToValueMap(bqlvars.ParseVariables(d.Variables))
+	res, err := e.runner.ExecuteBQL(ctx, w.QueryContent, scopeOf(d, start, end, w, vars))
 	if err != nil {
 		return nil, "", err
 	}
@@ -411,9 +410,7 @@ func (e *Executor) executeWidgetPreview(ctx context.Context, d *storage.Dashboar
 			values[name] = val
 		}
 	}
-	queryStr := bqlvars.SubstituteMap(w.QueryContent, values)
-
-	res, err := e.runner.ExecuteBQL(ctx, queryStr, scopeOf(d, start, end, w, queryStr))
+	res, err := e.runner.ExecuteBQL(ctx, w.QueryContent, scopeOf(d, start, end, w, values))
 	if err != nil {
 		return nil, "", err
 	}
