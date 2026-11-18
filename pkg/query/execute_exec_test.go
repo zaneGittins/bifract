@@ -279,3 +279,20 @@ func TestExecuteBQLHonorsSourcePreferences(t *testing.T) {
 		t.Errorf("sql does not cap at the source's 7 rows: %s", res.SQL)
 	}
 }
+
+// A dashboard widget is stored raw: comments are blanked before variables are
+// substituted, as a search does, so an apostrophe in a comment opens no quote.
+func TestExecuteBQLStripsCommentsBeforeVariables(t *testing.T) {
+	e := scopeEnv(t)
+	e.respond(func(sql string) ([]map[string]interface{}, error) { return nil, nil })
+	scope := execWindow
+	scope.FractalID = "f1"
+	scope.Variables = map[string]string{"user": "bob"}
+	res, err := e.h.ExecuteBQL(context.Background(), "// don't page\nuser=@user", scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.SQL, "'bob'") || strings.Contains(res.SQL, "@user") || strings.Contains(res.SQL, "page") {
+		t.Errorf("sql = %s", res.SQL)
+	}
+}

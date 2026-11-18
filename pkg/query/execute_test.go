@@ -20,7 +20,9 @@ func TestExecuteBQLRefusals(t *testing.T) {
 		want  string
 	}{
 		{"empty", "  ", scope, "query is empty"},
-		{"too long", "a=" + strings.Repeat("b", 10000), scope, "query too long"},
+		{"only comments", "// nothing yet\n  ", scope, "query is empty"},
+		{"too long", "a=" + strings.Repeat("b", 10000), scope, "Query too long"},
+		{"too long after expansion", "a=@v", withVars(scope, map[string]string{"v": strings.Repeat("b", 10000)}), "Query too long after variable expansion"},
 		{"parse error", "level=error | eval(x:=)", scope, "parse error"},
 		{"translate error", "level=error | nosuchcommand()", scope, "query error: unsupported command"},
 		{"tlsh() arguments", "tlsh(field=hash)", scope, "tlsh(): needs hash="},
@@ -36,6 +38,19 @@ func TestExecuteBQLRefusals(t *testing.T) {
 				t.Fatalf("got %+v, %v; want an error containing %q", res, err, tc.want)
 			}
 		})
+	}
+}
+
+func withVars(s ExecuteScope, vars map[string]string) ExecuteScope {
+	s.Variables = vars
+	return s
+}
+
+// Comment text does not count toward the length limit, as in a search.
+func TestExecuteBQLLengthIgnoresComments(t *testing.T) {
+	q := "// " + strings.Repeat("x", 10000) + "\nlevel=error | groupby(host)"
+	if _, err := newTestQueryHandler(1000).ExecuteBQL(context.Background(), q, ExecuteScope{PrismID: "p1"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

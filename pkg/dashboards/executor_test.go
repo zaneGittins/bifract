@@ -1,14 +1,42 @@
 package dashboards
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
+	"bifract/pkg/query"
 	"bifract/pkg/storage"
 )
 
-// Variable substitution itself is covered by pkg/bqlvars; the executor just
-// delegates to bqlvars.Substitute.
+type recordingRunner struct {
+	query string
+	scope query.ExecuteScope
+}
+
+func (r *recordingRunner) ExecuteBQL(_ context.Context, q string, s query.ExecuteScope) (*query.ExecuteResult, error) {
+	r.query, r.scope = q, s
+	return &query.ExecuteResult{}, nil
+}
+
+// The widget text goes to the runner as written, so comments are blanked before
+// substitution there; a pivot value overlays the dashboard's stored defaults.
+func TestWidgetPreviewPassesRawQueryAndVariables(t *testing.T) {
+	r := &recordingRunner{}
+	e := NewExecutor(nil, r, nil, nil, ExecutorConfig{})
+	d := &storage.Dashboard{Variables: json.RawMessage(`[{"name":"user","value":"alice"},{"name":"host","value":"web1"}]`)}
+	w := &storage.DashboardWidget{QueryContent: "// don't page\nuser=@user host=@host"}
+	if _, _, err := e.executeWidgetPreview(context.Background(), d, w, json.RawMessage(`[{"name":"user","value":"bob"}]`), time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if r.query != w.QueryContent {
+		t.Errorf("query = %q, want the widget text as written", r.query)
+	}
+	if got := r.scope.Variables; len(got) != 2 || got["user"] != "bob" || got["host"] != "web1" {
+		t.Errorf("variables = %v", got)
+	}
+}
 
 func TestComputeTimeRange(t *testing.T) {
 	approx := func(got, want time.Duration) bool {

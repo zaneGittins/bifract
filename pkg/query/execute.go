@@ -3,11 +3,13 @@ package query
 import (
 	"bifract/pkg/dictionaries"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"bifract/pkg/bqlvars"
 	"bifract/pkg/evidence"
 	"bifract/pkg/models"
 	"bifract/pkg/parser"
@@ -51,6 +53,31 @@ type ExecuteScope struct {
 	// refresh is identifiable in the admin activity view. Empty means the caller
 	// did not attribute it and it shows as background work.
 	Tag storage.QueryTag
+	// Variables are the @name values substituted into the query once its
+	// comments are blanked.
+	Variables map[string]string
+}
+
+const maxQueryLength = 10000
+
+var errEmptyQuery = errors.New("query is empty")
+
+// prepareText turns query text as written into what the parser reads: comments
+// blanked first so their text opens no quote, then @variables substituted. The
+// length limit ignores comments and applies again after expansion.
+func prepareText(raw string, vars map[string]string) (string, error) {
+	q, blanked := parser.StripComments(raw)
+	if strings.TrimSpace(q) == "" {
+		return "", errEmptyQuery
+	}
+	if n := len(q) - blanked; n > maxQueryLength {
+		return "", fmt.Errorf("Query too long (%d chars, max %d)", n, maxQueryLength)
+	}
+	q = bqlvars.SubstituteMap(q, vars)
+	if n := len(q) - blanked; n > maxQueryLength {
+		return "", fmt.Errorf("Query too long after variable expansion (%d chars, max %d)", n, maxQueryLength)
+	}
+	return q, nil
 }
 
 // ExecuteBQL runs a BQL query server-side without an HTTP request, scoped to a
@@ -66,18 +93,17 @@ type ExecuteScope struct {
 //
 // Pass either FractalID (direct scope) or PrismID (prism scope), not both.
 func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope ExecuteScope) (*ExecuteResult, error) {
-	if strings.TrimSpace(queryStr) == "" {
-		return nil, fmt.Errorf("query is empty")
+	queryStr, err := prepareText(queryStr, scope.Variables)
+	if err != nil {
+		return nil, err
 	}
 	fractalID, prismID := scope.FractalID, scope.PrismID
 	start, end := scope.Start, scope.End
 
 	if scope.Tag.Source != "" {
+		// The tag carries the query that ran, not its @variable form.
+		scope.Tag.BQL = queryStr
 		ctx = storage.TagContext(ctx, scope.Tag)
-	}
-	const maxQueryLength = 10000
-	if len(queryStr) > maxQueryLength {
-		return nil, fmt.Errorf("query too long (%d chars, max %d)", len(queryStr), maxQueryLength)
 	}
 
 	pipeline, err := parser.ParseQuery(queryStr)
