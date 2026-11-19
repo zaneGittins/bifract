@@ -135,6 +135,9 @@ func TestFieldQualifiedOperatorsUnescaped(t *testing.T) {
 		{`image=~"a","b"`, "multiSearchAnyCaseInsensitive(fields.`image`::String, ['a', 'b'])"},
 		{`image=^"/usr"`, "startsWith(lower(fields.`image`::String), '/usr')"},
 		{`image=$"/curl"`, "endsWith(lower(fields.`image`::String), '/curl')"},
+		// lower() folds ASCII only, so non-ASCII capitals in the needle must stay.
+		{`image=^"Émile"`, "startsWith(lower(fields.`image`::String), 'Émile')"},
+		{`image=$"JOSÉ.EXE"`, "endsWith(lower(fields.`image`::String), 'josÉ.exe')"},
 		{`image="/usr/bin/curl"`, "fields.`image`::String = '/usr/bin/curl'"},
 		{`commandline=~"https://example.com"`, "multiSearchAnyCaseInsensitive(fields.`commandline`::String, ['https://example.com'])"},
 	}

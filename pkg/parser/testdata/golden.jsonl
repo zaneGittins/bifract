@@ -3056,7 +3056,7 @@
 {"alert":"7f4e73e1695d4753","hints":"52b724b241012262","hist":"50483f404a69dab6","iceberg":"4b83d43d4c57aeed","plain":"52b724b241012262","q":"norm_log=/mimi.*katz/i"}
 {"alert":"983a9d638f7119fa","hints":"13a33dd289b69d28","hist":"5f66cfff88dc7762","iceberg":"8d07d242bb67a171","plain":"13a33dd289b69d28","q":"norm_log=/Ärger/i"}
 {"alert":"d7a0d84272c9b30b","hints":"17231dedf557712c","hist":"814665db1b31ba4f","iceberg":"4930e5e901d49fbe","plain":"9d8657049d700e9b","q":"norm_log=^\"{\\\"abc\""}
-{"alert":"29d4a75133633abc","hints":"995b2c974e7d6de0","hist":"6eadc5c9fc7e4069","iceberg":"a40393f2a2d13037","plain":"b3d9a24cfa0bde9e","q":"norm_log=^\"İstanbul\""}
+{"alert":"4d02bba5cbc9989c","hints":"6c5ec062fd665e09","hist":"58a7885225c727bb","iceberg":"564469a4c0bdf368","plain":"b362a870e284fc74","q":"norm_log=^\"İstanbul\""}
 {"alert":"56a3bf97eacf62da","hints":"bc3c648a47cc2558","hist":"f81b82b1916516c4","iceberg":"a01fd0c148bae88f","plain":"aa75960463263272","q":"norm_log=~\"-enc\",\"/enc\",\"–enc\",\"—enc\",\"―enc\""}
 {"alert":"4797268119b8235e","hints":"b25ec2fef9f819f9","hist":"8edd35cfe2bd58ba","iceberg":"b14452c70f260103","plain":"88abf1d4c1d220ce","q":"norm_log=~\"/tmp/x.sh\""}
 {"alert":"9649b2bebf1c96dd","hints":"0ca166dcce8797b5","hist":"ddaa93b2a01a3b41","iceberg":"873ad0c9bc4f728f","plain":"a8ea51a5e06b164b","q":"norm_log=~\"/usr/bin\""}
