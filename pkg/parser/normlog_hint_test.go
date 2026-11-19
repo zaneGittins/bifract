@@ -261,7 +261,7 @@ func TestNormLogHintOnNormLogFilters(t *testing.T) {
 			`(endsWith(lower(norm_log), 'xyz\\"}') AND indexHint(match(lower(norm_log), 'xyz\\\\"\\}')))`},
 		// =^ and =$ hint the needle they search for, lowered the same way.
 		{`norm_log=^"İstanbul"`,
-			"(startsWith(lower(norm_log), 'istanbul') AND indexHint(match(lower(norm_log), 'istanbul')))"},
+			"(startsWith(lower(norm_log), 'İstanbul') AND indexHint(match(lower(norm_log), 'İstanbul')))"},
 		{`norm_log=~"日本語"`,
 			"(multiSearchAnyCaseInsensitive(norm_log, ['日本語']) AND indexHint(match(lower(norm_log), '日本語')))"},
 	}

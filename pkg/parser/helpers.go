@@ -660,13 +660,24 @@ func buildContainsAnySQL(fieldRef string, values []string, negate bool, mode Sou
 	return expr
 }
 
+// lowerASCII lowers a needle the way ClickHouse lower() lowers the column: ASCII
+// letters only, so a value such as "Émile" still matches itself.
+func lowerASCII(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, s)
+}
+
 // buildStartsWithAnySQL returns a case-insensitive prefix-match-any expression.
 // Uses startsWith(lower(field), lowered_term) which is accelerated by text indexes.
 func buildStartsWithAnySQL(fieldRef string, values []string, negate bool, mode SourceMode) string {
 	values = normLogSearchValues(fieldRef, values, mode)
 	parts := make([]string, len(values))
 	for i, v := range values {
-		parts[i] = fmt.Sprintf("startsWith(lower(%s), %s)", fieldRef, sqlString(strings.ToLower(v)))
+		parts[i] = fmt.Sprintf("startsWith(lower(%s), %s)", fieldRef, sqlString(lowerASCII(v)))
 	}
 	var expr string
 	if len(parts) == 1 {
@@ -686,7 +697,7 @@ func buildEndsWithAnySQL(fieldRef string, values []string, negate bool, mode Sou
 	values = normLogSearchValues(fieldRef, values, mode)
 	parts := make([]string, len(values))
 	for i, v := range values {
-		parts[i] = fmt.Sprintf("endsWith(lower(%s), %s)", fieldRef, sqlString(strings.ToLower(v)))
+		parts[i] = fmt.Sprintf("endsWith(lower(%s), %s)", fieldRef, sqlString(lowerASCII(v)))
 	}
 	var expr string
 	if len(parts) == 1 {
