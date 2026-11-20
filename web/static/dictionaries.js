@@ -147,6 +147,7 @@ const Dictionaries = {
     <td class="dict-col-meta${d.is_global ? ' dict-col-scope-global' : ''}">${this.esc(this.scopeLabel(d))}</td>
     <td class="dict-col-meta">${d.columns ? d.columns.length : 0}</td>
     <td class="dict-col-meta">${(d.row_count || 0).toLocaleString()}</td>
+    <td class="dict-col-meta dict-col-updated" title="${this.esc(TZ.title(d.updated_at))}">${this.esc(Utils.timeAgo(d.updated_at))}</td>
     <td class="kebab-cell"><div class="kebab-wrapper"><button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button><div class="kebab-menu">${d.editable ? `<button class="kebab-item danger" data-id="${d.id}" data-action="delete">Delete</button>` : `<span class="kebab-item dict-kebab-note">${this.esc(this.editElsewhere(d))}</span>`}</div></div></td>
 </tr>`).join('');
 
