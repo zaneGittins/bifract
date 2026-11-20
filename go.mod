@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.50.0
 	github.com/KimMachineGun/automemlimit v1.0.2
-	github.com/apache/arrow-go/v18 v18.8.0
+	github.com/apache/arrow-go/v18 v18.9.0
 	github.com/apache/iceberg-go v0.7.0
 	github.com/aws/aws-sdk-go-v2 v1.47.5
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.13
@@ -37,7 +37,7 @@ require (
 )
 
 require (
-	cel.dev/expr v0.25.2 // indirect
+	cel.dev/expr v0.25.3 // indirect
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.24.1-0.20261001053825-dbc26066f70a // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
@@ -58,9 +58,9 @@ require (
 	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29 // indirect
 	github.com/ProtonMail/go-crypto v1.5.2 // indirect
 	github.com/RoaringBitmap/roaring/v2 v2.26.0 // indirect
-	github.com/andybalholm/brotli v1.2.7 // indirect
+	github.com/andybalholm/brotli v1.2.8 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
-	github.com/apache/thrift v0.24.0 // indirect
+	github.com/apache/thrift v0.25.0 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.25 // indirect
@@ -99,7 +99,7 @@ require (
 	github.com/digitorus/pkcs7 v0.0.0-20260821105541-05f79448fa77 // indirect
 	github.com/digitorus/timestamp v0.0.0-20231217203849-220c5c2851b7 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
-	github.com/envoyproxy/go-control-plane/envoy v1.37.0 // indirect
+	github.com/envoyproxy/go-control-plane/envoy v1.39.1-0.20260819172001-e6e3fd93e4be // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/fatih/color v1.18.0 // indirect
@@ -133,7 +133,7 @@ require (
 	github.com/go-openapi/validate v1.0.0 // indirect
 	github.com/go-sql-driver/mysql v1.10.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
-	github.com/goccy/go-json v0.10.6 // indirect
+	github.com/goccy/go-json v0.12.0 // indirect
 	github.com/goccy/go-yaml v1.17.1 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/certificate-transparency-go v1.4.0 // indirect
@@ -151,7 +151,7 @@ require (
 	github.com/jedisct1/go-minisign v0.0.0-20211028175153-1c139d1cc84b // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/kevinburke/ssh_config v1.6.0 // indirect
-	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.2 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
@@ -169,7 +169,7 @@ require (
 	github.com/parquet-go/jsonlite v1.0.0 // indirect
 	github.com/paulmach/orb v0.13.0 // indirect
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
-	github.com/pierrec/lz4/v4 v4.1.29 // indirect
+	github.com/pierrec/lz4/v4 v4.1.33 // indirect
 	github.com/pjbgf/sha1cd v0.7.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -204,7 +204,7 @@ require (
 	github.com/tmthrgd/go-hex v0.0.0-20190904060850-447a3041c3bc // indirect
 	github.com/transparency-dev/formats v0.1.1 // indirect
 	github.com/transparency-dev/merkle v0.0.2 // indirect
-	github.com/twmb/avro v1.8.0 // indirect
+	github.com/twmb/avro v1.9.0 // indirect
 	github.com/twmb/murmur3 v1.1.8 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
 	github.com/uptrace/bun v1.2.18 // indirect
@@ -235,7 +235,7 @@ require (
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/net v0.61.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
@@ -244,6 +244,6 @@ require (
 	google.golang.org/genproto v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261012220534-4341edf3f941 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect
-	google.golang.org/grpc v1.84.0 // indirect
+	google.golang.org/grpc v1.85.0 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
