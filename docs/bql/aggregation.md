@@ -45,6 +45,50 @@ A bare `| count()` after `groupBy()` counts the groups, not the rows in each:
 * | groupBy(computer_name) | count()
 ```
 
+## Rolling
+
+`rolling()` computes running values per group in time order, the BQL equivalent of SPL `streamstats`. Unlike `groupBy()`, every event is kept: each gains columns computed from the earlier events of its group, up to and including itself.
+
+```
+* | rolling(user, function=[count(), sum(bytes), previous(timestamp)])
+```
+
+| Function | Output | Description |
+|---|---|---|
+| `previous(field)` | `_previous` | The field's value on the group's previous event. Empty on the group's first event: `''` for text, null for a time or number |
+| `count()` | `_count` | Events so far |
+| `count(field, unique=true)` | `_count` | Distinct values so far |
+| `sum(field)` / `avg(field)` | `_sum` / `_avg` | Running total or mean |
+| `min(field)` / `max(field)` | `_min` / `_max` | Smallest or largest so far |
+
+The keys and `as=` work as in `groupBy()`: one field or a list, and `function=` takes one function or a list. Without `function=` it counts. Without keys every event is one group. Events are ordered by `timestamp`, and `log_id` breaks ties.
+
+`previous()` is only valid inside `rolling()`, since only there do events have an order.
+
+A filter before `rolling()` chooses the events it reads; a filter after it reads its output. `event_id=4624 | rolling(user) | country="RU"` shows RU logons with each user's count of all logons so far.
+
+Beaconing, a steady gap between connections:
+
+```
+event_id=3
+| rolling([src_ip, dst_ip], function=previous(timestamp))
+| gap := dateDiff("second", _previous, timestamp)
+| groupBy([src_ip, dst_ip], function=[stddev(gap), count()])
+```
+
+Impossible travel, a logon from a new country soon after the last one. Compare two fields with `field()`:
+
+```
+event_id=4624
+| lookupIP(field=src_ip, include=[country])
+| rolling(user, function=[previous(country, as=prev_country), previous(timestamp, as=prev_time)])
+| !isEmpty(prev_country) AND country != field(prev_country)
+| minutes := dateDiff("minute", prev_time, timestamp)
+| minutes < 120
+```
+
+`rolling()` sorts every event it reads by group and time, so its cost grows with the events matched, not the rows shown. Put a selective filter in front of it, and aggregate after it where you can: showing raw events after `rolling()` keeps each one in memory until the newest are picked. It must come before any aggregation, and is not available in archive search.
+
 ## Basic aggregates
 
 | Function | Output | Description |

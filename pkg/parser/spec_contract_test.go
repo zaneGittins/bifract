@@ -97,6 +97,7 @@ var commandProbes = map[string]commandProbe{
 	"sort":           {base: `* | sort(bytes)`, with: map[string]string{"field": `* | sort(latency)`, "order": `* | sort(bytes, desc)`}},
 	"limit":          {base: `* | limit(5)`, with: map[string]string{"n": `* | limit(7)`}},
 	"head":           {base: `* | head(5)`, with: map[string]string{"n": `* | head(7)`}},
+	"rolling":        {base: `* | rolling(user)`, with: map[string]string{"fields": `* | rolling(user, host)`, "function": `* | rolling(user, function=previous(timestamp))`}},
 	"tail":           {base: `* | tail(5)`, with: map[string]string{"n": `* | tail(7)`}},
 	"table":          {base: `* | table(user)`, with: map[string]string{"fields": `* | table(user, host)`, "limit": `* | table(user, limit=7)`}},
 	"analyzefields":  {base: `* | analyzeFields()`, with: map[string]string{"fields": `* | analyzeFields(user)`, "limit": `* | analyzeFields(limit=7)`}},

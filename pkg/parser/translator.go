@@ -333,6 +333,9 @@ func (q *plannedQuery) declare() error {
 		ctx.CmdIndex = i
 		handler := getCommandHandler(cmd.Name)
 		if handler == nil {
+			if err := rollingOnlyError(cmd.Name); err != nil {
+				return err
+			}
 			return fmt.Errorf("unsupported command: %s", cmd.Name)
 		}
 		before := ctx.Registry.Clone()
@@ -1135,7 +1138,7 @@ func (q *plannedQuery) foldCaps() error {
 		return nil
 	}
 	if plan.special != nil {
-		return fmt.Errorf("head(), tail(), limit() and dedup() can only be followed by a transform here; move the filter before them")
+		return fmt.Errorf("head(), tail(), limit(), dedup() and rolling() can only be followed by a transform here; move the filter before them")
 	}
 	plan.rowLimitByCommand = true
 	// Shown in the cap's order unless something after it sorts.
@@ -1432,9 +1435,14 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignments
 	// logSize) is dropped instead: past this point it is neither grouped nor
 	// aggregated, so projecting it fails with ClickHouse code 215.
 	hasExplicitAgg := false
-	for _, sel := range existing {
+	for i, sel := range existing {
 		name := sel.Name()
 		if added[name] {
+			continue
+		}
+		// A per-row column an aggregate of this stage replaces, as groupBy()'s
+		// _count replaces rolling()'s.
+		if sel.agg == nil && slices.ContainsFunc(existing[i+1:], func(s SelectExpr) bool { return s.agg != nil && s.Name() == name }) {
 			continue
 		}
 		_, inAggOutputs := ctx.Plan.aggregationOutputs[name]

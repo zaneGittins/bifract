@@ -194,6 +194,51 @@ type RowCap struct {
 	// LimitBy and ScanLimitBy keys read.
 	scanKeys              []string
 	limitByDeps, scanDeps deps
+	// window is rolling()'s columns over the rows before it. It keeps every row.
+	window *rollingWindow
+}
+
+// rollingWindow is the columns rolling() adds to each row, computed over the
+// earlier rows of its group in time order.
+type rollingWindow struct {
+	partition []string
+	cols      []SelectExpr
+	// deps is what the keys and columns read.
+	deps deps
+	// reads holds the stored fields the whole query reads, complete only once
+	// it is planned.
+	reads *refRecorder
+}
+
+// rollingWindowName names the window clause the columns are computed over.
+const rollingWindowName = "_rolling"
+
+// sql renders the window's subquery over from. Reading a JSON path through a
+// subquery reads the whole fields column, about 15 times the bytes of the path
+// alone, and the window would sort every row at that width. So unless something
+// reads fields whole, the subquery projects each path the query reads as a
+// column named like the reference, `fields.a.b`, which resolves it unchanged.
+func (w *rollingWindow) sql(from string, where []predicate, wholeFields bool, extraPaths []string) string {
+	star := "*"
+	if !wholeFields && w.reads != nil {
+		cols := []string{"* EXCEPT (fields)"}
+		for _, p := range slices.Concat(w.reads.paths, extraPaths) {
+			col := strings.TrimSuffix(jsonFieldRef(p), "::String") + " AS " + backtickIdent("fields."+p)
+			if !slices.Contains(cols, col) {
+				cols = append(cols, col)
+			}
+		}
+		star = strings.Join(cols, ", ")
+	}
+	spec := ""
+	if len(w.partition) > 0 {
+		spec = "PARTITION BY " + strings.Join(w.partition, ", ") + " "
+	}
+	// log_id breaks timestamp ties so a group's order, and so each running
+	// value, is the same on every run.
+	spec += "ORDER BY timestamp ASC, log_id ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+	return "(SELECT " + star + ", " + strings.Join(selectStrings(w.cols), ", ") + " FROM " + from + whereClause(where) +
+		" WINDOW " + rollingWindowName + " AS (" + spec + "))"
 }
 
 // combinesRows reports whether the layer's SELECT reads its rows together: it
@@ -222,7 +267,7 @@ func (l *QueryLayer) foldLastCap(readThrough bool) {
 		return
 	}
 	last := l.Caps[n-1]
-	if len(last.After) > 0 || len(l.GroupBy) > 0 || len(l.Having) > 0 || len(l.OrderBy) > 0 ||
+	if last.window != nil || len(last.After) > 0 || len(l.GroupBy) > 0 || len(l.Having) > 0 || len(l.OrderBy) > 0 ||
 		l.Limit != "" || l.LimitBy != "" || l.ScanLimitBy != "" {
 		return
 	}
@@ -816,6 +861,10 @@ func (p *QueryPlan) scanFrom(source *QueryStage, opts QueryOptions) (scanSource,
 			}
 			where = append(slices.Clone(where), p.postJoinSQL(after, c.At)...)
 		}
+		if c.window != nil {
+			scan.from = c.window.sql(scan.from, where, p.readsWholeFields(source, opts), p.joinKeyPaths())
+			continue
+		}
 		if c.LimitBy != "" && c.ScanLimitBy == "" {
 			return scanSource{}, fmt.Errorf("dedup() on a computed field can only be followed by a transform; dedup on a log field instead")
 		}
@@ -836,11 +885,34 @@ func (p *QueryPlan) scanFrom(source *QueryStage, opts QueryOptions) (scanSource,
 	}
 	if n := len(caps); n > 0 {
 		scan.pending = caps[n-1].After
+		if caps[n-1].window != nil && len(scan.pending) > 0 {
+			// In the scan's own WHERE, a rolling() column would read an alias of
+			// the same name the scan SELECT defines, as groupBy()'s _count is.
+			scan.from = "(SELECT * FROM " + scan.from + whereClause(scan.pending) + ")"
+			scan.pending = nil
+		}
 		if scan.joined {
 			scan.pending = append(slices.Clone(scan.pending), p.postJoinSQL(caps[n-1].At, -1)...)
 		}
 	}
 	return scan, nil
+}
+
+// readsWholeFields reports whether the rows above the scan's row caps may read the
+// fields column whole rather than path by path.
+func (p *QueryPlan) readsWholeFields(source *QueryStage, opts QueryOptions) bool {
+	if opts.SourceMode != SourceHot || opts.SourceSubquery != "" {
+		return true
+	}
+	return slices.ContainsFunc(source.Layer.Selects, func(s SelectExpr) bool { return s.Expr == "fields" })
+}
+
+// joinKeyPaths is the stored field join() keys on, which its outer side reads.
+func (p *QueryPlan) joinKeyPaths() []string {
+	if p.join == nil || p.join.Key == "" {
+		return nil
+	}
+	return []string{p.join.Key}
 }
 
 // wrapScanDedup wraps the scan in a pre-aggregation dedup, which has to collapse
@@ -1337,6 +1409,9 @@ func (p *QueryPlan) scanJoinPosition(l *QueryLayer) int {
 // capReadsOnlyScan reports whether a row cap's ordering and dedup keys can be
 // evaluated over the logs table's own columns.
 func capReadsOnlyScan(c RowCap) bool {
+	if c.window != nil && !c.window.deps.scan {
+		return false
+	}
 	if c.LimitBy != "" && c.ScanLimitBy == "" {
 		return false
 	}

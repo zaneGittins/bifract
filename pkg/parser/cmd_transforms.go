@@ -1451,6 +1451,8 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		expr := lookupExpr
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(selectAs(expr, safeCol))
 		ctx.Registry.define(col, expr, readsFrom)
+		// Every column is a String, never NULL: numeric ones are rendered as text.
+		ctx.Registry.setType(col, typeText)
 	}
 
 	return nil
