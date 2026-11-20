@@ -102,7 +102,7 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	if restore == nil {
 		t.Fatal("pg_restore never ran")
 	}
-	if restore.joined() != "compose exec -T postgres pg_restore -U bf_user -d bf_db --clean --if-exists" {
+	if restore.joined() != "compose exec -T postgres pg_restore -U bf_user -d bf_db --clean --if-exists --single-transaction --exit-on-error" {
 		t.Errorf("pg_restore call = %s", restore.joined())
 	}
 	if !bytes.Equal(restore.Stdin, dump.Bytes()) {
@@ -133,6 +133,33 @@ func TestRestoreRejectsTamperedBackup(t *testing.T) {
 	for _, c := range fake.calls() {
 		if strings.Contains(c.joined(), "pg_restore") {
 			t.Error("pg_restore ran on a backup that failed authentication")
+		}
+	}
+}
+
+// A failed pg_restore has rolled back, so the restore must report the failure
+// rather than "Restore complete", and must not touch the old database after it.
+func TestRestoreFailsWhenPgRestoreFails(t *testing.T) {
+	dir := writeBackupInstall(t, "")
+	fake := newFakeExec(t, runningStack, fakeRule{Cmd: "docker", Match: []string{"pg_dump"}, Stdout: []byte("dump")})
+	var err error
+	captureStdout(t, func() { err = RunBackup(dir, true) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "backups", "*.bifract-backup"))
+
+	fake.setRules(runningStack, fakeRule{Cmd: "docker", Match: []string{"pg_restore"}, Exit: 1})
+	out := captureStdout(t, func() { err = RunRestore(dir, filepath.Base(files[0]), true) })
+	if err == nil || !strings.Contains(err.Error(), "pg_restore") {
+		t.Errorf("err = %v, want the pg_restore failure", err)
+	}
+	if strings.Contains(out, "Restore complete") {
+		t.Errorf("reported success after pg_restore failed:\n%s", out)
+	}
+	for _, c := range fake.calls() {
+		if strings.Contains(c.joined(), "psql") {
+			t.Errorf("ran %s after pg_restore failed", c.joined())
 		}
 	}
 }

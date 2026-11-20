@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -269,11 +270,9 @@ func RunRestore(dir string, backupFile string, nonInteractive bool) error {
 
 	output, err := docker.ExecPostgresRestore(pgUser, pgDB, bytes.NewReader(parts[1]))
 	if err != nil {
-		// pg_restore often returns non-zero for harmless warnings (e.g. "relation already exists")
-		printWarn(fmt.Sprintf("pg_restore completed with warnings: %s", output))
-	} else {
-		printDone("Database restored")
+		return fmt.Errorf("pg_restore failed, the database was left unchanged: %w\n%s", err, strings.TrimSpace(output))
 	}
+	printDone("Database restored")
 
 	// The restored flags describe pattern lists as they were at backup time, not
 	// the ClickHouse rows they now sit over; the app re-probes them on start.

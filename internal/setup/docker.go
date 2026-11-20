@@ -112,9 +112,10 @@ func (d *DockerOps) ExecPostgresDump(user, db string) ([]byte, error) {
 	return cmd.Output()
 }
 
-// ExecPostgresRestore pipes data to pg_restore inside the postgres container.
+// ExecPostgresRestore pipes data to pg_restore inside the postgres container,
+// in one transaction so a failure leaves the database as it was.
 func (d *DockerOps) ExecPostgresRestore(user, db string, data io.Reader) (string, error) {
-	cmd := d.compose("exec", "-T", "postgres", "pg_restore", "-U", user, "-d", db, "--clean", "--if-exists")
+	cmd := d.compose("exec", "-T", "postgres", "pg_restore", "-U", user, "-d", db, "--clean", "--if-exists", "--single-transaction", "--exit-on-error")
 	cmd.Stdin = data
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
