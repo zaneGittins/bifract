@@ -379,6 +379,9 @@ func conform(sql string, have, want ExprType, node *ExprNode) (string, error) {
 // typo becomes a filter on a column that does not exist and silently matches
 // nothing.
 func unknownFunctionError(name string) error {
+	if err := rollingOnlyError(name); err != nil {
+		return err
+	}
 	if best, ok := closestExprFunc(name); ok {
 		return fmt.Errorf("unknown function %s(); did you mean %s()?", name, best)
 	}

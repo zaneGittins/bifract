@@ -639,6 +639,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
 			Expr: fmt.Sprintf("COUNT(DISTINCT %s)", ref), Alias: "_count",
 		})
+		ctx.Plan.aggregationOutputs["_count"] = true
 		ctx.Plan.IsAggregated = true
 		hasFunction = true // the distinct count is _count; no default COUNT(*) beside it
 	}
@@ -659,7 +660,9 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return fmt.Errorf("groupby(): the key %[1]s and the aggregate this groupby adds are both named %[1]s; name the aggregate with as=, e.g. function=count(as=n)", k.Name)
 		}
 	}
-	if source.Layer.columnIndex("_count") >= 0 {
+	// Only an aggregate: a per-row _count, such as rolling()'s, is not this
+	// aggregation's output.
+	if slices.ContainsFunc(source.Layer.Selects, func(s SelectExpr) bool { return s.Name() == "_count" && s.agg != nil }) {
 		ctx.Plan.aggregationOutputs["_count"] = true
 	}
 	return nil
@@ -814,6 +817,9 @@ func applyAggSpecs(args []Argument, selects *[]SelectExpr, computedFields map[st
 		agg, ok := asAggSpec(a)
 		if !ok {
 			return fmt.Errorf("unknown aggregation function: %s (did you mean multi([...])?)", a)
+		}
+		if err := rollingOnlyError(agg.Name); err != nil {
+			return err
 		}
 		specs := []*AggSpec{agg}
 		where := ""

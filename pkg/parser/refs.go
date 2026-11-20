@@ -127,7 +127,22 @@ func (rs reads) columns() []string {
 
 // refRecorder holds the open scopes of one translation. Every registry of it shares
 // the recorder, so a clone resolving a field records into the same scopes.
-type refRecorder struct{ scopes []reads }
+type refRecorder struct {
+	scopes []reads
+	// paths are the stored fields read anywhere in the translation, which a
+	// rolling() window projects for the SELECTs reading its rows.
+	paths []string
+}
+
+// readPath records a read of the stored field name.
+func (r *FieldRegistry) readPath(name string) {
+	if r.rec == nil {
+		r.rec = &refRecorder{}
+	}
+	if !slices.Contains(r.rec.paths, name) {
+		r.rec.paths = append(r.rec.paths, name)
+	}
+}
 
 // record adds a reference to the innermost open scope.
 func (r *FieldRegistry) record(ref sqlRef) sqlRef {
@@ -214,12 +229,14 @@ func columnRef(col string) sqlRef {
 // Stored is a read of the stored log field name, whatever the registry holds under
 // that name.
 func (r *FieldRegistry) Stored(name string) sqlRef {
+	r.readPath(name)
 	return r.record(sqlRef{sql: r.fieldRef(name), name: name, form: refExpr, deps: deps{scan: true}, typ: typeText})
 }
 
 // jsonRef is a read of the stored field name as its JSON sub-column, whatever the
 // registry holds under that name.
 func (r *FieldRegistry) jsonRef(name string) sqlRef {
+	r.readPath(name)
 	return r.record(sqlRef{sql: jsonFieldRef(name), name: name, form: refExpr, deps: deps{scan: true}, typ: typeText})
 }
 

@@ -589,6 +589,21 @@ var bqlFunctionDocs = []FunctionDoc{
 		},
 	},
 	{
+		Name:        "rolling",
+		Category:    "Aggregation",
+		Description: "Running values per group in time order, like SPL streamstats. Every event is kept and gains columns computed from the earlier events of its group, up to and including itself. Functions: previous(field), count(), sum(), avg(), min(), max(), count(field, unique=true). previous() is empty on a group's first event. Filters after rolling() read its output. It sorts every event it reads, so put a selective filter in front.",
+		Syntax:      "| rolling(field1, field2, ..., function=[previous(timestamp), count()])",
+		Parameters: []Param{
+			{Name: "fields", Type: "string", Required: false, Description: "Fields or expressions that form each group. None makes every event one group"},
+			{Name: "function", Type: "string", Required: false, Description: "A function or a list of them; outputs _previous, _count, _sum, ... or the as= name. Default: count()"},
+		},
+		Examples: []string{
+			"event_id=4624 | rolling(user, function=[previous(country, as=prev_country), previous(timestamp, as=prev_time)])",
+			"event_id=3 | rolling([src_ip, dst_ip], function=previous(timestamp)) | gap := dateDiff(\"second\", _previous, timestamp)",
+			"event_id=4625 | rolling(src_ip) | _count = 10",
+		},
+	},
+	{
 		Name:        "iqr",
 		Category:    "Aggregation",
 		Description: "Calculates the interquartile range (IQR) of a numeric field. Returns Q1 (25th percentile), Q3 (75th percentile), and IQR (Q3-Q1). Useful for robust spread measurement and outlier detection.",
