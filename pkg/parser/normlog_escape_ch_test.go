@@ -187,6 +187,7 @@ func TestNormLogEscapingAgainstClickHouse(t *testing.T) {
 		"plain-old-value",             // 7
 		"exampleXcom",                 // 8 negative control for '.'
 		"usr/bin/no-leading-slash",    // 9 negative control for leading '/'
+		"Émile JOSÉ.EXE",              // 10 non-ASCII capitals
 	}
 	seedRows(t, conn, values)
 
@@ -240,6 +241,8 @@ func TestNormLogEscapingAgainstClickHouse(t *testing.T) {
 		{"exact equality", `image="/usr/bin/curl"`, []uint32{0}},
 		{"prefix", `image=^"/usr/bin"`, []uint32{0}},
 		{"suffix", `image=$"cmd.exe"`, []uint32{1}},
+		{"prefix non-ascii capital", `image=^"Émile"`, []uint32{10}},
+		{"suffix non-ascii capital", `image=$"josÉ.exe"`, []uint32{10}},
 		{"multi-value contains", `image=~"cmd.exe","curl"`, []uint32{0, 1}},
 		{"non-ascii", `image=~"привет"`, []uint32{4}},
 		{"case insensitive", `image=~"powershell.exe"`, []uint32{6}},

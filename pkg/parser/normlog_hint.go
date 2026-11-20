@@ -236,8 +236,8 @@ func normLogValueMatch(v, op string, mode SourceMode) string {
 	}
 	literal := escapeLiteralForNormLog(v, mode)
 	if op == "=^" || op == "=$" {
-		// startsWith and endsWith look for strings.ToLower of the literal itself.
-		literal = strings.ToLower(literal)
+		// startsWith and endsWith look for the literal lowered as lower() does.
+		literal = lowerASCII(literal)
 	}
 	match, _ := indexedNormLogMatch(regexp.QuoteMeta(literal))
 	return match
