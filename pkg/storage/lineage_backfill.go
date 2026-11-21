@@ -17,8 +17,9 @@ import (
 // fractal cleared and re-ingested under the same partition, at no cost to correctness.
 const lineageBackfillDone = "proc_lineage__backfilled"
 
-// lineageBackfillSettings throttle a partition's copy beside live ingest and queries.
-const lineageBackfillSettings = " SETTINGS max_threads = 2, max_insert_threads = 1, insert_deduplicate = 0, max_execution_time = 0"
+// lineageBackfillSettings throttle a partition's copy beside live ingest and queries. Deduplication
+// is off so a partition copied again is not discarded as a duplicate block.
+const lineageBackfillSettings = " SETTINGS max_threads = 2, max_insert_threads = 1, deduplicate_insert_select = 'disable', max_execution_time = 0"
 
 // BackfillLineage fills proc_lineage from the process creations already in logs, on each shard
 // from its own logs, with the lineage view's own SELECT. A process the view already wrote is the

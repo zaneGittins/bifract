@@ -52,8 +52,11 @@ const repartitionProbeFractal = "__bifract_repartition_probe__"
 // repartitionCopySettings throttle each fractal's copy so a conversion running beside
 // live ingest and queries cannot monopolise a node. Deduplication is off because a copy
 // interrupted part way is dropped and reinserted, and a replicated table would otherwise
-// discard the retry as a duplicate block.
-const repartitionCopySettings = " SETTINGS max_threads = 2, max_insert_threads = 1, insert_deduplicate = 0, max_execution_time = 0"
+// discard the retry as a duplicate block. insert_deduplicate is ignored since 26.2.
+const repartitionCopySettings = " SETTINGS max_threads = 2, max_insert_threads = 1, deduplicate_insert_select = 'disable', max_execution_time = 0"
+
+// repartitionProbeSettings let the preflight insert its probe row again after a failed attempt.
+const repartitionProbeSettings = " SETTINGS deduplicate_insert_select = 'disable'"
 
 // repartitionWorkingTables lists every working table a conversion can leave behind, so a
 // reset drops them with the rest of the log data.
@@ -477,7 +480,7 @@ func probeMove(ctx context.Context, conn driver.Conn, live, stage, dst string) e
 	}
 	sel := strings.Replace(cols, "`fractal_id`", "? AS `fractal_id`", 1)
 	if err := conn.Exec(ctx, "INSERT INTO "+quoteCHIdent(stage)+" ("+cols+") SELECT "+sel+" FROM "+quoteCHIdent(live)+
-		" LIMIT 1 SETTINGS insert_deduplicate = 0", repartitionProbeFractal); err != nil {
+		" LIMIT 1"+repartitionProbeSettings, repartitionProbeFractal); err != nil {
 		return err
 	}
 	ids, err := fractalPartitionIDs(ctx, conn, stage, probe)
