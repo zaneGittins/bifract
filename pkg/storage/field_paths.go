@@ -287,9 +287,6 @@ func fieldPathSettings(maxMemoryBytes int64) clickhouse.Settings {
 		"memory_overcommit_ratio_denominator": 0,
 		"max_execution_time":                  fieldPathQueryBudgetSeconds,
 		"timeout_overflow_mode":               "throw",
-		// A recount inserts blocks identical to an earlier attempt's, which a
-		// replicated table would otherwise discard as duplicates.
-		"insert_deduplicate": 0,
 		// ARRAY JOIN multiplies a block by its rows' key counts; small blocks keep
 		// that expansion well under the limit.
 		"max_block_size": 8192,
@@ -544,7 +541,8 @@ func scanPathRows(ctx context.Context, conn driver.Conn, query string, args ...a
 	return out, rows.Err()
 }
 
-// stageRows makes rows the stage's whole content for the partition.
+// stageRows makes rows the stage's whole content for the partition. Dropping the
+// stage partition first also clears its deduplication log, so a repeated recount lands.
 func stageRows(ctx context.Context, conn driver.Conn, partition string, rows []pathRow) error {
 	if err := dropPartitionsOf(ctx, conn, fieldPathsStage, partition); err != nil {
 		return err
