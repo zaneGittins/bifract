@@ -182,6 +182,27 @@ func TestExpressionFilterWorksAsAnyChainLeaf(t *testing.T) {
 	}
 }
 
+// A match operator after a condition used to search the condition's boolean
+// result: lower(x) = "y" =~ "a" became multiSearchAny(lower(x) = 'y', ['a']).
+func TestMatchOperatorNeedsAValueOnItsLeft(t *testing.T) {
+	for _, query := range []string{
+		`* | lower(x) = "y" =~ "a"`,
+		`* | lower(x) = "y" !=$ "a","b"`,
+		`* | a = "z" OR lower(x) = "y" =^ "a"`,
+		`* | isEmpty(x) =~ "a"`,
+		`let &c := lower(x) = "y"; * | &c =~ "a"`,
+		`let &c := lower(x) = "y" =~ "a"; * | &c`,
+	} {
+		pipeline, err := ParseQuery(query)
+		if err == nil {
+			_, err = TranslateToSQLWithOrder(pipeline, serverOpts())
+		}
+		if err == nil || !strings.Contains(err.Error(), "is a condition, not a value") {
+			t.Errorf("%s: want a condition-not-a-value error, got: %v", query, err)
+		}
+	}
+}
+
 // An argument written with no value used to be re-parsed as the whole query,
 // which put a fragment of the user's own text into the SQL.
 func TestAnArgumentWithNoValueIsAParseError(t *testing.T) {
