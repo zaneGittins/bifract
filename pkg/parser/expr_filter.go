@@ -252,9 +252,17 @@ func exprStage(e *ExprNode, registry *FieldRegistry, plan *QueryPlan, willHaveAg
 // grammar rather than the expression grammar, so the expression is compiled to a
 // reference and handed to the same builders a field condition uses.
 func exprMatchSQL(cond Condition, registry *FieldRegistry) (string, error) {
-	ref, _, err := compileExpr(cond.Expr, registry)
+	ref, typ, err := compileExpr(cond.Expr, registry)
 	if err != nil {
 		return "", err
+	}
+	if typ == TypeBool {
+		op := cond.Operator
+		if cond.Negate {
+			op = "!" + op
+		}
+		return "", fmt.Errorf("%s is a condition, not a value; %s matches text, for example lower(image) %s \"cmd\"",
+			cond.Expr.String(), op, op)
 	}
 	values := cond.Values
 	if len(values) == 0 && cond.Value != "" {
