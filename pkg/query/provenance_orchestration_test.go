@@ -1122,7 +1122,7 @@ func TestProvenanceScoreSQLReadsSummary(t *testing.T) {
 		scanned(t, r)
 	})
 	t.Run("unusable first day", func(t *testing.T) {
-		for _, day := range []string{"", "soon"} {
+		for _, day := range []string{"", "soon", "1970-01-01"} {
 			r := setup("true", func() ([]map[string]interface{}, error) {
 				return []map[string]interface{}{{"total_hosts": uint64(40), "recon_hosts": uint64(12), "recon_images": uint64(7), "first_day": day}}, nil
 			})
