@@ -2580,7 +2580,7 @@ func TestDedupFunction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to translate %q: %v", q, err)
 			}
-			want := "FROM (SELECT * FROM logs WHERE timestamp >= '2026-01-01 00:00:00.000' AND timestamp <= '2026-01-02 00:00:00.000' ORDER BY timestamp DESC, log_id DESC LIMIT 1 BY fields.`user`::String)"
+			want := " FROM logs WHERE timestamp >= '2026-01-01 00:00:00.000' AND timestamp <= '2026-01-02 00:00:00.000' ORDER BY timestamp DESC, log_id DESC LIMIT 1 BY fields.`user`::String)"
 			if !strings.Contains(result.SQL, want) {
 				t.Errorf("%q should dedup inside the scan subquery.\n want: %s\n got:  %s", q, want, result.SQL)
 			}

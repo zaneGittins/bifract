@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -213,7 +214,7 @@ func TestCapBeforeAggregationBoundsItsInput(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
-		if !strings.Contains(sql, "FROM (SELECT * FROM logs WHERE") || strings.Contains(sql, "GROUP BY host ORDER BY timestamp") {
+		if !regexp.MustCompile(`FROM \(SELECT \* EXCEPT \(fields\)[^()]*(\([^()]*\)[^()]*)* FROM logs WHERE`).MatchString(sql) || strings.Contains(sql, "GROUP BY host ORDER BY timestamp") {
 			t.Errorf("%s: the aggregation must read the capped rows, unordered by a column it lacks:\n%s", q, sql)
 		}
 	}

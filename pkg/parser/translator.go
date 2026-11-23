@@ -277,6 +277,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 		opts.bindingWork = &n
 	}
 	q := &plannedQuery{ctx: &CommandContext{Registry: sourceRegistry(opts), Plan: plan, Opts: opts, Pipeline: pipeline}}
+	plan.reads = q.ctx.Registry.rec
 	// The time range and fractal scope come first in the scan's WHERE.
 	addBaseConditions(plan, opts)
 	plan.baseWhereLen = len(plan.SourceStage().Layer.Where)
@@ -1569,7 +1570,7 @@ func minimalProjection(ctx *CommandContext, layer *QueryLayer) bool {
 		if !isPlainFieldName(field) {
 			continue
 		}
-		layer.Selects = append(layer.Selects, selectAs(jsonFieldRef(field), backtickIdent(field)))
+		layer.Selects = append(layer.Selects, selectAs(ctx.Registry.jsonRef(field).sql, backtickIdent(field)))
 	}
 	return true
 }

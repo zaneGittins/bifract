@@ -205,31 +205,14 @@ type rollingWindow struct {
 	cols      []SelectExpr
 	// deps is what the keys and columns read.
 	deps deps
-	// reads holds the stored fields the whole query reads, complete only once
-	// it is planned.
-	reads *refRecorder
 }
 
 // rollingWindowName names the window clause the columns are computed over.
 const rollingWindowName = "_rolling"
 
-// sql renders the window's subquery over from. Reading a JSON path through a
-// subquery reads the whole fields column, about 15 times the bytes of the path
-// alone, and the window would sort every row at that width. So unless something
-// reads fields whole, the subquery projects each path the query reads as a
-// column named like the reference, `fields.a.b`, which resolves it unchanged.
-func (w *rollingWindow) sql(from string, where []predicate, wholeFields bool, extraPaths []string) string {
-	star := "*"
-	if !wholeFields && w.reads != nil {
-		cols := []string{"* EXCEPT (fields)"}
-		for _, p := range slices.Concat(w.reads.paths, extraPaths) {
-			col := strings.TrimSuffix(jsonFieldRef(p), "::String") + " AS " + backtickIdent("fields."+p)
-			if !slices.Contains(cols, col) {
-				cols = append(cols, col)
-			}
-		}
-		star = strings.Join(cols, ", ")
-	}
+// sql renders the window's subquery over from, projecting star (see
+// QueryPlan.scanStar).
+func (w *rollingWindow) sql(from, star string, where []predicate) string {
 	spec := ""
 	if len(w.partition) > 0 {
 		spec = "PARTITION BY " + strings.Join(w.partition, ", ") + " "
@@ -331,6 +314,10 @@ type QueryPlan struct {
 	histogram histogramPlan
 	deferred  deferredPlan
 	table     tablePlan
+
+	// reads records the stored fields the whole query reads, complete once it is
+	// planned.
+	reads *refRecorder
 
 	// aggregationOutputs are the current stage's aggregate aliases (_count, _sum, ...):
 	// an aggregate reading one aggregates the stage's groups (see aggregateOver).
@@ -819,6 +806,8 @@ type scanSource struct {
 	from    string
 	pending []predicate
 	joined  bool
+	// narrowed records that from already projects the paths the query reads.
+	narrowed bool
 }
 
 // scanFrom builds the row source of the scan: the table, wrapped by the archive's
@@ -862,7 +851,7 @@ func (p *QueryPlan) scanFrom(source *QueryStage, opts QueryOptions) (scanSource,
 			where = append(slices.Clone(where), p.postJoinSQL(after, c.At)...)
 		}
 		if c.window != nil {
-			scan.from = c.window.sql(scan.from, where, p.readsWholeFields(source, opts), p.joinKeyPaths())
+			scan.from = c.window.sql(scan.from, p.scanStar(&scan, source, opts), where)
 			continue
 		}
 		if c.LimitBy != "" && c.ScanLimitBy == "" {
@@ -872,7 +861,7 @@ func (p *QueryPlan) scanFrom(source *QueryStage, opts QueryOptions) (scanSource,
 		if len(order) == 0 {
 			order = defaultRowOrder(opts)
 		}
-		capSQL := "(SELECT * FROM " + scan.from + whereClause(where)
+		capSQL := "(SELECT " + p.scanStar(&scan, source, opts) + " FROM " + scan.from + whereClause(where)
 		if len(order) > 0 {
 			capSQL += " ORDER BY " + orderSQL(order)
 		}
@@ -898,21 +887,30 @@ func (p *QueryPlan) scanFrom(source *QueryStage, opts QueryOptions) (scanSource,
 	return scan, nil
 }
 
-// readsWholeFields reports whether the rows above the scan's row caps may read the
-// fields column whole rather than path by path.
-func (p *QueryPlan) readsWholeFields(source *QueryStage, opts QueryOptions) bool {
-	if opts.SourceMode != SourceHot || opts.SourceSubquery != "" {
-		return true
+// scanStar is the projection of a subquery wrapped around the scan. Reading a JSON
+// path through a subquery reads the whole fields column, about 15 times the bytes
+// of the path alone. So unless something reads fields whole, it projects each path
+// the query reads as a column named like the reference, `fields.a.b`, which
+// resolves it unchanged. Subqueries around that one read it with *.
+func (p *QueryPlan) scanStar(scan *scanSource, source *QueryStage, opts QueryOptions) string {
+	if scan.narrowed || p.reads == nil || opts.SourceMode != SourceHot || opts.SourceSubquery != "" ||
+		slices.ContainsFunc(source.Layer.Selects, func(s SelectExpr) bool { return s.Expr == "fields" }) {
+		return "*"
 	}
-	return slices.ContainsFunc(source.Layer.Selects, func(s SelectExpr) bool { return s.Expr == "fields" })
-}
-
-// joinKeyPaths is the stored field join() keys on, which its outer side reads.
-func (p *QueryPlan) joinKeyPaths() []string {
-	if p.join == nil || p.join.Key == "" {
-		return nil
+	paths := p.reads.paths
+	if p.join != nil && p.join.Key != "" {
+		// join()'s outer side reads its key.
+		paths = append(slices.Clone(paths), p.join.Key)
 	}
-	return []string{p.join.Key}
+	scan.narrowed = true
+	cols := []string{"* EXCEPT (fields)"}
+	for _, path := range paths {
+		col := strings.TrimSuffix(jsonFieldRef(path), "::String") + " AS " + backtickIdent("fields."+path)
+		if !slices.Contains(cols, col) {
+			cols = append(cols, col)
+		}
+	}
+	return strings.Join(cols, ", ")
 }
 
 // wrapScanDedup wraps the scan in a pre-aggregation dedup, which has to collapse
@@ -927,11 +925,10 @@ func (p *QueryPlan) wrapScanDedup(scan *scanSource, source *QueryStage, opts Que
 		// Without an aggregation it renders on this SELECT.
 		return layer.ScanLimitBy
 	}
-	// SELECT * rather than a column list: ClickHouse prunes the columns the outer
+	// A star rather than a column list: ClickHouse prunes the columns the outer
 	// query does not read out of a star projection through LIMIT BY, but reads
 	// every column an explicit list names (measured on one window: 1.8MiB vs
-	// 168MiB), and the wrapper stays independent of what the aggregation above it
-	// references.
+	// 168MiB). Only the JSON paths are listed (see scanStar).
 	order := ""
 	if o := dedupScanOrder(opts); len(o) > 0 {
 		// LIMIT BY keeps the first row of each key, so ordering the scan is what
@@ -939,7 +936,7 @@ func (p *QueryPlan) wrapScanDedup(scan *scanSource, source *QueryStage, opts Que
 		// than whichever row was read first.
 		order = " ORDER BY " + orderSQL(o)
 	}
-	scan.from = "(SELECT * FROM " + scan.from + whereClause(scan.pending) + order + " " + layer.ScanLimitBy + ")"
+	scan.from = "(SELECT " + p.scanStar(scan, source, opts) + " FROM " + scan.from + whereClause(scan.pending) + order + " " + layer.ScanLimitBy + ")"
 	scan.pending = nil
 	return layer.LimitBy
 }
