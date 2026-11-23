@@ -20,6 +20,8 @@ const (
 	ChangeCreate = "create"
 	ChangeUpdate = "update"
 	ChangeDelete = "delete"
+	// ChangeActions adds and removes actions across many alerts as one proposal.
+	ChangeActions = "actions"
 
 	// ChangeDraft is unsubmitted work, private to its author. Same row as a proposal,
 	// so finishing it is a status change rather than a copy.
@@ -79,23 +81,25 @@ type Review struct {
 // ChangeRequest is a proposed change to an alert, held apart from the alert so the
 // live definition keeps running while it is reviewed.
 type ChangeRequest struct {
-	ID          string           `json:"id"`
-	AlertID     string           `json:"alert_id,omitempty"`
-	AlertName   string           `json:"alert_name,omitempty"`
-	Kind        string           `json:"kind"`
-	Status      string           `json:"status"`
-	Title       string           `json:"title"`
-	Summary     string           `json:"summary"`
-	Content     *RevisionContent `json:"content,omitempty"`
-	Tests       []AlertTest      `json:"tests,omitempty"`
-	ContentHash string           `json:"content_hash"`
-	BaseHash    string           `json:"base_hash,omitempty"`
-	Author      string           `json:"author"`
-	AuthorLabel string           `json:"author_label"`
-	CreatedAt   string           `json:"created_at"`
-	UpdatedAt   string           `json:"updated_at"`
-	MergedAt    string           `json:"merged_at,omitempty"`
-	MergedBy    string           `json:"merged_by,omitempty"`
+	ID        string           `json:"id"`
+	AlertID   string           `json:"alert_id,omitempty"`
+	AlertName string           `json:"alert_name,omitempty"`
+	Kind      string           `json:"kind"`
+	Status    string           `json:"status"`
+	Title     string           `json:"title"`
+	Summary   string           `json:"summary"`
+	Content   *RevisionContent `json:"content,omitempty"`
+	Tests     []AlertTest      `json:"tests,omitempty"`
+	// Actions is the bulk edit an actions proposal makes, in place of Content.
+	Actions     *BulkActionChange `json:"actions,omitempty"`
+	ContentHash string            `json:"content_hash"`
+	BaseHash    string            `json:"base_hash,omitempty"`
+	Author      string            `json:"author"`
+	AuthorLabel string            `json:"author_label"`
+	CreatedAt   string            `json:"created_at"`
+	UpdatedAt   string            `json:"updated_at"`
+	MergedAt    string            `json:"merged_at,omitempty"`
+	MergedBy    string            `json:"merged_by,omitempty"`
 
 	Reviews []Review `json:"reviews,omitempty"`
 
@@ -267,14 +271,27 @@ type ChangeRequestInput struct {
 	Summary string           `json:"summary"`
 	Content *RevisionContent `json:"content,omitempty"`
 	Tests   []AlertTest      `json:"tests,omitempty"`
+	// Actions is set only for an actions proposal.
+	Actions *BulkActionChange `json:"actions,omitempty"`
 }
 
 // Validate checks a proposal is coherent before it is stored.
 func (in *ChangeRequestInput) Validate() error {
 	switch in.Kind {
 	case ChangeCreate, ChangeUpdate, ChangeDelete:
+	case ChangeActions:
+		if in.AlertID != "" || in.Content != nil {
+			return fmt.Errorf("an actions proposal names its alerts in actions")
+		}
+		if in.Actions == nil {
+			return fmt.Errorf("an actions proposal needs actions")
+		}
+		return validateActionChanges(in.Actions.Changes)
 	default:
-		return fmt.Errorf("kind must be create, update or delete")
+		return fmt.Errorf("kind must be create, update, delete or actions")
+	}
+	if in.Actions != nil {
+		return fmt.Errorf("only an actions proposal carries actions")
 	}
 
 	if in.Kind != ChangeCreate && in.AlertID == "" {

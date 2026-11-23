@@ -45,9 +45,9 @@ func rowsOf(cols int, values ...driver.Value) fakedb.PGResult {
 }
 
 // alertRow answers the definition read of loadRevisionContentTx.
-func alertRow(name, query string) fakedb.PGResult {
-	return rowsOf(13,
-		name, "desc", query, "event", "medium", int64(0), int64(0), "", []byte("{b,a}"), []byte("{}"),
+func alertRow(id, name, query string) fakedb.PGResult {
+	return rowsOf(14,
+		id, name, "desc", query, "event", "medium", int64(0), int64(0), "", []byte("{b,a}"), []byte("{}"),
 		nil, nil, nil)
 }
 
@@ -78,9 +78,9 @@ func TestWriteRevisionSeedsHistoryOnFirstEdit(t *testing.T) {
 		case strings.Contains(q, "FROM alert_revisions"):
 			return fakedb.PGResult{} // no history yet
 		case strings.Contains(q, "FROM alerts WHERE id"):
-			return alertRow("old name", `a="1"`)
+			return alertRow("alert-1", "old name", `a="1"`)
 		case strings.Contains(q, "FROM alert_webhook_actions"):
-			return rowsOf(1, "w2", "w1")
+			return rowsOf(2, "alert-1", "w2", "alert-1", "w1")
 		}
 		return fakedb.Affected(1)
 	})
@@ -189,7 +189,7 @@ func TestWriteRevisionSurfacesStoreErrors(t *testing.T) {
 				case strings.Contains(q, "FROM alert_revisions"):
 					return fakedb.PGResult{}
 				case strings.Contains(q, "FROM alerts WHERE id"):
-					return alertRow("n", `a="1"`)
+					return alertRow("alert-1", "n", `a="1"`)
 				}
 				return fakedb.Affected(1)
 			})

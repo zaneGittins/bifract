@@ -49,6 +49,7 @@ const Toast = {
                 <div class="toast-title">${Utils.escapeHtml(title)}</div>
                 ${message ? `<div class="toast-message">${Utils.escapeHtml(message)}</div>` : ''}
             </div>
+            ${config.action ? `<button class="toast-action">${Utils.escapeHtml(config.action.label)}</button>` : ''}
             ${config.closable ? '<button class="toast-close" title="Close">&times;</button>' : ''}
             ${config.showProgress ? '<div class="toast-progress"></div>' : ''}
         `;
@@ -64,6 +65,15 @@ const Toast = {
                 if (e.target.classList.contains('toast-close')) return;
                 config.onClick();
                 this.hide(toastId);
+            });
+        }
+
+        // An action button (e.g. Undo) runs once and dismisses the toast.
+        if (config.action) {
+            toast.querySelector('.toast-action').addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.hide(toastId);
+                config.action.onClick();
             });
         }
 

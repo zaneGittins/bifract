@@ -62,6 +62,8 @@ var routeTable = []string{
 	"POST /api/v1/alert-policies/import 8 auth body resp fractal_admin",
 	"GET /api/v1/alerts 8 auth resp viewer",
 	"POST /api/v1/alerts 8 auth body resp analyst",
+	"POST /api/v1/alerts/batch-actions 8 auth body resp analyst",
+	"POST /api/v1/alerts/batch-actions/preview 8 auth body resp analyst",
 	"POST /api/v1/alerts/batch-toggle 8 auth body resp analyst",
 	"GET /api/v1/alerts/bundle 8 auth analyst",
 	"POST /api/v1/alerts/bundle 8 auth body resp analyst",

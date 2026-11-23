@@ -91,6 +91,11 @@ func (m *Manager) SubmitChangeRequest(ctx context.Context, crID, fractalID, pris
 			return nil, err
 		}
 	}
+	if in.Actions != nil && crID == "" {
+		if _, err := m.PreviewActionChanges(ctx, *in.Actions, fractalID, prismID); err != nil {
+			return nil, err
+		}
+	}
 
 	contentHash, baseHash, contentJSON, testsJSON, err := m.prepareProposal(ctx, in)
 	if err != nil {
@@ -119,6 +124,9 @@ func (m *Manager) SubmitChangeRequest(ctx context.Context, crID, fractalID, pris
 		// from the request would let a PUT recompute base_hash against a different
 		// alert, or none, while the row kept its original kind: the stale-proposal
 		// guard would be erased without anything looking wrong.
+		if existing.Kind == ChangeActions {
+			return nil, fmt.Errorf("an actions proposal cannot be revised: withdraw it and propose the edit again")
+		}
 		in.Kind = existing.Kind
 		in.AlertID = existing.AlertID
 		if err := in.Validate(); err != nil {
@@ -166,6 +174,11 @@ func (m *Manager) SubmitChangeRequest(ctx context.Context, crID, fractalID, pris
 }
 
 func marshalProposal(in ChangeRequestInput) (contentJSON, testsJSON []byte, err error) {
+	if in.Actions != nil {
+		if contentJSON, err = json.Marshal(in.Actions); err != nil {
+			return nil, nil, fmt.Errorf("encode proposal: %w", err)
+		}
+	}
 	if in.Content != nil {
 		if contentJSON, err = json.Marshal(in.Content); err != nil {
 			return nil, nil, fmt.Errorf("encode proposal: %w", err)
@@ -216,7 +229,13 @@ func scanChangeRequest(scan func(...interface{}) error) (*ChangeRequest, error) 
 		}
 	}
 
-	if len(contentRaw) > 0 {
+	if len(contentRaw) > 0 && cr.Kind == ChangeActions {
+		var change BulkActionChange
+		if err := json.Unmarshal(contentRaw, &change); err != nil {
+			return nil, fmt.Errorf("decode proposal %s: %w", cr.ID, err)
+		}
+		cr.Actions = &change
+	} else if len(contentRaw) > 0 {
 		var content RevisionContent
 		if err := json.Unmarshal(contentRaw, &content); err != nil {
 			return nil, fmt.Errorf("decode proposal %s: %w", cr.ID, err)
@@ -483,6 +502,12 @@ func (m *Manager) prepareProposal(ctx context.Context, in ChangeRequestInput) (c
 	if in.Content != nil {
 		in.Content.canonicalize()
 		if contentHash, err = in.Content.Hash(); err != nil {
+			return "", "", nil, nil, err
+		}
+	}
+	if in.Actions != nil {
+		in.Actions.canonicalize()
+		if contentHash, err = in.Actions.Hash(); err != nil {
 			return "", "", nil, nil, err
 		}
 	}

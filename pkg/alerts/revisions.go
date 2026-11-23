@@ -162,64 +162,82 @@ func (c RevisionContent) ToUpdateRequest(enabled bool) AlertUpdateRequest {
 }
 
 // loadRevisionContentTx reads an alert's current definition from inside a transaction.
+func loadRevisionContentTx(ctx context.Context, tx storage.Tx, alertID string) (RevisionContent, error) {
+	contents, err := loadRevisionContentsTx(ctx, tx, []string{alertID})
+	if err != nil {
+		return RevisionContent{}, err
+	}
+	c, ok := contents[alertID]
+	if !ok {
+		return c, fmt.Errorf("load alert definition: %w", sql.ErrNoRows)
+	}
+	return c, nil
+}
+
+// loadRevisionContentsTx reads the current definitions of a set of alerts, in a fixed
+// number of queries however many there are. Missing alerts are absent from the map.
 //
 // It reads the association tables directly rather than reusing GetAlert, whose action
 // aggregates filter on enabled = true: a disabled action would silently vanish from the
 // snapshot and then from anything restored out of it.
-func loadRevisionContentTx(ctx context.Context, tx storage.Tx, alertID string) (RevisionContent, error) {
-	var c RevisionContent
-	err := tx.QueryRow(ctx, `
-		SELECT name, COALESCE(description, ''), query_string, COALESCE(alert_type, 'event'),
+func loadRevisionContentsTx(ctx context.Context, tx storage.Tx, alertIDs []string) (map[string]RevisionContent, error) {
+	out := make(map[string]RevisionContent, len(alertIDs))
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, name, COALESCE(description, ''), query_string, COALESCE(alert_type, 'event'),
 		       COALESCE(severity, 'medium'), COALESCE(throttle_time_seconds, 0),
 		       COALESCE(max_event_lag_seconds, 0),
 		       COALESCE(throttle_field, ''), labels, "references",
 		       window_duration, schedule_cron, query_window_seconds
-		  FROM alerts WHERE id = $1`, alertID,
-	).Scan(&c.Name, &c.Description, &c.QueryString, &c.AlertType, &c.Severity,
-		&c.ThrottleTimeSeconds, &c.MaxEventLagSeconds, &c.ThrottleField, pq.Array(&c.Labels), pq.Array(&c.References),
-		&c.WindowDuration, &c.ScheduleCron, &c.QueryWindowSeconds)
+		  FROM alerts WHERE id = ANY($1)`, pq.Array(alertIDs))
 	if err != nil {
-		return c, fmt.Errorf("load alert definition: %w", err)
+		return nil, fmt.Errorf("load alert definition: %w", err)
 	}
-
-	links := []struct {
-		table  string
-		column string
-		dest   *[]string
-	}{
-		{"alert_webhook_actions", "webhook_id", &c.WebhookActionIDs},
-		{"alert_fractal_actions", "fractal_action_id", &c.FractalActionIDs},
-		{"alert_dictionary_actions", "dictionary_action_id", &c.DictionaryActionIDs},
-		{"alert_email_actions", "email_action_id", &c.EmailActionIDs},
-	}
-	for _, l := range links {
-		ids, err := scanIDs(ctx, tx, fmt.Sprintf("SELECT %s::text FROM %s WHERE alert_id = $1", l.column, l.table), alertID)
-		if err != nil {
-			return c, fmt.Errorf("load %s: %w", l.table, err)
-		}
-		*l.dest = ids
-	}
-
-	c.canonicalize()
-	return c, nil
-}
-
-func scanIDs(ctx context.Context, tx storage.Tx, query, alertID string) ([]string, error) {
-	rows, err := tx.Query(ctx, query, alertID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	ids := []string{}
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
+		var c RevisionContent
+		if err := rows.Scan(&id, &c.Name, &c.Description, &c.QueryString, &c.AlertType, &c.Severity,
+			&c.ThrottleTimeSeconds, &c.MaxEventLagSeconds, &c.ThrottleField, pq.Array(&c.Labels), pq.Array(&c.References),
+			&c.WindowDuration, &c.ScheduleCron, &c.QueryWindowSeconds); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("load alert definition: %w", err)
 		}
-		ids = append(ids, id)
+		out[id] = c
 	}
-	return ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("load alert definition: %w", err)
+	}
+	rows.Close()
+
+	for _, k := range actionKinds {
+		links, err := tx.Query(ctx, fmt.Sprintf("SELECT alert_id::text, %s::text FROM %s WHERE alert_id = ANY($1)", k.column, k.link), pq.Array(alertIDs))
+		if err != nil {
+			return nil, fmt.Errorf("load %s: %w", k.link, err)
+		}
+		for links.Next() {
+			var alertID, actionID string
+			if err := links.Scan(&alertID, &actionID); err != nil {
+				links.Close()
+				return nil, fmt.Errorf("load %s: %w", k.link, err)
+			}
+			if c, ok := out[alertID]; ok {
+				ids := k.get(&c)
+				*ids = append(*ids, actionID)
+				out[alertID] = c
+			}
+		}
+		if err := links.Err(); err != nil {
+			links.Close()
+			return nil, fmt.Errorf("load %s: %w", k.link, err)
+		}
+		links.Close()
+	}
+
+	for id, c := range out {
+		c.canonicalize()
+		out[id] = c
+	}
+	return out, nil
 }
 
 // headRevision returns the newest stored revision for an alert, or ok=false if the
@@ -263,28 +281,163 @@ func writeRevision(ctx context.Context, tx storage.Tx, alertID string, content R
 		return err
 	}
 
+	var seed RevisionContent
 	if !hasHead {
 		// Seed the pre-edit definition. Callers run this before touching the alert
 		// row, so what is read here is the state the edit is replacing.
-		seed, err := loadRevisionContentTx(ctx, tx, alertID)
-		if err != nil {
+		if seed, err = loadRevisionContentTx(ctx, tx, alertID); err != nil {
 			return err
 		}
+	}
+	rows, err := revisionsFor(revisionHead{headNum, headHash, headContent, hasHead}, seed, content, hash)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if err := insertRevision(ctx, tx, alertID, r.revision, r.content, r.hash, r.summary, author, authorLabel, retention); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// revisionHead is an alert's newest stored revision, if it has one.
+type revisionHead struct {
+	num     int
+	hash    string
+	content RevisionContent
+	ok      bool
+}
+
+// pendingRevision is one revision to record.
+type pendingRevision struct {
+	revision int
+	content  RevisionContent
+	hash     string
+	summary  string
+}
+
+// revisionsFor decides what an edit records: the pre-edit definition as revision 1
+// when the alert has no history yet, then the edit itself unless it changes nothing.
+func revisionsFor(head revisionHead, seed, content RevisionContent, hash string) ([]pendingRevision, error) {
+	var rows []pendingRevision
+	if !head.ok {
 		seedHash, err := seed.Hash()
 		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, pendingRevision{1, seed, seedHash, "initial"})
+		head = revisionHead{1, seedHash, seed, true}
+	}
+	if head.hash != hash {
+		rows = append(rows, pendingRevision{head.num + 1, content, hash, summarizeChange(head.content, content)})
+	}
+	return rows, nil
+}
+
+// writeRevisions records edits to many alerts in a fixed number of statements, so a
+// bulk edit fits the request deadline however many alerts it touches. seeds holds each
+// alert's pre-edit definition, recorded first for any alert without history.
+func writeRevisions(ctx context.Context, tx storage.Tx, edits, seeds map[string]RevisionContent, author, authorLabel string, retention int) error {
+	ids := make([]string, 0, len(edits))
+	for id := range edits {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	heads := make(map[string]revisionHead, len(ids))
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT ON (alert_id) alert_id::text, revision, content_hash, content
+		  FROM alert_revisions WHERE alert_id = ANY($1)
+		 ORDER BY alert_id, revision DESC`, pq.Array(ids))
+	if err != nil {
+		return fmt.Errorf("load head revisions: %w", err)
+	}
+	for rows.Next() {
+		var id string
+		var h revisionHead
+		var raw []byte
+		if err := rows.Scan(&id, &h.num, &h.hash, &raw); err != nil {
+			rows.Close()
 			return err
 		}
-		if err := insertRevision(ctx, tx, alertID, 1, seed, seedHash, "initial", author, authorLabel, retention); err != nil {
+		if err := json.Unmarshal(raw, &h.content); err != nil {
+			rows.Close()
+			return fmt.Errorf("decode revision %d of %s: %w", h.num, id, err)
+		}
+		h.content.canonicalize()
+		h.ok = true
+		heads[id] = h
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	var alertIDs, contents, hashes, summaries []string
+	var revisions []int64
+	latest := map[string]int{}
+	for _, id := range ids {
+		content := edits[id]
+		content.canonicalize()
+		hash, err := content.Hash()
+		if err != nil {
 			return err
 		}
-		headNum, headHash, headContent = 1, seedHash, seed
+		seed := seeds[id]
+		seed.canonicalize()
+		out, err := revisionsFor(heads[id], seed, content, hash)
+		if err != nil {
+			return err
+		}
+		for _, r := range out {
+			raw, err := json.Marshal(r.content)
+			if err != nil {
+				return err
+			}
+			alertIDs = append(alertIDs, id)
+			revisions = append(revisions, int64(r.revision))
+			contents = append(contents, string(raw))
+			hashes = append(hashes, r.hash)
+			summaries = append(summaries, r.summary)
+			latest[id] = r.revision
+		}
+	}
+	if len(alertIDs) == 0 {
+		return nil
 	}
 
-	if headHash == hash {
-		return nil // definition unchanged, nothing to record
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO alert_revisions (alert_id, revision, content, content_hash, summary, author, author_label)
+		SELECT r.alert_id, r.revision, r.content, r.content_hash, r.summary, $6, $7
+		  FROM unnest($1::uuid[], $2::int[], $3::jsonb[], $4::text[], $5::text[])
+		       AS r(alert_id, revision, content, content_hash, summary)`,
+		pq.Array(alertIDs), pq.Array(revisions), pq.Array(contents), pq.Array(hashes), pq.Array(summaries),
+		storage.NullableUser(author), authorLabel,
+	); err != nil {
+		return fmt.Errorf("insert alert revisions: %w", err)
 	}
 
-	return insertRevision(ctx, tx, alertID, headNum+1, content, hash, summarizeChange(headContent, content), author, authorLabel, retention)
+	if retention > 0 {
+		pruneIDs := make([]string, 0, len(latest))
+		floors := make([]int64, 0, len(latest))
+		for _, id := range ids {
+			if rev, ok := latest[id]; ok {
+				pruneIDs = append(pruneIDs, id)
+				floors = append(floors, int64(rev-retention))
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM alert_revisions r
+			 USING unnest($1::uuid[], $2::int[]) AS p(alert_id, floor)
+			 WHERE r.alert_id = p.alert_id AND r.revision <= p.floor`,
+			pq.Array(pruneIDs), pq.Array(floors),
+		); err != nil {
+			return fmt.Errorf("prune alert revisions: %w", err)
+		}
+	}
+	return nil
 }
 
 func insertRevision(ctx context.Context, tx storage.Tx, alertID string, revision int, content RevisionContent, hash, summary, author, authorLabel string, retention int) error {
@@ -402,16 +555,42 @@ func (e *RestoreBlockedError) Error() string {
 	return "revision refers to actions that are no longer available: " + strings.Join(parts, ", ")
 }
 
-// actionKinds maps a revision's action ID sets to the tables that hold them.
-var actionKinds = []struct {
-	kind  string
-	table string
-	get   func(*RevisionContent) *[]string
-}{
-	{"webhook", "webhook_actions", func(c *RevisionContent) *[]string { return &c.WebhookActionIDs }},
-	{"fractal", "fractal_actions", func(c *RevisionContent) *[]string { return &c.FractalActionIDs }},
-	{"dictionary", "dictionary_actions", func(c *RevisionContent) *[]string { return &c.DictionaryActionIDs }},
-	{"email", "email_actions", func(c *RevisionContent) *[]string { return &c.EmailActionIDs }},
+// Action kinds, as named in revisions, proposals and bulk edits.
+const (
+	ActionKindWebhook    = "webhook"
+	ActionKindFractal    = "fractal"
+	ActionKindDictionary = "dictionary"
+	ActionKindEmail      = "email"
+)
+
+// actionKind is one kind of action: the table defining it, the table linking it to
+// alerts, and where a revision keeps its IDs.
+type actionKind struct {
+	kind   string
+	table  string
+	link   string
+	column string
+	get    func(*RevisionContent) *[]string
+}
+
+var actionKinds = []actionKind{
+	{ActionKindWebhook, "webhook_actions", "alert_webhook_actions", "webhook_id",
+		func(c *RevisionContent) *[]string { return &c.WebhookActionIDs }},
+	{ActionKindFractal, "fractal_actions", "alert_fractal_actions", "fractal_action_id",
+		func(c *RevisionContent) *[]string { return &c.FractalActionIDs }},
+	{ActionKindDictionary, "dictionary_actions", "alert_dictionary_actions", "dictionary_action_id",
+		func(c *RevisionContent) *[]string { return &c.DictionaryActionIDs }},
+	{ActionKindEmail, "email_actions", "alert_email_actions", "email_action_id",
+		func(c *RevisionContent) *[]string { return &c.EmailActionIDs }},
+}
+
+func lookupActionKind(kind string) (actionKind, bool) {
+	for _, k := range actionKinds {
+		if k.kind == kind {
+			return k, true
+		}
+	}
+	return actionKind{}, false
 }
 
 // missingActionRefs returns the action references in a revision that no longer resolve

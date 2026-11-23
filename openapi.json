@@ -3701,6 +3701,168 @@
         "x-bifract-access": "analyst"
       }
     },
+    "/api/v1/alerts/batch-actions": {
+      "post": {
+        "operationId": "post_api_v1_alerts_batch_actions",
+        "summary": "Add and remove actions across many alerts, or propose it when changes are reviewed.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.BulkActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.BulkActionPlan"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/alerts/batch-actions/preview": {
+      "post": {
+        "operationId": "post_api_v1_alerts_batch_actions_preview",
+        "summary": "Work out adding and removing actions across many alerts, without applying it.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.BulkActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.BulkActionPlan"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
     "/api/v1/alerts/batch-toggle": {
       "post": {
         "operationId": "post_api_v1_alerts_batch_toggle",
@@ -31919,6 +32081,77 @@
   },
   "components": {
     "schemas": {
+      "alerts.ActionChange": {
+        "type": "object",
+        "properties": {
+          "add": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.ActionRef"
+            }
+          },
+          "alert_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.ActionRef"
+            }
+          }
+        },
+        "required": [
+          "alert_ids"
+        ]
+      },
+      "alerts.ActionRef": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ]
+      },
+      "alerts.ActionTally": {
+        "type": "object",
+        "properties": {
+          "added": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "removed": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "added",
+          "removed",
+          "skipped"
+        ]
+      },
       "alerts.ActionTestResult": {
         "type": "object",
         "properties": {
@@ -32092,6 +32325,39 @@
           "created_at",
           "updated_at",
           "last_evaluated_at"
+        ]
+      },
+      "alerts.AlertActionDelta": {
+        "type": "object",
+        "properties": {
+          "added": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.ActionRef"
+            }
+          },
+          "alert_id": {
+            "type": "string"
+          },
+          "alert_name": {
+            "type": "string"
+          },
+          "blocking": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.Violation"
+            }
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.ActionRef"
+            }
+          }
+        },
+        "required": [
+          "alert_id",
+          "alert_name"
         ]
       },
       "alerts.AlertActivity": {
@@ -32464,6 +32730,91 @@
           "filter"
         ]
       },
+      "alerts.BulkActionChange": {
+        "type": "object",
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.ActionChange"
+            }
+          }
+        },
+        "required": [
+          "changes"
+        ]
+      },
+      "alerts.BulkActionPlan": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.ActionTally"
+            }
+          },
+          "alerts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.AlertActionDelta"
+            }
+          },
+          "blocked": {
+            "type": "integer"
+          },
+          "changed": {
+            "type": "integer"
+          },
+          "gated": {
+            "type": "boolean"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/alerts.ChangeRequest"
+          },
+          "selected": {
+            "type": "integer"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "unchanged": {
+            "type": "integer"
+          },
+          "undo": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.ActionChange"
+            }
+          }
+        },
+        "required": [
+          "selected",
+          "changed",
+          "unchanged",
+          "blocked",
+          "alerts",
+          "actions",
+          "summary",
+          "gated"
+        ]
+      },
+      "alerts.BulkActionRequest": {
+        "type": "object",
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.ActionChange"
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes"
+        ]
+      },
       "alerts.BundleAlertImport": {
         "type": "object",
         "properties": {
@@ -32556,6 +32907,9 @@
       "alerts.ChangeRequest": {
         "type": "object",
         "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/alerts.BulkActionChange"
+          },
           "alert_id": {
             "type": "string"
           },
@@ -32633,6 +32987,9 @@
       "alerts.ChangeRequestDetail": {
         "type": "object",
         "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/alerts.BulkActionChange"
+          },
           "alert_id": {
             "type": "string"
           },
@@ -32728,6 +33085,9 @@
       "alerts.ChangeRequestInput": {
         "type": "object",
         "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/alerts.BulkActionChange"
+          },
           "alert_id": {
             "type": "string"
           },
@@ -33434,6 +33794,9 @@
       "alerts.MergeReadiness": {
         "type": "object",
         "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/alerts.BulkActionPlan"
+          },
           "approvals": {
             "type": "integer"
           },
