@@ -8,8 +8,11 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/robfig/cron/v3"
 
 	"bifract/pkg/settings"
 	"bifract/pkg/watermark"
@@ -62,6 +65,77 @@ type alertAction struct {
 	Name   string `json:"name"`
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
+}
+
+// alertCursorCols selects what alertCursor.scanDest reads. The elapsed time comes
+// from Postgres so it is measured on the same clock that wrote the cursor.
+const alertCursorCols = `COALESCE(alert_type, 'event'), last_evaluated_at,
+	EXTRACT(EPOCH FROM (NOW() - last_evaluated_at))::float8 AS since_sec,
+	COALESCE(window_duration, 0), COALESCE(schedule_cron, '')`
+
+// alertCursor is the state that decides when an alert is next due.
+type alertCursor struct {
+	alertType string
+	last      time.Time
+	sinceSec  float64
+	windowSec int64
+	cron      string
+}
+
+func (c *alertCursor) scanDest() []interface{} {
+	return []interface{}{&c.alertType, &c.last, &c.sinceSec, &c.windowSec, &c.cron}
+}
+
+// alertCronParser matches the engine's, so a schedule is due when the engine
+// would run it.
+var alertCronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+
+// lagSec is how long the alert has been due without being evaluated. A compound
+// alert's cursor is the start of a window that runs once it closes, and a
+// scheduled alert waits for its cron after the cursor, so time since the cursor
+// overstates both by up to a window or a schedule period. One the engine cannot
+// evaluate (no window, bad cron) is measured from its cursor, since it is stuck.
+func (c alertCursor) lagSec() float64 {
+	notDueFor := 0.0
+	switch c.alertType {
+	case "compound":
+		if c.windowSec > 0 {
+			notDueFor = float64(c.windowSec)
+		}
+	case "scheduled":
+		if s, err := alertCronParser.Parse(c.cron); err == nil {
+			notDueFor = s.Next(c.last).Sub(c.last).Seconds()
+		}
+	}
+	return math.Max(c.sinceSec-notDueFor, 0)
+}
+
+type alertLag struct {
+	name string
+	sec  float64
+}
+
+// summarizeAlertLag returns the p95 (interpolated as PERCENTILE_CONT does), the
+// max, and the alert at the max. No alert is named when nothing is behind.
+func summarizeAlertLag(lags []alertLag) (p95, max float64, worst string) {
+	if len(lags) == 0 {
+		return 0, 0, ""
+	}
+	secs := make([]float64, len(lags))
+	for i, l := range lags {
+		secs[i] = l.sec
+		if l.sec > max {
+			max, worst = l.sec, l.name
+		}
+	}
+	sort.Float64s(secs)
+	pos := 0.95 * float64(len(secs)-1)
+	lo := int(pos)
+	p95 = secs[lo]
+	if lo+1 < len(secs) {
+		p95 += (pos - float64(lo)) * (secs[lo+1] - secs[lo])
+	}
+	return p95, max, worst
 }
 
 // actionsCTE flattens the three result columns into one set. Each carries its own
@@ -123,30 +197,20 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 	// without their reason being cleared. It reported zero on a fleet with real
 	// auto-disabled alerts in it.
 	var evaluating, disabled int64
-	var lagP95, lagMax float64
-	err := h.pg.QueryRow(ctx, `
+	if err := h.pg.QueryRow(ctx, `
 		SELECT
 			(SELECT count(*) FROM alerts WHERE enabled),
-			(SELECT count(*) FROM alerts WHERE NOT enabled AND COALESCE(disabled_reason, '') <> ''),
-			COALESCE((SELECT PERCENTILE_CONT(0.95) WITHIN GROUP (
-				ORDER BY EXTRACT(EPOCH FROM (NOW() - last_evaluated_at))) FROM alerts WHERE enabled), 0),
-			COALESCE((SELECT MAX(EXTRACT(EPOCH FROM (NOW() - last_evaluated_at))) FROM alerts WHERE enabled), 0)
-	`).Scan(&evaluating, &disabled, &lagP95, &lagMax)
-	if err != nil {
+			(SELECT count(*) FROM alerts WHERE NOT enabled AND COALESCE(disabled_reason, '') <> '')
+	`).Scan(&evaluating, &disabled); err != nil {
 		log.Printf("[AlertEngine] health: %v", err)
 	}
 	summary["evaluating"] = evaluating
 	summary["disabled"] = disabled
-	summary["lag_p95_sec"] = int64(math.Round(math.Max(lagP95, 0)))
-	summary["lag_max_sec"] = int64(math.Round(math.Max(lagMax, 0)))
 
+	lagP95, lagMax, worstName := summarizeAlertLag(h.alertLags(ctx))
+	summary["lag_p95_sec"] = int64(math.Round(lagP95))
+	summary["lag_max_sec"] = int64(math.Round(lagMax))
 	// Name the worst offender: a lag number without a culprit is not actionable.
-	var worstName string
-	if err := h.pg.QueryRow(ctx,
-		`SELECT name FROM alerts WHERE enabled ORDER BY last_evaluated_at ASC NULLS FIRST LIMIT 1`,
-	).Scan(&worstName); err != nil && err != sql.ErrNoRows {
-		log.Printf("[AlertEngine] worst lag: %v", err)
-	}
 	summary["lag_max_alert"] = worstName
 
 	// No alert reads past the ingest watermark, so its lag delays every alert, and
@@ -213,6 +277,27 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 	result["fires_history"] = h.alertFiresHistory(ctx, mins, bucketSec)
 	result["disabled_alerts"] = h.alertDisabledList(ctx)
 	respondJSON(w, http.StatusOK, result)
+}
+
+// alertLags reads every enabled alert's lag past due.
+func (h *PerformanceHandler) alertLags(ctx context.Context) []alertLag {
+	rows, err := h.pg.Query(ctx, `SELECT name, `+alertCursorCols+` FROM alerts WHERE enabled`)
+	if err != nil {
+		log.Printf("[AlertEngine] lag: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var lags []alertLag
+	for rows.Next() {
+		var name string
+		var c alertCursor
+		if err := rows.Scan(append([]interface{}{&name}, c.scanDest()...)...); err != nil {
+			log.Printf("[AlertEngine] lag row: %v", err)
+			continue
+		}
+		lags = append(lags, alertLag{name, c.lagSec()})
+	}
+	return lags
 }
 
 // alertFiresHistory buckets triggers by severity so the chart can stack them.
@@ -336,8 +421,6 @@ func (h *PerformanceHandler) respondAlertList(ctx context.Context, w http.Respon
 	args := []interface{}{mins}
 	where := alertRowFilters(q, fractal, "a.name", "a.fractal_id::text", &args)
 
-	// Disabled first, then the furthest behind: the rows that need attention sort
-	// to the top rather than the alphabet deciding.
 	sqlText := actionsCTE + `,
 	fired AS (
 		SELECT alert_id, count(*) AS fires, COALESCE(SUM(log_count), 0) AS logs,
@@ -353,18 +436,14 @@ func (h *PerformanceHandler) respondAlertList(ctx context.Context, w http.Respon
 	)
 	SELECT a.id::text, a.name, COALESCE(NULLIF(a.severity, ''), 'medium'),
 	       COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''), a.enabled,
-	       COALESCE(a.disabled_reason, ''),
-	       GREATEST(COALESCE(EXTRACT(EPOCH FROM (NOW() - a.last_evaluated_at)), 0), 0),
+	       COALESCE(a.disabled_reason, ''), ` + alertCursorCols + `,
 	       COALESCE(a.last_execution_time_ms, 0),
 	       COALESCE(f.fires, 0), COALESCE(f.throttled, 0), COALESCE(f.logs, 0),
 	       COALESCE(x.total, 0), COALESCE(x.failed, 0), COALESCE(x.worst, '')
 	FROM alerts a
 	LEFT JOIN fired f ON f.alert_id = a.id
 	LEFT JOIN acted x ON x.alert_id = a.id
-	WHERE (a.enabled OR COALESCE(a.disabled_reason, '') <> '')` + where + `
-	ORDER BY (a.enabled = false) DESC,
-	         GREATEST(COALESCE(EXTRACT(EPOCH FROM (NOW() - a.last_evaluated_at)), 0), 0) DESC
-	LIMIT ` + fmt.Sprint(alertRowLimit)
+	WHERE (a.enabled OR COALESCE(a.disabled_reason, '') <> '')` + where
 
 	rows, err := h.pg.Query(ctx, sqlText, args...)
 	if err != nil {
@@ -375,30 +454,49 @@ func (h *PerformanceHandler) respondAlertList(ctx context.Context, w http.Respon
 	}
 	defer rows.Close()
 
-	out := []map[string]interface{}{}
+	type row struct {
+		enabled bool
+		lag     float64
+		out     map[string]interface{}
+	}
+	all := []row{}
 	for rows.Next() {
 		var id, name, severity, fractalID, prismID, reason, worst string
 		var enabled bool
-		var lag float64
+		var c alertCursor
 		var execMs, fires, throttled, logs, actTotal, actFailed int64
-		if err := rows.Scan(&id, &name, &severity, &fractalID, &prismID, &enabled, &reason,
-			&lag, &execMs, &fires, &throttled, &logs, &actTotal, &actFailed, &worst); err != nil {
+		dest := append([]interface{}{&id, &name, &severity, &fractalID, &prismID, &enabled, &reason}, c.scanDest()...)
+		if err := rows.Scan(append(dest, &execMs, &fires, &throttled, &logs, &actTotal, &actFailed, &worst)...); err != nil {
 			continue
 		}
-		out = append(out, map[string]interface{}{
+		lag := c.lagSec()
+		all = append(all, row{enabled, lag, map[string]interface{}{
 			"id": id, "name": name, "severity": severity,
 			"fractal_id": fractalID, "prism_id": prismID,
 			"enabled": enabled, "disabled_reason": alertShortReason(reason),
 			"lag_sec": int64(math.Round(lag)), "exec_ms": execMs,
 			"fires": fires, "throttled": throttled, "logs": logs,
 			"action_total": actTotal, "action_failed": actFailed, "action_worst": worst,
-		})
+		}})
+	}
+	// Disabled first, then the furthest behind: the rows that need attention sort
+	// to the top rather than the alphabet deciding. Lag depends on each alert's
+	// window or cron, so the sort and the cut happen here rather than in SQL.
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].enabled != all[j].enabled {
+			return !all[i].enabled
+		}
+		return all[i].lag > all[j].lag
+	})
+	out := make([]map[string]interface{}, 0, alertRowLimit)
+	for i := 0; i < len(all) && i < alertRowLimit; i++ {
+		out = append(out, all[i].out)
 	}
 	// Say when the list was cut. A fleet can hold thousands of alerts, and a table
 	// that silently shows the first hundred reads as the whole fleet.
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true, "mode": "alerts", "rows": out,
-		"truncated": len(out) >= alertRowLimit, "limit": alertRowLimit,
+		"truncated": len(all) > alertRowLimit, "limit": alertRowLimit,
 	})
 }
 
