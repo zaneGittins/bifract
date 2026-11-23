@@ -955,6 +955,24 @@
     padding: 0 0.1rem;
 }
 
+.chat-model-select {
+    max-width: 16rem;
+    text-overflow: ellipsis;
+}
+
+.chat-pill[hidden] { display: none; }
+
+.chat-notice {
+    align-self: flex-start;
+    padding: 0.4rem 0.75rem;
+    border: 1px dashed var(--border-color);
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-family: var(--font-mono, monospace);
+    font-size: 0.76rem;
+    white-space: pre-wrap;
+}
+
 .chat-time-select option {
     background: var(--bg-secondary);
     color: var(--text-primary);

@@ -12,6 +12,7 @@ import (
 	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/instructions"
+	"bifract/pkg/llm"
 	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -278,6 +279,53 @@ func (h *Handler) HandleSetConversationLibraries(w http.ResponseWriter, r *http.
 		return
 	}
 	h.respondSuccess(w, map[string]bool{"updated": true})
+}
+
+// ChatModels lists the models a conversation may switch to.
+type ChatModels struct {
+	Default string   `json:"default"`
+	Models  []string `json:"models"`
+}
+
+func (h *Handler) HandleListModels(w http.ResponseWriter, r *http.Request) {
+	if !h.manager.llm.Enabled() {
+		h.respondSuccess(w, ChatModels{Models: []string{}})
+		return
+	}
+	h.respondSuccess(w, ChatModels{Default: h.manager.llm.Model(), Models: h.manager.llm.Models()})
+}
+
+// SetConversationModelRequest names one of the listed models; empty is the default.
+type SetConversationModelRequest struct {
+	Model string `json:"model"`
+}
+
+func (h *Handler) HandleSetConversationModel(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if h.verifyConversationOwner(w, r, id) == nil {
+		return
+	}
+	var req SetConversationModelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	err := h.manager.SetConversationModel(r.Context(), id, req.Model)
+	if errors.Is(err, llm.ErrModelNotAllowed) {
+		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err != nil {
+		log.Printf("[Chat] Failed to set model for %s: %v", id, err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to update conversation model")
+		return
+	}
+	conv, err := h.manager.GetConversation(r.Context(), id)
+	if err != nil {
+		h.respondError(w, http.StatusInternalServerError, "Failed to load conversation")
+		return
+	}
+	h.respondSuccess(w, conv)
 }
 
 func (h *Handler) HandleGetConversationLibraries(w http.ResponseWriter, r *http.Request) {

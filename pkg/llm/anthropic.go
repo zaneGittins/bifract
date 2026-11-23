@@ -98,7 +98,7 @@ func toAnthropic(msgs []Message) (string, []anthropicMessage) {
 func (c *Client) anthropic(ctx context.Context, req Request, onText func(string)) (Response, error) {
 	system, msgs := toAnthropic(req.Messages)
 	body := anthropicRequest{
-		Model:     c.model,
+		Model:     req.Model,
 		MaxTokens: anthropicMaxTokens,
 		System:    system,
 		Messages:  msgs,

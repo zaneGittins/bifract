@@ -3243,6 +3243,23 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				})
 				r.Register(api.Route{
 					Method:   http.MethodGet,
+					Path:     "/chat/models",
+					Access:   api.AccessViewer,
+					Response: api.Response[chat.ChatModels]{},
+					Summary:  "List the models a conversation can use.",
+					Handler:  d.chatHandler.HandleListModels,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPatch,
+					Path:     "/chat/conversations/{id}/model",
+					Access:   api.AccessViewer,
+					Request:  chat.SetConversationModelRequest{},
+					Response: api.Response[*chat.Conversation]{},
+					Summary:  "Choose the model that answers a conversation.",
+					Handler:  d.chatHandler.HandleSetConversationModel,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
 					Path:     "/chat/conversations/{id}/libraries",
 					Access:   api.AccessViewer,
 					Response: api.ListResponse[*instructions.Library]{},

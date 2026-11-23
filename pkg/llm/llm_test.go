@@ -419,3 +419,67 @@ func TestUnreachableProviderHidesEndpoint(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestModelsListsTheDefaultFirstOnce(t *testing.T) {
+	c, err := New(Config{Provider: "openai", APIKey: "k", Model: "gpt-a", Models: []string{" gpt-b ", "", "gpt-a", "gpt-b", "gpt-c"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := c.Models(), []string{"gpt-a", "gpt-b", "gpt-c"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if c.Resolve("gpt-c") != "gpt-c" || c.Resolve("") != "gpt-a" || c.Resolve("gpt-removed") != "gpt-a" {
+		t.Errorf("resolve: %q %q %q", c.Resolve("gpt-c"), c.Resolve(""), c.Resolve("gpt-removed"))
+	}
+}
+
+func TestRequestModelIsSentToEachProvider(t *testing.T) {
+	for _, provider := range []string{ProviderOpenAI, ProviderAnthropic} {
+		t.Run(provider, func(t *testing.T) {
+			var got struct {
+				Model string `json:"model"`
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				json.NewDecoder(r.Body).Decode(&got)
+				if provider == ProviderOpenAI {
+					w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+				} else {
+					w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+				}
+			}))
+			defer srv.Close()
+			c, err := New(Config{Provider: provider, APIKey: "k", Model: "base", Models: []string{"big"}, BaseURL: srv.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.Complete(context.Background(), Request{Model: "big", Messages: []Message{{Role: "user", Content: "hi"}}}); err != nil {
+				t.Fatal(err)
+			}
+			if got.Model != "big" {
+				t.Errorf("sent model %q, want big", got.Model)
+			}
+		})
+	}
+}
+
+func TestAModelOutsideTheListIsNeverSent(t *testing.T) {
+	var calls atomic.Int32
+	c := newTestClient(t, "openai", func(w http.ResponseWriter, r *http.Request) { calls.Add(1) })
+	_, err := c.Complete(context.Background(), Request{Model: "gpt-expensive", Messages: []Message{{Role: "user", Content: "hi"}}})
+	if !errors.Is(err, ErrModelNotAllowed) {
+		t.Errorf("got %v, want ErrModelNotAllowed", err)
+	}
+	if calls.Load() != 0 {
+		t.Error("request reached the provider")
+	}
+}
+
+func TestAnUnconfiguredClientOffersNoModels(t *testing.T) {
+	c, err := New(Config{Provider: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Models(); len(got) != 0 {
+		t.Errorf("got %v", got)
+	}
+}

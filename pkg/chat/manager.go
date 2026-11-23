@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 
 	"bifract/pkg/fractals"
@@ -102,14 +103,11 @@ func (m *Manager) CreateConversation(ctx context.Context, fractalID, prismID, ti
 		prismIDPtr = prismID
 	}
 
-	conv := &Conversation{}
-	err := m.pg.QueryRow(ctx, `
+	conv, err := m.scanConversation(m.pg.QueryRow(ctx, `
 		INSERT INTO chat_conversations (fractal_id, prism_id, title, created_by)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
-	`, fractalIDPtr, prismIDPtr, title, storage.NullableUser(username)).Scan(
-		&conv.ID, &conv.FractalID, &conv.PrismID, &conv.Title, &conv.CreatedBy, &conv.CreatedAt, &conv.UpdatedAt,
-	)
+		RETURNING `+conversationColumns+`
+	`, fractalIDPtr, prismIDPtr, title, storage.NullableUser(username)))
 	if err != nil {
 		return nil, err
 	}
@@ -127,11 +125,11 @@ func (m *Manager) ListConversations(ctx context.Context, fractalID, prismID, use
 	var query string
 	var scopeArg interface{}
 	if prismID != "" {
-		query = `SELECT id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
+		query = `SELECT ` + conversationColumns + `
 			FROM chat_conversations WHERE prism_id = $1 AND created_by = $2 ORDER BY updated_at DESC LIMIT 100`
 		scopeArg = prismID
 	} else {
-		query = `SELECT id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
+		query = `SELECT ` + conversationColumns + `
 			FROM chat_conversations WHERE fractal_id = $1 AND created_by = $2 ORDER BY updated_at DESC LIMIT 100`
 		scopeArg = fractalID
 	}
@@ -143,8 +141,8 @@ func (m *Manager) ListConversations(ctx context.Context, fractalID, prismID, use
 
 	var convs []*Conversation
 	for rows.Next() {
-		c := &Conversation{}
-		if err := rows.Scan(&c.ID, &c.FractalID, &c.PrismID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		c, err := m.scanConversation(rows)
+		if err != nil {
 			return nil, err
 		}
 		convs = append(convs, c)
@@ -153,11 +151,10 @@ func (m *Manager) ListConversations(ctx context.Context, fractalID, prismID, use
 }
 
 func (m *Manager) GetConversation(ctx context.Context, id string) (*Conversation, error) {
-	c := &Conversation{}
-	err := m.pg.QueryRow(ctx, `
-		SELECT id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
+	c, err := m.scanConversation(m.pg.QueryRow(ctx, `
+		SELECT `+conversationColumns+`
 		FROM chat_conversations WHERE id = $1
-	`, id).Scan(&c.ID, &c.FractalID, &c.PrismID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
+	`, id))
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("conversation not found")
 	}
@@ -165,16 +162,44 @@ func (m *Manager) GetConversation(ctx context.Context, id string) (*Conversation
 }
 
 func (m *Manager) RenameConversation(ctx context.Context, id, title string) (*Conversation, error) {
-	c := &Conversation{}
-	err := m.pg.QueryRow(ctx, `
+	c, err := m.scanConversation(m.pg.QueryRow(ctx, `
 		UPDATE chat_conversations SET title = $1
 		WHERE id = $2
-		RETURNING id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
-	`, title, id).Scan(&c.ID, &c.FractalID, &c.PrismID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
+		RETURNING `+conversationColumns+`
+	`, title, id))
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("conversation not found")
 	}
 	return c, err
+}
+
+// SetConversationModel picks the model that answers a conversation; empty
+// returns it to the default.
+func (m *Manager) SetConversationModel(ctx context.Context, id, model string) error {
+	if model != "" && !slices.Contains(m.llm.Models(), model) {
+		return llm.ErrModelNotAllowed
+	}
+	var stored any
+	if model != "" {
+		stored = model
+	}
+	_, err := m.pg.Exec(ctx, `UPDATE chat_conversations SET model = $1 WHERE id = $2`, stored, id)
+	return err
+}
+
+const conversationColumns = `id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at, COALESCE(model, '')`
+
+// scanConversation reads conversationColumns, reporting the model that will
+// actually answer.
+func (m *Manager) scanConversation(row interface{ Scan(...any) error }) (*Conversation, error) {
+	c := &Conversation{}
+	if err := row.Scan(&c.ID, &c.FractalID, &c.PrismID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt, &c.Model); err != nil {
+		return nil, err
+	}
+	if m.llm != nil {
+		c.Model = m.llm.Resolve(c.Model)
+	}
+	return c, nil
 }
 
 func (m *Manager) DeleteConversation(ctx context.Context, id string) error {
@@ -439,7 +464,7 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 	// Stream loop - may iterate multiple times if tool calls are made
 	const maxToolRounds = 15
 	for round := 0; round < maxToolRounds; round++ {
-		assistantContent, toolCallsRaw, err := m.streamFromLLM(ctx, w, flusher, messages, tools)
+		assistantContent, toolCallsRaw, err := m.streamFromLLM(ctx, w, flusher, conv.Model, messages, tools)
 		if err != nil {
 			// Whatever arrived before the failure is on screen, so it belongs in
 			// the conversation too: the turn is reread from the database when it
@@ -593,8 +618,8 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 
 // streamFromLLM streams the model's reply to the browser as it arrives and
 // returns the full text and any tool calls.
-func (m *Manager) streamFromLLM(ctx context.Context, w io.Writer, flusher http.Flusher, messages []llmMessage, tools []llmTool) (string, []llmToolCall, error) {
-	resp, err := m.llm.Stream(ctx, llm.Request{Messages: messages, Tools: tools}, func(text string) {
+func (m *Manager) streamFromLLM(ctx context.Context, w io.Writer, flusher http.Flusher, model string, messages []llmMessage, tools []llmTool) (string, []llmToolCall, error) {
+	resp, err := m.llm.Stream(ctx, llm.Request{Model: model, Messages: messages, Tools: tools}, func(text string) {
 		sendSSEEvent(w, flusher, StreamEvent{Type: "token", Content: text})
 	})
 	if err != nil {

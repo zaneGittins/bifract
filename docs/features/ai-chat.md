@@ -16,11 +16,17 @@ Bifract calls the model provider directly. It supports Anthropic, OpenAI and Goo
 
     `BIFRACT_LLM_MODEL` is optional for Anthropic (the default is `claude-haiku-4-5-20251001`) and required for OpenAI and Gemini, for example `gpt-4.1-mini` or `gemini-2.5-flash`.
 
-2. Restart: `docker compose up -d`.
+2. Optionally, list further models of the same provider that users can switch to, comma separated:
+
+    ```bash
+    BIFRACT_LLM_MODELS=claude-sonnet-4-5,claude-opus-4-5
+    ```
+
+3. Restart: `docker compose up -d`.
 
 To use an OpenAI-compatible server such as Ollama or vLLM, set `BIFRACT_LLM_PROVIDER=openai` and point `BIFRACT_LLM_BASE_URL` at it, for example `http://ollama:11434/v1`. The key is still required; any value works if the server ignores it.
 
-On Kubernetes, set `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL` and `LLM_BASE_URL` in `bifract-secrets`.
+On Kubernetes, set `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_MODELS` and `LLM_BASE_URL` in `bifract-secrets`.
 
 !!! note
     Earlier versions ran a LiteLLM container. `--upgrade` and `--upgrade-k8s` carry its key, model and endpoint over and remove it; the old config is kept in `.backups`. Run the upgrade before `--reconfigure`, which refuses while LiteLLM is still installed.
@@ -35,6 +41,18 @@ On Kubernetes, set `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL` and `LLM_BASE_URL`
 The reply streams in, with each tool call shown inline. Click **Open in search** on a query call to run it on the **Query** page. Conversations are titled automatically and listed on the left; use **Clear** to empty one, **Delete** to remove it, or **Clear all** to remove every conversation.
 
 To start from a single event, open it on the **Query** page and click **Analyze with AI**.
+
+## Choose a model
+
+Each conversation answers with the default model (`BIFRACT_LLM_MODEL`) until you switch it. Type in the composer:
+
+| Command | Does |
+|---------|------|
+| `/model` | Lists the models on offer; `*` marks the current one |
+| `/model claude-opus-4-5` | Switches this conversation to that model |
+| `/model default` | Switches back to the default |
+
+The model picker next to the time range does the same. Only models in `BIFRACT_LLM_MODELS` (and the default) are accepted. If an administrator removes a model from the list, conversations using it go back to the default.
 
 ## Approve actions
 
