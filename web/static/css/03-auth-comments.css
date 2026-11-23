@@ -770,3 +770,22 @@
     font-style: italic;
 }
 
+
+.toast-action {
+    align-self: center;
+    margin-left: auto;
+    margin-right: 1rem;
+    padding: 0.3rem 0.75rem;
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.toast-action:hover {
+    background: var(--bg-hover);
+}

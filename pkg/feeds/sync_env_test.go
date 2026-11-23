@@ -92,9 +92,13 @@ func (e *syncEnv) respond(q string, args []driver.Value) (fakedb.PGResult, bool)
 		}
 		e.nextID++
 		return fakedb.Row(fmt.Sprintf("new-%d", e.nextID)), true
-	case strings.Contains(q, "FROM alerts WHERE id = $1"):
-		// loadRevisionContentTx: the live definition of an alert being updated.
-		return fakedb.Row("old name", "", "old query", "event", "medium", int64(0), int64(0), "",
+	case strings.Contains(q, "FROM alerts WHERE id = ANY($1)"):
+		// loadRevisionContentsTx: the live definition of an alert being updated.
+		var ids pq.StringArray
+		if err := ids.Scan(args[0]); err != nil || len(ids) == 0 {
+			return fakedb.PGResult{}, true
+		}
+		return fakedb.Row(ids[0], "old name", "", "old query", "event", "medium", int64(0), int64(0), "",
 			[]byte("{}"), []byte("{}"), nil, nil, nil), true
 	case strings.Contains(q, "SET name = $2, description = $3"):
 		return fakedb.Affected(1), true

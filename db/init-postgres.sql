@@ -2464,6 +2464,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_cr_draft_per_alert
     ON alert_change_requests(created_by, alert_id) WHERE status = 'draft' AND alert_id IS NOT NULL;
 ALTER TABLE alert_change_requests ADD COLUMN IF NOT EXISTS test_result JSONB;
 ALTER TABLE alert_change_requests ADD COLUMN IF NOT EXISTS test_result_hash CHAR(64) NOT NULL DEFAULT '';
+ALTER TABLE alert_change_requests DROP CONSTRAINT IF EXISTS alert_change_requests_kind_check;
+ALTER TABLE alert_change_requests ADD CONSTRAINT alert_change_requests_kind_check
+    CHECK (kind IN ('create', 'update', 'delete', 'actions'));
 
 -- Reviews, approvals and rejections alike. content_hash records what was actually
 -- reviewed: an approval stops counting the moment the proposal is edited, which is the

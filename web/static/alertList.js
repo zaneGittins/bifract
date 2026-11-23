@@ -39,14 +39,16 @@ const AlertList = {
         }).join('');
     },
 
-    // The name cell is identical in both tables; cells are the columns after it.
-    renderRow(alert, cells) {
+    // The name cell is identical in both tables; cells are the columns after it, and
+    // lead is an optional cell before it (the manual table's selection checkbox).
+    renderRow(alert, cells, { lead = '', selected = false } = {}) {
         const isAutoDisabled = !alert.enabled && alert.disabled_reason;
         const statusClass = isAutoDisabled ? 'auto-disabled' : (alert.enabled ? 'enabled' : 'disabled');
         const statusText = isAutoDisabled ? 'Auto-disabled' : (alert.enabled ? 'Enabled' : 'Disabled');
 
         return `
-            <tr class="alert-row ${statusClass}" data-alert-id="${alert.id}">
+            <tr class="alert-row ${statusClass}${selected ? ' ab-selected' : ''}" data-alert-id="${alert.id}">
+                ${lead}
                 <td class="alert-name">
                     <div class="alert-name-row">
                         <span class="status-dot status-${statusClass}" title="${statusText}"></span>

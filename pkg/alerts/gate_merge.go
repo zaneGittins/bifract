@@ -13,10 +13,12 @@ import (
 // MergeReadiness is everything a reviewer needs to judge a proposal, and everything
 // merge re-verifies before applying it.
 type MergeReadiness struct {
-	Blocker  string         `json:"blocker,omitempty"`
-	Policy   *PolicyResult  `json:"policy,omitempty"`
-	Tests    *TestRunResult `json:"tests,omitempty"`
-	HeadHash string         `json:"head_hash,omitempty"`
+	Blocker string         `json:"blocker,omitempty"`
+	Policy  *PolicyResult  `json:"policy,omitempty"`
+	Tests   *TestRunResult `json:"tests,omitempty"`
+	// Actions is an actions proposal worked out against the alerts as they are now.
+	Actions  *BulkActionPlan `json:"actions,omitempty"`
+	HeadHash string          `json:"head_hash,omitempty"`
 	// Approvals counts only those describing the current content.
 	Approvals    int `json:"approvals"`
 	MinApprovals int `json:"min_approvals"`
@@ -59,6 +61,25 @@ func (m *Manager) EvaluateChangeRequest(ctx context.Context, cr *ChangeRequest, 
 		Approvals:    len(cr.Approvals()),
 		MinApprovals: cfg.MinApprovals,
 		Blocker:      cr.MergeBlocker(cfg, headHash),
+	}
+
+	// An actions proposal is re-planned against the alerts as they are now. Its set
+	// semantics mean it cannot go stale the way a whole definition can, but a policy
+	// rule added since, or an alert that lost another action meanwhile, can still
+	// block it.
+	if cr.Kind == ChangeActions && cr.Actions != nil {
+		plan, err := m.planActionChangesReadOnly(ctx, *cr.Actions, fractalID, prismID)
+		if err != nil {
+			if readiness.Blocker == "" {
+				readiness.Blocker = err.Error()
+			}
+			return readiness, nil
+		}
+		readiness.Actions = plan
+		if readiness.Blocker == "" && plan.Blocked > 0 {
+			readiness.Blocker = fmt.Sprintf("the change would break a policy rule on %s", pluralAlerts(plan.Blocked))
+		}
+		return readiness, nil
 	}
 
 	// A delete proposes no definition, so there is nothing to check it against.
@@ -188,6 +209,14 @@ func (m *Manager) MergeChangeRequest(ctx context.Context, crID, username string)
 
 		case ChangeDelete:
 			if err := m.DeleteAlert(ctx, cr.AlertID); err != nil {
+				return fmt.Errorf("applying proposal: %w", err)
+			}
+
+		case ChangeActions:
+			if cr.Actions == nil {
+				return fmt.Errorf("applying proposal: it carries no actions")
+			}
+			if _, err := m.applyActionChanges(ctx, *cr.Actions, fractalID, prismID, author, false); err != nil {
 				return fmt.Errorf("applying proposal: %w", err)
 			}
 		}
