@@ -332,8 +332,8 @@ func TestUpdateFeedAlert(t *testing.T) {
 	}
 
 	m, pg := newTestManager(t)
-	pg.answer("FROM alerts WHERE id = $1", alertRow("Rule", `status=500`))
-	pg.answer("SELECT webhook_id::text FROM alert_webhook_actions", rowsOf(1, "w1"))
+	pg.answer("FROM alerts WHERE id = ANY($1)", alertRow("a1", "Rule", `status=500`))
+	pg.answer("FROM alert_webhook_actions WHERE alert_id = ANY($1)", rowsOf(2, "a1", "w1"))
 	pg.answer("UPDATE alerts\n\t\tSET name = $2, description = $3, query_string = $4, alert_type = $5", fakedb.Affected(1))
 
 	if err := m.UpdateFeedAlert(ctx, "a1", "Rule v2", "desc", `status=500`, "", "high", []string{"b", "a"}, []string{"javascript:alert(1)"}, "hash-2", "owner", "", "p1"); err != nil {
@@ -357,6 +357,7 @@ func TestUpdateFeedAlert(t *testing.T) {
 		t.Error("the update commits and refreshes")
 	}
 
+	pg.answer("FROM alerts WHERE id = ANY($1)", alertRow("manual", "Rule", `status=500`))
 	pg.answer("UPDATE alerts\n\t\tSET name = $2, description = $3, query_string = $4, alert_type = $5", fakedb.Affected(0))
 	if err := m.UpdateFeedAlert(ctx, "manual", "n", "", `a=1`, "", "", nil, nil, "h", "o", "f1", ""); err == nil || !strings.Contains(err.Error(), "not feed-managed") {
 		t.Errorf("err = %v", err)

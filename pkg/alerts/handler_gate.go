@@ -286,6 +286,8 @@ func (h *Handler) changeRequestError(w http.ResponseWriter, err error) {
 		h.respondError(w, http.StatusNotFound, "Proposal not found")
 	case errors.Is(err, ErrAlertNotFound):
 		h.respondError(w, http.StatusNotFound, "Alert not found")
+	case errors.Is(err, ErrBulkActionAlerts):
+		h.respondError(w, http.StatusNotFound, err.Error())
 	case strings.Contains(err.Error(), "only the author or an admin"),
 		strings.Contains(err.Error(), "only the author"),
 		strings.Contains(err.Error(), "cannot be approved by its author"),
@@ -293,12 +295,14 @@ func (h *Handler) changeRequestError(w http.ResponseWriter, err error) {
 		h.respondError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, ErrDraftExists),
 		strings.Contains(err.Error(), "is merged"), strings.Contains(err.Error(), "is discarded"),
-		strings.Contains(err.Error(), "is draft"), strings.Contains(err.Error(), "no longer"):
+		strings.Contains(err.Error(), "is draft"), strings.Contains(err.Error(), "no longer"),
+		strings.Contains(err.Error(), "cannot be revised"):
 		h.respondError(w, http.StatusConflict, err.Error())
 	// Bad input is the caller's mistake, not the server's. Falling through to the
 	// default told a client its request had crashed something when it was simply
 	// rejected, and buried the reason in a log line.
-	case errors.Is(err, ErrInvalidAlert), strings.Contains(err.Error(), "invalid query syntax"),
+	case errors.Is(err, ErrInvalidAlert), errors.Is(err, ErrInvalidActionChange),
+		strings.Contains(err.Error(), "invalid query syntax"),
 		strings.Contains(err.Error(), "must be"), strings.Contains(err.Error(), "needs a"),
 		strings.Contains(err.Error(), "needs an"), strings.Contains(err.Error(), "is required"),
 		strings.Contains(err.Error(), "has no alert yet"), strings.Contains(err.Error(), "say why"),

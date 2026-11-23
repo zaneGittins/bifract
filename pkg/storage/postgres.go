@@ -1477,6 +1477,10 @@ func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unl
 // lockPingInterval is how often a held lock's connection is checked.
 const lockPingInterval = 30 * time.Second
 
+// lockPingTimeout bounds one ping, which must not share the work's context:
+// lib/pq discards a connection whose query is cancelled mid-flight.
+const lockPingTimeout = 5 * time.Second
+
 // HoldAdvisoryLock is TryAdvisoryLock for long work: the returned context ends if
 // the connection holding the lock dies, because Postgres then hands the lock to
 // the next caller and the work would no longer be exclusive. Release with the
@@ -1501,10 +1505,13 @@ func (c *PostgresClient) HoldAdvisoryLock(ctx context.Context, lockID int64) (co
 	}, true
 }
 
-// watchLock derives a context that ends when ping fails or stop is called.
+// watchLock derives a context that ends when ping fails or stop is called. stop
+// waits for an in-flight ping, so the connection is idle once it returns.
 func watchLock(parent context.Context, ping func(context.Context) error, every time.Duration) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
@@ -1512,7 +1519,13 @@ func watchLock(parent context.Context, ping func(context.Context) error, every t
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if err := ping(ctx); err != nil && ctx.Err() == nil {
+				if ctx.Err() != nil {
+					return
+				}
+				pingCtx, cancelPing := context.WithTimeout(context.Background(), lockPingTimeout)
+				err := ping(pingCtx)
+				cancelPing()
+				if err != nil && ctx.Err() == nil {
 					log.Printf("Warning: advisory lock connection lost, abandoning the locked work: %v", err)
 					cancel()
 					return
@@ -1520,7 +1533,10 @@ func watchLock(parent context.Context, ping func(context.Context) error, every t
 			}
 		}
 	}()
-	return ctx, cancel
+	return ctx, func() {
+		cancel()
+		<-done
+	}
 }
 
 // UnlockAdvisory releases a session-scoped advisory lock held on conn. If that

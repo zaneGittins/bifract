@@ -498,16 +498,10 @@ const Alerts = {
 
         return `
             <div class="alerts-table-container">
-                ${AlertList.renderTableHeader({
-                    shown: currentPageAlerts.length,
-                    total: this.filteredAlerts.length,
-                    unfiltered: this.allAlerts?.length,
-                    pageSize: this.alertsPageSize,
-                    onPageSize: 'Alerts.changePageSize'
-                })}
+                <div id="alertsBulkBar" class="ab-bar-slot">${AlertBulk.renderBar()}</div>
                 <table class="alerts-table">
                     <thead>
-                        <tr>${AlertList.renderColumns(cols, {
+                        <tr>${AlertBulk.headerCell()}${AlertList.renderColumns(cols, {
                             onSort: 'Alerts.toggleAlertsSort',
                             sortColumn: this.alertsSortColumn,
                             sortDirection: this.alertsSortDirection
@@ -560,7 +554,7 @@ const Alerts = {
             AlertList.labelsCell(alert.labels, 'Alerts.setLabelFilter'),
             AlertList.execTimeCell(alert),
             AlertList.lastTriggeredCell(alert)
-        ]);
+        ], { lead: AlertBulk.rowCell(alert), selected: AlertBulk.isSelected(alert.id) });
     },
 
     addAlertTableClickHandlers() {
@@ -720,49 +714,36 @@ const Alerts = {
 
         const currentValue = select.value;
 
-        // Collect unique actions by type
-        const webhooks = new Map();
-        const fractals = new Map();
-        const dictionaries = new Map();
-
+        // Lookup and email actions arrive as bare ids, so names come from the catalog.
+        if (!AlertBulk._catalog && !this._catalogRequested) {
+            this._catalogRequested = true;
+            AlertBulk.loadCatalog().then(() => this.buildActionFilterOptions()).catch(() => {});
+        }
+        const names = new Map((AlertBulk._catalog || []).map(a => [a.key, a.name]));
         for (const alert of this.allAlerts) {
-            for (const wa of (alert.webhook_actions || [])) {
-                if (wa.id && wa.name) webhooks.set(wa.id, wa.name);
+            for (const a of [...(alert.webhook_actions || []).map(x => ['webhook', x]), ...(alert.fractal_actions || []).map(x => ['fractal', x])]) {
+                if (a[1].name) names.set(AlertBulk.key(a[0], a[1].id), a[1].name);
             }
-            for (const fa of (alert.fractal_actions || [])) {
-                if (fa.id && fa.name) fractals.set(fa.id, fa.name);
-            }
-            for (const da of (alert.dictionary_actions || [])) {
-                if (da.id && da.name) dictionaries.set(da.id, da.name);
-            }
+        }
+
+        const used = new Set();
+        for (const alert of this.allAlerts) {
+            for (const k of AlertBulk.actionKeys(alert)) used.add(k);
         }
 
         let html = '<option value="all">All actions</option>';
         html += '<option value="none">No actions</option>';
 
-        if (webhooks.size > 0) {
-            html += '<optgroup label="Webhooks">';
-            html += '<option value="webhook:*">Any webhook</option>';
-            for (const [id, name] of [...webhooks.entries()].sort((a, b) => a[1].localeCompare(b[1]))) {
-                html += `<option value="webhook:${id}">${Utils.escapeHtml(name)}</option>`;
-            }
-            html += '</optgroup>';
-        }
-
-        if (fractals.size > 0) {
-            html += '<optgroup label="Fractal Actions">';
-            html += '<option value="fractal:*">Any fractal action</option>';
-            for (const [id, name] of [...fractals.entries()].sort((a, b) => a[1].localeCompare(b[1]))) {
-                html += `<option value="fractal:${id}">${Utils.escapeHtml(name)}</option>`;
-            }
-            html += '</optgroup>';
-        }
-
-        if (dictionaries.size > 0) {
-            html += '<optgroup label="Dictionary Actions">';
-            html += '<option value="dictionary:*">Any lookup action</option>';
-            for (const [id, name] of [...dictionaries.entries()].sort((a, b) => a[1].localeCompare(b[1]))) {
-                html += `<option value="dictionary:${id}">${Utils.escapeHtml(name)}</option>`;
+        const groups = [['webhook', 'Webhooks', 'Any webhook'], ['email', 'Email', 'Any email action'],
+            ['fractal', 'Fractal actions', 'Any fractal action'], ['dictionary', 'Lookup actions', 'Any lookup action']];
+        for (const [kind, label, any] of groups) {
+            const keys = [...used].filter(k => k.startsWith(kind + ':'))
+                .map(k => [k, names.get(k) || 'Unnamed'])
+                .sort((a, b) => a[1].localeCompare(b[1]));
+            if (keys.length === 0) continue;
+            html += `<optgroup label="${label}"><option value="${kind}:*">${any}</option>`;
+            for (const [k, name] of keys) {
+                html += `<option value="${Utils.escapeAttr(k)}">${Utils.escapeHtml(name)}</option>`;
             }
             html += '</optgroup>';
         }
@@ -781,26 +762,12 @@ const Alerts = {
 
     matchesActionFilter(alert, actionFilter) {
         if (actionFilter === 'all') return true;
-
-        const webhookCount = alert.webhook_actions?.length || 0;
-        const fractalCount = alert.fractal_actions?.length || 0;
-        const dictCount = alert.dictionary_actions?.length || 0;
-        const totalActions = webhookCount + fractalCount + dictCount;
-
-        if (actionFilter === 'none') return totalActions === 0;
+        const keys = AlertBulk.actionKeys(alert);
+        if (actionFilter === 'none') return keys.size === 0;
 
         const [type, id] = actionFilter.split(':');
-        if (id === '*') {
-            if (type === 'webhook') return webhookCount > 0;
-            if (type === 'fractal') return fractalCount > 0;
-            if (type === 'dictionary') return dictCount > 0;
-            return false;
-        }
-
-        if (type === 'webhook') return alert.webhook_actions?.some(a => a.id === id);
-        if (type === 'fractal') return alert.fractal_actions?.some(a => a.id === id);
-        if (type === 'dictionary') return alert.dictionary_actions?.some(a => a.id === id);
-        return false;
+        if (id === '*') return [...keys].some(k => k.startsWith(type + ':'));
+        return keys.has(actionFilter);
     },
 
     filterAlerts() {
@@ -836,12 +803,12 @@ const Alerts = {
 
         // Reset to first page when filters change
         this.alertsCurrentPage = 1;
+        AlertBulk.prune(this.filteredAlerts);
 
         this.applyAlertsSort();
 
         // Re-render the table with pagination
         this.updateAlertsTable();
-        this.updateBulkButtons();
     },
 
     hasActiveFilter() {
@@ -895,29 +862,6 @@ const Alerts = {
         if ([...select.options].some(o => o.value === current)) select.value = current;
 
         window.FilterBar?.refresh();
-    },
-
-    updateBulkButtons() {
-        const hasFilter = this.hasActiveFilter();
-
-        const enableBtn = document.getElementById('alertsBulkEnableBtn');
-        const disableBtn = document.getElementById('alertsBulkDisableBtn');
-        if (enableBtn) enableBtn.style.display = hasFilter ? '' : 'none';
-        if (disableBtn) disableBtn.style.display = hasFilter ? '' : 'none';
-    },
-
-    async bulkEnableFiltered() {
-        const ids = this.filteredAlerts.map(a => a.id);
-        if (ids.length === 0) return;
-        if (!confirm(`Enable ${ids.length} filtered alert${ids.length !== 1 ? 's' : ''}?`)) return;
-        await this.batchToggle(ids, true);
-    },
-
-    async bulkDisableFiltered() {
-        const ids = this.filteredAlerts.map(a => a.id);
-        if (ids.length === 0) return;
-        if (!confirm(`Disable ${ids.length} filtered alert${ids.length !== 1 ? 's' : ''}?`)) return;
-        await this.batchToggle(ids, false);
     },
 
     async batchToggle(alertIds, enabled) {
@@ -1003,6 +947,7 @@ const Alerts = {
         } else {
             const alertsHTML = this.renderAlertsTable(this.filteredAlerts);
             alertsList.innerHTML = alertsHTML;
+            AlertBulk.refresh();
             this.addAlertTableClickHandlers();
             this.restoreDetailPanel();
         }
@@ -4720,6 +4665,8 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
 
             actions.sort((a, b) => a.name.localeCompare(b.name));
             this.allActions = actions;
+            // Usage counts come from the alert list, which this tab may be opened without.
+            if (!this.allAlerts?.length) await this.loadAlerts().catch(() => {});
             this.filterUnifiedActions();
         } catch (error) {
             console.error('Failed to load actions:', error);
@@ -4752,19 +4699,27 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
             return;
         }
 
+        const usage = new Map();
+        for (const alert of this.allAlerts || []) {
+            for (const k of AlertBulk.actionKeys(alert)) usage.set(k, (usage.get(k) || 0) + 1);
+        }
+
         const rows = actions.map(a => {
             const id = Utils.escapeJs(String(a.id));
             const testable = a.actionType === 'webhook' || a.actionType === 'email';
+            const used = usage.get(AlertBulk.key(a.actionType, a.id)) || 0;
             return `
             <tr data-id="${Utils.escapeHtml(String(a.id))}" data-type="${a.actionType}">
                 <td><button class="table-name-link" onclick="Alerts.editUnifiedAction('${id}', '${a.actionType}')">${Utils.escapeHtml(a.name)}</button></td>
                 <td><span class="action-type-badge ${a.actionType}">${Utils.escapeHtml(a.actionLabel)}</span></td>
                 <td class="text-muted unified-action-detail">${Utils.escapeHtml(a.detail || '')}</td>
+                <td><button type="button" class="ab-used-by${used ? '' : ' ab-used-none'}" onclick="AlertBulk.manageAction('${a.actionType}', '${id}')" title="Choose which alerts run this action">${used === 0 ? 'No alerts' : AlertBulk.plural(used)}</button></td>
                 <td><span class="unified-action-status ${a.enabled ? 'enabled' : 'disabled'}">${a.enabled ? 'Enabled' : 'Disabled'}</span></td>
                 <td class="kebab-cell">
                     <div class="kebab-wrapper">
                         <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)" title="More actions">&#8942;</button>
                         <div class="kebab-menu">
+                            <button class="kebab-item" onclick="AlertBulk.manageAction('${a.actionType}', '${id}')">Choose alerts</button>
                             ${testable ? `<button class="kebab-item" onclick="Alerts.testUnifiedAction('${id}', '${a.actionType}')">Send test</button>` : ''}
                             <button class="kebab-item" onclick="Alerts.editUnifiedAction('${id}', '${a.actionType}')">Edit</button>
                             <button class="kebab-item danger" onclick="Alerts.deleteUnifiedAction('${id}', '${a.actionType}')">Delete</button>
@@ -4776,7 +4731,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
 
         listEl.innerHTML = `
             <table class="list-table">
-                <thead><tr><th>Name</th><th>Type</th><th>Target</th><th>Status</th><th class="kebab-th"></th></tr></thead>
+                <thead><tr><th>Name</th><th>Type</th><th>Target</th><th>Used by</th><th>Status</th><th class="kebab-th"></th></tr></thead>
                 <tbody>${rows}</tbody>
             </table>`;
     },

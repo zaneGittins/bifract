@@ -9,10 +9,12 @@ import (
 
 // Conversation is a named LLM chat session scoped to a fractal or prism.
 type Conversation struct {
-	ID            string    `json:"id"`
-	FractalID     string    `json:"fractal_id,omitempty"`
-	PrismID       string    `json:"prism_id,omitempty"`
-	Title         string    `json:"title"`
+	ID        string `json:"id"`
+	FractalID string `json:"fractal_id,omitempty"`
+	PrismID   string `json:"prism_id,omitempty"`
+	Title     string `json:"title"`
+	// Model is the model that answers this conversation.
+	Model         string    `json:"model"`
 	InstructionID *string   `json:"instruction_id,omitempty"` // legacy, kept for backward compat during migration
 	CreatedBy     string    `json:"created_by"`
 	CreatedAt     time.Time `json:"created_at"`

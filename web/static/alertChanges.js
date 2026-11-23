@@ -3,7 +3,7 @@
 // The diff is rendered by AlertHistory, so a proposal and a past revision read
 // identically. Nothing here re-implements what the history view already draws.
 const AlertChanges = {
-    KIND_LABEL: { create: 'New', update: 'Edit', delete: 'Delete' },
+    KIND_LABEL: { create: 'New', update: 'Edit', delete: 'Delete', actions: 'Actions' },
     STATUS_LABEL: {
         draft: 'Draft',
         open: 'In review',
@@ -138,10 +138,19 @@ const AlertChanges = {
         this.show();
     },
 
+    // An actions proposal spans many alerts, so it is named by how many.
+    targetOf(cr) {
+        if (cr.kind === 'actions') {
+            const n = new Set((cr.actions?.changes || []).flatMap(c => c.alert_ids || [])).size;
+            return `${n} alert${n === 1 ? '' : 's'}`;
+        }
+        return cr.alert_name || cr.content?.name || 'Untitled alert';
+    },
+
     renderRow(cr) {
         const approvals = this.approvalCount(cr);
         const min = this._config?.min_approvals || 1;
-        const target = cr.alert_name || cr.content?.name || 'Untitled alert';
+        const target = this.targetOf(cr);
 
         return `
             <button type="button" class="ac-row${this._selected === cr.id ? ' selected' : ''}" data-id="${Utils.escapeAttr(cr.id)}">
@@ -218,7 +227,7 @@ const AlertChanges = {
         }
 
         const cr = this._detail;
-        const target = cr.alert_name || cr.content?.name || 'Untitled alert';
+        const target = this.targetOf(cr);
 
         drawer.innerHTML = `
             <div class="ac-drawer-head">
@@ -261,6 +270,20 @@ const AlertChanges = {
         const min = rd.min_approvals || 1;
         const cards = [card('Approvals', `${approvals}/${min}`, approvals >= min ? 'pass' : 'pending')];
 
+        // An actions edit has no definition or tests of its own: what matters is how
+        // many alerts it changes and whether any would break a rule.
+        if (cr.kind === 'actions') {
+            const plan = rd.actions;
+            if (plan) {
+                cards.push(card('Alerts', String(plan.changed), plan.changed ? 'pass' : 'pending'));
+                cards.push(card('Checks', plan.blocked ? `${plan.blocked} blocked` : 'pass', plan.blocked ? 'fail' : 'pass'));
+            }
+            return `
+                <div class="ac-stats">${cards.join('')}</div>
+                ${rd.blocker ? `<div class="ac-blocker">${Utils.escapeHtml(rd.blocker)}</div>` : ''}
+            `;
+        }
+
         // Checks and tests always appear, so a missing card cannot be read as "nothing
         // to check here".
         const policy = rd.policy;
@@ -288,6 +311,7 @@ const AlertChanges = {
     },
 
     renderDiff(cr) {
+        if (cr.kind === 'actions') return this.renderActionsDiff(cr);
         if (cr.kind === 'delete') {
             return '<div class="ac-section"><div class="ac-section-head">Change</div><div class="ac-delete-note">This alert would be deleted.</div></div>';
         }
@@ -304,6 +328,38 @@ const AlertChanges = {
             : AlertHistory.renderSnapshot(cr.content);
 
         return `<div class="ac-section"><div class="ac-section-head">${cr.current ? 'Diff' : 'Definition'}</div>${body}</div>`;
+    },
+
+    // Worked out against the alerts as they are now, so it shows what merging does.
+    renderActionsDiff(cr) {
+        const plan = cr.readiness?.actions;
+        if (!plan || !window.AlertBulk) return '';
+        const chip = (ref, dir) => `<span class="ab-chip ab-chip-${dir}">${dir === 'add' ? '+' : '&minus;'} ${Utils.escapeHtml(this.refName(plan, ref))}</span>`;
+        const lines = (plan.actions || []).flatMap(t => {
+            const out = [];
+            const name = `<strong>${Utils.escapeHtml(t.name || this.refName(plan, t))}</strong>`;
+            if (t.added) out.push(AlertBulk.renderLine('add', `Add ${name} to ${AlertBulk.plural(t.added)}`, ''));
+            if (t.removed) out.push(AlertBulk.renderLine('remove', `Remove ${name} from ${AlertBulk.plural(t.removed)}`, ''));
+            return out;
+        });
+        const byName = (a, b) => (a.alert_name || '').localeCompare(b.alert_name || '');
+        const alerts = [...(plan.alerts || [])].sort(byName).map(a => `
+            <li${(a.blocking || []).length ? ' class="ab-alert-blocked"' : ''}>
+                <span class="ab-alert-name">${Utils.escapeHtml(a.alert_name)}</span>
+                ${(a.added || []).map(r => chip(r, 'add')).join('')}${(a.removed || []).map(r => chip(r, 'remove')).join('')}
+                ${(a.blocking || []).length ? `<span class="ab-blocked-why">${Utils.escapeHtml(a.blocking.map(v => v.message).join('; '))}</span>` : ''}
+            </li>`).join('');
+        return `
+            <div class="ac-section">
+                <div class="ac-section-head">Change</div>
+                ${lines.length ? `<div class="ab-review-lines">${lines.join('')}</div>` : '<div class="ac-empty">Nothing left to change: every alert already matches.</div>'}
+                ${alerts ? `<ul class="ab-review-alerts ab-review-alerts-open">${alerts}</ul>` : ''}
+            </div>`;
+    },
+
+    refName(plan, ref) {
+        const t = (plan.actions || []).find(x => x.kind === ref.kind && x.id === ref.id);
+        return t?.name || `${ref.kind} action`;
     },
 
     renderTests(cr) {
@@ -411,7 +467,7 @@ const AlertChanges = {
             buttons.push('<button class="btn-secondary btn-sm" onclick="AlertChanges.review(\'reject\')">Request changes</button>');
             buttons.push('<button class="btn-secondary btn-sm" onclick="AlertChanges.review(\'approve\')">Approve</button>');
         }
-        if (cr.is_author && cr.kind !== 'delete') {
+        if (cr.is_author && cr.kind !== 'delete' && cr.kind !== 'actions') {
             buttons.push('<button class="btn-secondary btn-sm" onclick="AlertChanges.editProposal()">Revise</button>');
         }
         if (cr.is_author) {

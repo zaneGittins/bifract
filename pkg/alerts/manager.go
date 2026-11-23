@@ -1259,20 +1259,6 @@ func (m *Manager) DeleteAlert(ctx context.Context, alertID string) error {
 	return nil
 }
 
-// actionKind names one alert action type and its scoped lookup table. All four
-// share the id/name/enabled/fractal_id/prism_id shape, so one lookup covers them.
-type actionKind struct {
-	label string
-	table string
-}
-
-var alertActionKinds = []actionKind{
-	{"webhook", "webhook_actions"},
-	{"fractal", "fractal_actions"},
-	{"dictionary", "dictionary_actions"},
-	{"email", "email_actions"},
-}
-
 // resolvedActions holds action IDs grouped by kind, ready for a create or update request.
 type resolvedActions struct {
 	Webhook    []string
@@ -1314,11 +1300,11 @@ func (m *Manager) resolveActionNames(ctx context.Context, actionNames []string, 
 		scope = "fractal_id = $2"
 	}
 	// Table and label are package constants, never caller input.
-	selects := make([]string, 0, len(alertActionKinds))
-	for _, kind := range alertActionKinds {
+	selects := make([]string, 0, len(actionKinds))
+	for _, kind := range actionKinds {
 		selects = append(selects, fmt.Sprintf(
 			`SELECT id::text, name, %s AS kind FROM %s WHERE name = ANY($1) AND enabled = true AND %s`,
-			sqlquote.PGString(kind.label), kind.table, scope))
+			sqlquote.PGString(kind.kind), kind.table, scope))
 	}
 
 	rows, err := m.pg.Query(ctx, strings.Join(selects, " UNION ALL "), args...)

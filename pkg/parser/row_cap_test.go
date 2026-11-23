@@ -13,7 +13,7 @@ func TestWorkAfterARowCapReadsTheCappedRows(t *testing.T) {
 		notWant     []string
 	}{
 		{"filter after head", `a=1 | head(5) | b=2`,
-			[]string{"FROM (SELECT * FROM logs WHERE timestamp >= '2026-01-01 00:00:00.000' AND timestamp <= '2026-01-02 00:00:00.000' AND fractal_id = 'f1' AND fields.`a`::String = '1' ORDER BY timestamp ASC LIMIT 5) WHERE fields.`b`::String = '2'"},
+			[]string{"FROM (SELECT * EXCEPT (fields), fields.`a` AS `fields.a`, fields.`b` AS `fields.b` FROM logs WHERE timestamp >= '2026-01-01 00:00:00.000' AND timestamp <= '2026-01-02 00:00:00.000' AND fractal_id = 'f1' AND fields.`a`::String = '1' ORDER BY timestamp ASC LIMIT 5) WHERE fields.`b`::String = '2'"},
 			[]string{"AND fields.`b`::String = '2' ORDER BY timestamp ASC LIMIT 5"}},
 		{"filter after head keeps head's order", `* | head(5) | b=2`,
 			[]string{"WHERE fields.`b`::String = '2' ORDER BY timestamp ASC"}, nil},
@@ -26,7 +26,7 @@ func TestWorkAfterARowCapReadsTheCappedRows(t *testing.T) {
 		{"filter command after head", `* | head(5) | in(b, values=["2"])`,
 			[]string{"LIMIT 5) WHERE fields.`b`::String IN ('2')"}, nil},
 		{"aggregation after head", `* | head(5) | groupby(a)`,
-			[]string{"FROM (SELECT * FROM logs WHERE timestamp >= '2026-01-01 00:00:00.000' AND timestamp <= '2026-01-02 00:00:00.000' AND fractal_id = 'f1' ORDER BY timestamp ASC LIMIT 5) GROUP BY a"},
+			[]string{"FROM (SELECT * EXCEPT (fields), fields.`a` AS `fields.a` FROM logs WHERE timestamp >= '2026-01-01 00:00:00.000' AND timestamp <= '2026-01-02 00:00:00.000' AND fractal_id = 'f1' ORDER BY timestamp ASC LIMIT 5) GROUP BY a"},
 			[]string{"GROUP BY a ORDER BY timestamp ASC LIMIT 5"}},
 		{"count after limit", `* | limit(3) | count()`,
 			[]string{"ORDER BY timestamp DESC, log_id DESC LIMIT 3)"}, nil},
@@ -35,7 +35,7 @@ func TestWorkAfterARowCapReadsTheCappedRows(t *testing.T) {
 		{"sort after head sorts the capped rows", `* | head(5) | sort(x)`,
 			[]string{"ORDER BY timestamp ASC LIMIT 5) ORDER BY fields.`x`::String ASC"}, nil},
 		{"caps nest", `* | head(10) | b=2 | head(3) | c=1`,
-			[]string{"FROM (SELECT * FROM (SELECT * FROM logs WHERE timestamp >= '2026-01-01 00:00:00.000' AND timestamp <= '2026-01-02 00:00:00.000' AND fractal_id = 'f1' ORDER BY timestamp ASC LIMIT 10) WHERE fields.`b`::String = '2' ORDER BY timestamp ASC LIMIT 3) WHERE fields.`c`::String = '1'"}, nil},
+			[]string{"FROM (SELECT * FROM (SELECT * EXCEPT (fields), fields.`b` AS `fields.b`, fields.`c` AS `fields.c` FROM logs WHERE timestamp >= '2026-01-01 00:00:00.000' AND timestamp <= '2026-01-02 00:00:00.000' AND fractal_id = 'f1' ORDER BY timestamp ASC LIMIT 10) WHERE fields.`b`::String = '2' ORDER BY timestamp ASC LIMIT 3) WHERE fields.`c`::String = '1'"}, nil},
 		{"transform after head keeps one scan", `* | head(5) | lowercase(a)`,
 			[]string{"FROM logs WHERE", "ORDER BY timestamp ASC LIMIT 5"}, []string{"SELECT * FROM"}},
 		{"filter before head stays in the scan", `* | b=2 | head(5)`,

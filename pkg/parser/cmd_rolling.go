@@ -46,7 +46,7 @@ func (h *rollingHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return err
 	}
 	readsFrom := ctx.Registry.mark()
-	w := &rollingWindow{reads: ctx.Registry.rec}
+	w := &rollingWindow{}
 	types := map[string]valueType{}
 	got, err := ctx.Registry.track(func() error {
 		for _, key := range b.Flat("fields") {

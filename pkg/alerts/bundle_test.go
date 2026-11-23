@@ -87,7 +87,7 @@ func TestActionIDsCoverEveryKind(t *testing.T) {
 		WebhookActions: []WebhookAction{{ID: "w"}}, FractalActions: []FractalAction{{ID: "f"}},
 		DictionaryActionIDs: []string{"d"}, EmailActionIDs: []string{"e"},
 	})
-	for _, kind := range alertActionKinds {
+	for _, kind := range actionKinds {
 		if len(ids[kind.table]) != 1 {
 			t.Errorf("%s: %v", kind.table, ids[kind.table])
 		}

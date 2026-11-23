@@ -245,7 +245,7 @@ func (m *Manager) bundleActionNames(ctx context.Context, alerts []*Alert) (map[s
 	}
 
 	names := map[string]string{}
-	for _, kind := range alertActionKinds {
+	for _, kind := range actionKinds {
 		ids := make([]string, 0, len(wanted[kind.table]))
 		for id := range wanted[kind.table] {
 			ids = append(ids, id)

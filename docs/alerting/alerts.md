@@ -57,6 +57,39 @@ The editor sets the type from the query: an aggregation switches it to Compound.
 | **Fractal** | Writes matching logs into a target fractal, so detections are searchable and can feed other alerts. |
 | **Lookup** | Upserts matched values into a [lookup](../features/dictionaries.md), e.g. to build a watchlist of suspicious IPs. |
 
+## Change actions on many alerts
+
+1. In the **Rules** tab, tick the alerts to change. Shift-click selects a run of rows, and the header box selects the page. Once a page is selected, **Select all N matching alerts** extends the selection to everything the current filters show.
+2. Click **Actions** in the bar above the table. Each action shows how many of the selected alerts already run it: all, none, or a count such as `12 of 52`.
+3. Click an action to add it to every selected alert, and click again to remove it from every selected alert. An action on only some of them returns to unchanged on a third click.
+4. Click **Review**. The summary lists what will change, for example *Add Slack #soc to 40 alerts (12 already have it)*. Click **Apply**.
+
+The toast that follows has an **Undo** button. Undo reverses only what the edit changed: alerts that already ran an added action keep it.
+
+- Adding an action an alert already runs, or removing one it does not run, leaves that alert untouched, and other actions on the alert are never affected.
+- Every changed alert records a revision, so each one can be diffed or restored from its history.
+- An edit that would make an alert newly fail a blocking rule under **Policies**, such as removing its last action when a rule requires one, is refused. The review names those alerts, and **Leave these out** retries without them.
+- When the fractal reviews alert changes, **Propose change** opens a single proposal covering every alert. It merges like any other proposal.
+- Feed alerts cannot be changed this way.
+
+To work from the action's side instead, open the **Actions** tab and click an action's **Used by** count (or **Choose alerts** in its menu). Check or uncheck alerts, then click **Review**.
+
+Over the API, `POST /api/v1/alerts/batch-actions/preview` reports what an edit would do and `POST /api/v1/alerts/batch-actions` applies it. Both take a list of changes, each naming alerts and the actions to add and remove:
+
+```json
+{
+  "changes": [
+    {
+      "alert_ids": ["<alert id>", "<alert id>"],
+      "add": [{ "kind": "webhook", "id": "<webhook id>" }],
+      "remove": [{ "kind": "email", "id": "<email action id>" }]
+    }
+  ]
+}
+```
+
+`kind` is `webhook`, `email`, `fractal` or `dictionary`. A response that applied the edit includes `undo`, a list of changes that reverses it.
+
 ## How evaluation works
 
 The alert engine evaluates every enabled alert on each tick (default every 60 seconds). Event alerts track a cursor on ingest time, so no logs are missed across restarts. One evaluation reads at most 10,000 rows.

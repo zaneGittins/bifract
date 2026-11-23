@@ -1831,6 +1831,24 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.alertHandler.HandleBatchToggleAlerts,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alerts/batch-actions/preview",
+					Access:   api.AccessAnalyst,
+					Request:  alerts.BulkActionRequest{},
+					Response: api.Response[*alerts.BulkActionPlan]{},
+					Summary:  "Work out adding and removing actions across many alerts, without applying it.",
+					Handler:  d.alertHandler.HandlePreviewBulkActions,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alerts/batch-actions",
+					Access:   api.AccessAnalyst,
+					Request:  alerts.BulkActionRequest{},
+					Response: api.Response[*alerts.BulkActionPlan]{},
+					Summary:  "Add and remove actions across many alerts, or propose it when changes are reviewed.",
+					Handler:  d.alertHandler.HandleApplyBulkActions,
+				})
+				r.Register(api.Route{
 					Method: http.MethodGet,
 					Path:   "/alerts/{id}/executions",
 					Query: []api.QueryParam{
@@ -3267,6 +3285,23 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Response: api.Response[map[string]bool]{},
 					Summary:  "Set the instruction libraries attached to a conversation.",
 					Handler:  d.chatHandler.HandleSetConversationLibraries,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/chat/models",
+					Access:   api.AccessViewer,
+					Response: api.Response[chat.ChatModels]{},
+					Summary:  "List the models a conversation can use.",
+					Handler:  d.chatHandler.HandleListModels,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPatch,
+					Path:     "/chat/conversations/{id}/model",
+					Access:   api.AccessViewer,
+					Request:  chat.SetConversationModelRequest{},
+					Response: api.Response[*chat.Conversation]{},
+					Summary:  "Choose the model that answers a conversation.",
+					Handler:  d.chatHandler.HandleSetConversationModel,
 				})
 				r.Register(api.Route{
 					Method:   http.MethodGet,

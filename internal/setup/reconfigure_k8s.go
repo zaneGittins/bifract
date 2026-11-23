@@ -401,6 +401,7 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 		"LLM_PROVIDER":              secrets["LLM_PROVIDER"],
 		"LLM_API_KEY":               secrets["LLM_API_KEY"],
 		"LLM_MODEL":                 secrets["LLM_MODEL"],
+		"LLM_MODELS":                secrets["LLM_MODELS"],
 		"LLM_BASE_URL":              secrets["LLM_BASE_URL"],
 		"S3_ENDPOINT":               secrets["S3_ENDPOINT"],
 		"S3_BUCKET":                 secrets["S3_BUCKET"],

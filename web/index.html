@@ -2410,6 +2410,13 @@
                                                         <option value="all">All time</option>
                                                     </select>
                                                 </label>
+                                                <label id="chatModelPill" class="chat-pill" title="Model for this conversation (/model)" hidden>
+                                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <rect x="4" y="4" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+                                                        <path d="M6.5 2v2M9.5 2v2M6.5 12v2M9.5 12v2M2 6.5h2M2 9.5h2M12 6.5h2M12 9.5h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                                                    </svg>
+                                                    <select id="chatModelSelect" class="chat-time-select chat-model-select" title="Model for this conversation (/model)"></select>
+                                                </label>
                                             </div>
                                             <div class="chat-composer-actions">
                                                 <button id="chatSendBtn" class="chat-send-btn" title="Send">
@@ -2499,8 +2506,6 @@
                         </div>
                     </div>
                     <div id="alertFilterChips" class="fb-chips"></div>
-                    <button id="alertsBulkEnableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkEnableFiltered()">Enable all shown</button>
-                    <button id="alertsBulkDisableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkDisableFiltered()">Disable all shown</button>
                     <span class="admin-toolbar-spacer"></span>
                     <div class="kebab-wrapper alerts-tools">
                         <button class="btn-secondary btn-sm btn-menu" onclick="KebabMenu.toggle(event,this)">Import and export</button>
@@ -4304,6 +4309,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/alertPolicyAdmin.js"></script>
     <script src="/static/alertChanges.js"></script>
     <script src="/static/alertList.js"></script>
+    <script src="/static/alertBulk.js"></script>
     <script src="/static/alerts.js"></script>
     <script src="/static/alertFeeds.js"></script>
     <script src="/static/attackCoverage.js"></script>

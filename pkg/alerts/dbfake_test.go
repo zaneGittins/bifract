@@ -220,6 +220,7 @@ type crSpec struct {
 	ID, AlertID, AlertName, Kind, Status string
 	Title, Summary                       string
 	Content                              *RevisionContent
+	Actions                              *BulkActionChange
 	Tests                                []AlertTest
 	BaseHash, Author                     string
 	// TestResult and TestResultHash are the stored test run, if any.
@@ -229,6 +230,13 @@ type crSpec struct {
 
 func (c crSpec) hash(t *testing.T) string {
 	t.Helper()
+	if c.Actions != nil {
+		h, err := c.Actions.Hash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
 	if c.Content == nil {
 		return ""
 	}
@@ -246,6 +254,10 @@ func (c crSpec) row(t *testing.T) []driver.Value {
 	var content, tests driver.Value
 	if c.Content != nil {
 		raw, _ := json.Marshal(c.Content)
+		content = raw
+	}
+	if c.Actions != nil {
+		raw, _ := json.Marshal(c.Actions)
 		content = raw
 	}
 	if c.Tests != nil {
