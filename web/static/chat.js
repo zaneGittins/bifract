@@ -77,6 +77,8 @@ const Chat = {
     currentConversationId: null,
     conversations: [],
     instructionLibraries: [],
+    // Models the server offers, the default first.
+    models: [],
     isStreaming: false,
     currentReader: null,
     loadingInterval: null,
@@ -128,6 +130,9 @@ const Chat = {
         const deleteAllBtn = document.getElementById('deleteAllChatsBtn');
         if (deleteAllBtn) deleteAllBtn.addEventListener('click', () => this.deleteAllConversations());
 
+
+        const modelSelect = document.getElementById('chatModelSelect');
+        if (modelSelect) modelSelect.addEventListener('change', () => this.setModel(modelSelect.value));
 
         const instructionSelect = document.getElementById('chatInstructionSelect');
         if (instructionSelect) instructionSelect.addEventListener('change', () => this.onInstructionSelectChange());
@@ -204,6 +209,7 @@ const Chat = {
     // ---- Conversations ----
 
     async loadConversations() {
+        this.loadModels();
         try {
             const res = await HttpUtils.safeFetch('/api/v1/chat/conversations', {
                 credentials: 'include',
@@ -311,6 +317,7 @@ const Chat = {
         const titleEl = document.getElementById('chatConversationTitle');
         if (titleEl && conv) titleEl.textContent = conv.title;
 
+        this.syncModelSelect();
         // Sync library selector with conversation
         this.syncLibrarySelect();
     },
@@ -393,10 +400,88 @@ const Chat = {
         this.streamMessage(text);
     },
 
-    handleCommand(cmd) {
+    handleCommand(text) {
+        const [cmd, ...rest] = text.split(/\s+/);
+        const arg = rest.join(' ');
         if (cmd === '/clear') {
             this.clearMessages();
+            return;
         }
+        if (cmd === '/model') {
+            if (arg) {
+                this.setModel(arg === 'default' ? '' : arg);
+            } else {
+                this.showModels();
+            }
+            return;
+        }
+        this.appendNotice(`Unknown command ${cmd}. Try /model [name] or /clear.`);
+    },
+
+    // ---- Models ----
+
+    async loadModels() {
+        if (this.models.length) return;
+        try {
+            const res = await HttpUtils.safeFetch('/api/v1/chat/models', { credentials: 'include' });
+            this.models = res.data?.models || [];
+        } catch (err) {
+            console.error('[Chat] Failed to load models:', err);
+        }
+        const sel = document.getElementById('chatModelSelect');
+        if (sel) {
+            sel.innerHTML = this.models.map(m => `<option value="${Utils.escapeHtml(m)}">${Utils.escapeHtml(m)}</option>`).join('');
+        }
+        const pill = document.getElementById('chatModelPill');
+        if (pill) pill.hidden = this.models.length === 0;
+        this.syncModelSelect();
+    },
+
+    currentModel() {
+        const conv = this.conversations.find(c => c.id === this.currentConversationId);
+        return conv?.model || this.models[0] || '';
+    },
+
+    syncModelSelect() {
+        const sel = document.getElementById('chatModelSelect');
+        if (sel) sel.value = this.currentModel();
+    },
+
+    showModels() {
+        const current = this.currentModel();
+        const lines = this.models.map((m, i) =>
+            `${m === current ? '* ' : '  '}${m}${i === 0 ? ' (default)' : ''}`);
+        this.appendNotice(`Models:\n${lines.join('\n')}\nSwitch with /model <name>.`);
+    },
+
+    // setModel switches the current conversation; '' returns it to the default.
+    async setModel(model) {
+        if (!this.currentConversationId) return;
+        try {
+            const res = await HttpUtils.safeFetch(`/api/v1/chat/conversations/${this.currentConversationId}/model`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model }),
+                credentials: 'include',
+            });
+            const conv = this.conversations.find(c => c.id === this.currentConversationId);
+            if (conv && res.data) conv.model = res.data.model;
+            this.appendNotice(`Model set to ${this.currentModel()}.`);
+        } catch (err) {
+            this.appendNotice(`Could not switch to ${model}: ${err.message}. Type /model to list the models.`);
+        }
+        this.syncModelSelect();
+    },
+
+    // A line in the thread from the client itself, not saved with the conversation.
+    appendNotice(text) {
+        const msgs = document.getElementById('chatMessages');
+        if (!msgs) return;
+        const el = document.createElement('div');
+        el.className = 'chat-notice';
+        el.textContent = text;
+        msgs.appendChild(el);
+        this.scrollToBottom();
     },
 
     async streamMessage(userText) {

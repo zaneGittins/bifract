@@ -7963,6 +7963,97 @@
         "x-bifract-access": "viewer"
       }
     },
+    "/api/v1/chat/conversations/{id}/model": {
+      "patch": {
+        "operationId": "patch_api_v1_chat_conversations_byId_model",
+        "summary": "Choose the model that answers a conversation.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "chat"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/chat.SetConversationModelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/chat.Conversation"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
     "/api/v1/chat/conversations/{id}/stream": {
       "post": {
         "operationId": "post_api_v1_chat_conversations_byId_stream",
@@ -8463,6 +8554,77 @@
                       "additionalProperties": {
                         "type": "boolean"
                       }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/chat/models": {
+      "get": {
+        "operationId": "get_api_v1_chat_models",
+        "summary": "List the models a conversation can use.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "chat"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/chat.ChatModels"
                     },
                     "error": {
                       "type": "string"
@@ -35004,6 +35166,24 @@
       "big.Int": {
         "type": "object"
       },
+      "chat.ChatModels": {
+        "type": "object",
+        "properties": {
+          "default": {
+            "type": "string"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "default",
+          "models"
+        ]
+      },
       "chat.Conversation": {
         "type": "object",
         "properties": {
@@ -35023,6 +35203,9 @@
           "instruction_id": {
             "type": "string"
           },
+          "model": {
+            "type": "string"
+          },
           "prism_id": {
             "type": "string"
           },
@@ -35037,6 +35220,7 @@
         "required": [
           "id",
           "title",
+          "model",
           "created_by",
           "created_at",
           "updated_at"
@@ -35235,6 +35419,17 @@
         },
         "required": [
           "library_ids"
+        ]
+      },
+      "chat.SetConversationModelRequest": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model"
         ]
       },
       "chat.StreamMessageRequest": {

@@ -128,7 +128,7 @@ kubectl -n bifract rollout restart deployment bifract
 | [Backups](../administration/backup-restore.md) | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` | `deployment bifract` |
 | [Iceberg archive](../administration/backup-restore.md#iceberg-archive) | `ARCHIVE_ENABLED`, `ARCHIVE_BACKEND`, `ARCHIVE_PREFIX`, `ARCHIVE_S3_*` or `ARCHIVE_AZURE_*` | `deployment bifract`, `statefulset bifract-ingest`, `deployment bifract-archive-maintain` |
 | [GeoIP enrichment](../bql/field-operations.md) | `MAXMIND_LICENSE_KEY`, `MAXMIND_ACCOUNT_ID` | `deployment bifract` |
-| [AI Chat](../features/ai-chat.md) | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` | `deployment bifract` |
+| [AI Chat](../features/ai-chat.md) | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_MODELS`, `LLM_BASE_URL` | `deployment bifract` |
 
 `--upgrade-k8s` and `--reconfigure-k8s` copy values you set with `kubectl edit` back into the manifests, as long as `kubectl` can reach the cluster when you run them.
 

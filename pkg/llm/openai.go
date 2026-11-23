@@ -39,7 +39,7 @@ func (c *Client) openAI(ctx context.Context, req Request, onText func(string)) (
 		}
 		msgs[i] = m
 	}
-	body := openAIRequest{Model: c.model, Messages: msgs, Tools: req.Tools, Stream: onText != nil}
+	body := openAIRequest{Model: req.Model, Messages: msgs, Tools: req.Tools, Stream: onText != nil}
 	if req.ForceTool != "" {
 		body.ToolChoice = map[string]interface{}{"type": "function", "function": map[string]string{"name": req.ForceTool}}
 	} else if len(req.Tools) > 0 {

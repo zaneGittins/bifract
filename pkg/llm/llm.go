@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -35,6 +36,9 @@ var defaultBaseURLs = map[string]string{
 
 // ErrNotConfigured is returned by every call on a client built without a key.
 var ErrNotConfigured = errors.New("AI is not configured: set BIFRACT_LLM_API_KEY")
+
+// ErrModelNotAllowed keeps callers to the models the administrator listed.
+var ErrModelNotAllowed = errors.New("model is not offered; an administrator can add it to BIFRACT_LLM_MODELS")
 
 var (
 	// ErrTruncated means the reply hit the provider's length limit, so any tool
@@ -85,6 +89,8 @@ type Request struct {
 	Tools    []Tool
 	// ForceTool names the tool the model must call; empty lets it choose.
 	ForceTool string
+	// Model picks one of Models(); empty uses the default.
+	Model string
 }
 
 type Response struct {
@@ -96,6 +102,8 @@ type Config struct {
 	Provider string
 	APIKey   string
 	Model    string
+	// Models are further models of the same provider that users may choose.
+	Models []string
 	// BaseURL overrides the provider endpoint, e.g. for an OpenAI-compatible gateway.
 	BaseURL string
 }
@@ -104,6 +112,7 @@ type Client struct {
 	provider    string
 	apiKey      string
 	model       string
+	models      []string
 	baseURL     string
 	http        *http.Client
 	idleTimeout time.Duration
@@ -130,12 +139,19 @@ func New(cfg Config) (*Client, error) {
 	if model == "" && cfg.APIKey != "" {
 		return nil, fmt.Errorf("BIFRACT_LLM_MODEL is required for provider %s", provider)
 	}
+	var models []string
+	for _, m := range append([]string{model}, cfg.Models...) {
+		if m = strings.TrimSpace(m); m != "" && !slices.Contains(models, m) {
+			models = append(models, m)
+		}
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = responseTimeout
 	return &Client{
 		provider: provider,
 		apiKey:   cfg.APIKey,
 		model:    model,
+		models:   models,
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		// No overall timeout: it would also cut off a long streamed reply.
 		// Redirects are refused because they would carry the key to another host.
@@ -155,11 +171,38 @@ func (c *Client) Enabled() bool { return c != nil && c.apiKey != "" }
 func (c *Client) Provider() string { return c.provider }
 func (c *Client) Model() string    { return c.model }
 
+// Models lists the models users may choose, the default first.
+func (c *Client) Models() []string { return slices.Clone(c.models) }
+
+// Resolve maps a stored choice to the model that will answer: the default when
+// the choice is empty or no longer offered.
+func (c *Client) Resolve(model string) string {
+	if model != "" && slices.Contains(c.models, model) {
+		return model
+	}
+	return c.model
+}
+
+func (c *Client) modelFor(req Request) (string, error) {
+	if req.Model == "" {
+		return c.model, nil
+	}
+	if !slices.Contains(c.models, req.Model) {
+		return "", ErrModelNotAllowed
+	}
+	return req.Model, nil
+}
+
 // Complete returns the whole reply at once.
 func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	if !c.Enabled() {
 		return Response{}, ErrNotConfigured
 	}
+	model, err := c.modelFor(req)
+	if err != nil {
+		return Response{}, err
+	}
+	req.Model = model
 	if c.provider == ProviderAnthropic {
 		return c.anthropic(ctx, req, nil)
 	}
@@ -172,6 +215,11 @@ func (c *Client) Stream(ctx context.Context, req Request, onText func(string)) (
 	if !c.Enabled() {
 		return Response{}, ErrNotConfigured
 	}
+	model, err := c.modelFor(req)
+	if err != nil {
+		return Response{}, err
+	}
+	req.Model = model
 	if onText == nil {
 		onText = func(string) {}
 	}

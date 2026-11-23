@@ -1042,6 +1042,7 @@ func loadConfig() Config {
 			Provider: getEnv("BIFRACT_LLM_PROVIDER", llm.ProviderAnthropic),
 			APIKey:   getEnv("BIFRACT_LLM_API_KEY", ""),
 			Model:    getEnv("BIFRACT_LLM_MODEL", ""),
+			Models:   strings.Split(getEnv("BIFRACT_LLM_MODELS", ""), ","),
 			BaseURL:  getEnv("BIFRACT_LLM_BASE_URL", ""),
 		},
 		// Ingestion queue defaults

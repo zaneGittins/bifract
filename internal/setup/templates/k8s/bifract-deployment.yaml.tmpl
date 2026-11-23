@@ -157,6 +157,12 @@ spec:
                   name: bifract-secrets
                   key: LLM_MODEL
                   optional: true
+            - name: BIFRACT_LLM_MODELS
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: LLM_MODELS
+                  optional: true
             - name: BIFRACT_LLM_BASE_URL
               valueFrom:
                 secretKeyRef:

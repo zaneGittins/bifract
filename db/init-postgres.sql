@@ -1080,6 +1080,8 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+-- The model chosen with /model; NULL is the default.
+ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS model TEXT;
 
 CREATE TABLE IF NOT EXISTS chat_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
