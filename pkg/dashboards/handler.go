@@ -3,6 +3,7 @@ package dashboards
 import (
 	"bifract/pkg/api"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,8 +16,8 @@ import (
 	"time"
 
 	"bifract/pkg/auth"
+	"bifract/pkg/bqlvars"
 	"bifract/pkg/fractals"
-	"bifract/pkg/parser"
 	"bifract/pkg/rbac"
 	"bifract/pkg/sse"
 	"bifract/pkg/storage"
@@ -126,7 +127,7 @@ func (h *DashboardHandler) getDashboardScope(ctx context.Context, dashboardID st
 // own fractal or prism, answering 403 otherwise.
 func (h *DashboardHandler) requireDashboardRole(w http.ResponseWriter, r *http.Request, fractalID, prismID string, required rbac.Role) bool {
 	user, _ := r.Context().Value("user").(*storage.User)
-	if !rbac.HasAccess(user, h.rbacResolver.ObjectRole(r.Context(), user, fractalID, prismID), required) {
+	if !api.GrantedRole(r, user, h.rbacResolver.ObjectRole(r.Context(), user, fractalID, prismID), required) {
 		jsonForbidden(w)
 		return false
 	}
@@ -195,30 +196,13 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 	}
 
 	var req CreateDashboardRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	if req.Name == "" {
-		api.WriteError(w, http.StatusBadRequest, "name is required")
-		return
-	}
-	if req.TimeRangeType == "" {
-		req.TimeRangeType = "last1h"
-	}
-
-	if !validTimeRangeType(req.TimeRangeType) {
-		api.WriteError(w, http.StatusBadRequest, timeRangeTypeHelp)
-		return
-	}
-	if req.TimeRangeType == "custom" && (req.TimeRangeStart == nil || req.TimeRangeEnd == nil) {
-		api.WriteError(w, http.StatusBadRequest, "time_range_start and time_range_end are required for custom time range")
-		return
-	}
-	req.Timezone = strings.TrimSpace(req.Timezone)
-	if req.Timezone != "" && !storage.ValidTimezone(req.Timezone) {
-		api.WriteError(w, http.StatusBadRequest, "Unknown timezone")
+	if err := CheckNew(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -242,13 +226,16 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 		Timezone:       req.Timezone,
 		CreatedBy:      auth.AttributionUsername(r.Context()),
 	}
+	if req.Variables != nil {
+		d.Variables, _ = json.Marshal(req.Variables)
+	}
 	if selectedPrism != "" {
 		d.PrismID = selectedPrism
 	} else {
 		d.FractalID = selectedFractal
 	}
 
-	newDashboard, err := h.pg.InsertDashboard(r.Context(), d)
+	newDashboard, err := h.pg.InsertDashboardWithWidgets(r.Context(), d, storageWidgets(req.Widgets))
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to create dashboard")
 		return
@@ -302,8 +289,8 @@ func (h *DashboardHandler) HandleUpdateDashboard(w http.ResponseWriter, r *http.
 	}
 
 	if req.TimeRangeType != nil {
-		if !validTimeRangeType(*req.TimeRangeType) {
-			api.WriteError(w, http.StatusBadRequest, timeRangeTypeHelp)
+		if !ValidTimeRangeType(*req.TimeRangeType) {
+			api.WriteError(w, http.StatusBadRequest, TimeRangeTypeHelp)
 			return
 		}
 		if *req.TimeRangeType == "custom" && (req.TimeRangeStart == nil || req.TimeRangeEnd == nil) {
@@ -415,6 +402,152 @@ func (h *DashboardHandler) HandleCreateWidget(w http.ResponseWriter, r *http.Req
 	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Widget created successfully", Data: newWidget})
 
 	h.broadcastSSE(r, dashboardID, sse.Event{Type: sse.WidgetAdded, Data: newWidget})
+}
+
+// HandleAddWidgets adds several widgets in one transaction, placed exactly as
+// asked: a widget that would overlap the board refuses the whole request.
+func (h *DashboardHandler) HandleAddWidgets(w http.ResponseWriter, r *http.Request) {
+	dashboard, existing, ok := h.boardForWrite(w, r)
+	if !ok {
+		return
+	}
+	var req AddWidgetsRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := CheckAddition(dashboard.Variables, existing, req.Widgets); err != nil {
+		api.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	added, err := h.pg.InsertDashboardWidgets(r.Context(), dashboard.ID, storageWidgets(req.Widgets))
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "Failed to add widgets")
+		return
+	}
+
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Widgets added", Data: added})
+
+	for _, widget := range added {
+		h.broadcastSSE(r, dashboard.ID, sse.Event{Type: sse.WidgetAdded, Data: widget})
+	}
+}
+
+// boardForWrite loads a dashboard and its widgets for a batch write, answering
+// the request itself when it cannot go ahead.
+func (h *DashboardHandler) boardForWrite(w http.ResponseWriter, r *http.Request) (*storage.Dashboard, []storage.DashboardWidget, bool) {
+	dashboard, err := h.pg.GetDashboard(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
+		return nil, nil, false
+	}
+	if !h.requireDashboardRole(w, r, dashboard.FractalID, dashboard.PrismID, rbac.RoleAnalyst) {
+		return nil, nil, false
+	}
+	existing, err := h.pg.GetDashboardWidgets(r.Context(), dashboard.ID)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch dashboard widgets")
+		return nil, nil, false
+	}
+	return dashboard, existing, true
+}
+
+// HandleEditWidgets changes the title or query of several widgets in one
+// transaction. Placement is not touched.
+func (h *DashboardHandler) HandleEditWidgets(w http.ResponseWriter, r *http.Request) {
+	dashboard, existing, ok := h.boardForWrite(w, r)
+	if !ok {
+		return
+	}
+	var req EditWidgetsRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := CheckEdits(dashboard.Variables, existing, req.Widgets); err != nil {
+		api.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	err := h.pg.UpdateDashboardWidgets(r.Context(), dashboard.ID, req.Widgets)
+	if errors.Is(err, storage.ErrDashboardWidgetNotFound) {
+		api.WriteError(w, http.StatusNotFound, "Widget not found")
+		return
+	}
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update widgets")
+		return
+	}
+
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Widgets updated"})
+
+	// Only the fields that changed, as a single-widget edit broadcasts.
+	for _, e := range req.Widgets {
+		data := map[string]interface{}{"id": e.ID}
+		if e.Title != nil {
+			data["title"] = *e.Title
+		}
+		if e.QueryContent != nil {
+			data["query_content"] = *e.QueryContent
+		}
+		if e.ChartType != nil {
+			data["chart_type"] = *e.ChartType
+		}
+		h.broadcastSSE(r, dashboard.ID, sse.Event{Type: sse.WidgetUpdated, Data: data})
+	}
+}
+
+// HandleRemoveWidgets deletes several widgets in one transaction.
+func (h *DashboardHandler) HandleRemoveWidgets(w http.ResponseWriter, r *http.Request) {
+	dashboard, existing, ok := h.boardForWrite(w, r)
+	if !ok {
+		return
+	}
+	var req RemoveWidgetsRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := CheckRemovals(existing, req.WidgetIDs); err != nil {
+		api.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	err := h.pg.DeleteDashboardWidgets(r.Context(), dashboard.ID, req.WidgetIDs)
+	if errors.Is(err, storage.ErrDashboardWidgetNotFound) {
+		api.WriteError(w, http.StatusNotFound, "Widget not found")
+		return
+	}
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "Failed to remove widgets")
+		return
+	}
+
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Widgets removed"})
+
+	for _, id := range req.WidgetIDs {
+		h.broadcastSSE(r, dashboard.ID, sse.Event{
+			Type: sse.WidgetRemoved,
+			Data: map[string]string{"id": id, "dashboard_id": dashboard.ID},
+		})
+	}
+}
+
+// storageWidgets turns requested widgets into rows, defaulting the chart type
+// the way a single added widget does.
+func storageWidgets(requested []CreateWidgetRequest) []storage.DashboardWidget {
+	out := make([]storage.DashboardWidget, len(requested))
+	for i, wr := range requested {
+		out[i] = storage.DashboardWidget{
+			Title:        wr.Title,
+			QueryContent: wr.QueryContent,
+			ChartType:    cmp.Or(wr.ChartType, "table"),
+			PosX:         wr.PosX,
+			PosY:         wr.PosY,
+			Width:        wr.Width,
+			Height:       wr.Height,
+		}
+	}
+	return out
 }
 
 func (h *DashboardHandler) HandleUpdateWidget(w http.ResponseWriter, r *http.Request) {
@@ -837,28 +970,22 @@ func ValidateImport(data []byte) (string, error) {
 	if strings.TrimSpace(d.Name) == "" {
 		return "", fmt.Errorf("dashboard name is required")
 	}
-	if d.TimeRange != "" && !validTimeRangeType(d.TimeRange) {
-		return "", fmt.Errorf("%s", timeRangeTypeHelp)
+	if d.TimeRange != "" && !ValidTimeRangeType(d.TimeRange) {
+		return "", fmt.Errorf("%s", TimeRangeTypeHelp)
 	}
 	if d.GridColumns != 0 && d.GridColumns != storage.DashboardGridColumns {
 		return "", fmt.Errorf("grid_columns must be %d", storage.DashboardGridColumns)
 	}
-	if len(d.Widgets) == 0 {
-		return "", fmt.Errorf("a dashboard needs widgets")
-	}
-	cols := storage.DashboardGridColumns
+	shapes := make([]widgetShape, len(d.Widgets))
 	for i, w := range d.Widgets {
-		if _, err := parser.ParseQuery(w.Query); err != nil {
-			return "", fmt.Errorf("widget %d (%s): %w", i, w.Title, err)
-		}
-		if w.PosX < 0 || w.PosY < 0 || w.Width < 1 || w.Height < 1 || w.PosX+w.Width > cols {
-			return "", fmt.Errorf("widget %d (%s) is off the %d-column grid", i, w.Title, cols)
-		}
-		for j, o := range d.Widgets[:i] {
-			if w.PosX < o.PosX+o.Width && o.PosX < w.PosX+w.Width && w.PosY < o.PosY+o.Height && o.PosY < w.PosY+w.Height {
-				return "", fmt.Errorf("widget %d (%s) overlaps widget %d (%s)", i, w.Title, j, o.Title)
-			}
-		}
+		shapes[i] = widgetShape{title: w.Title, query: w.Query, x: w.PosX, y: w.PosY, width: w.Width, height: w.Height}
+	}
+	vars := make([]bqlvars.Variable, len(d.Variables))
+	for i, v := range d.Variables {
+		vars[i] = bqlvars.Variable{Name: v.Name, Value: v.Value}
+	}
+	if err := checkWidgets(shapes, nil, bqlvars.ToValueMap(vars)); err != nil {
+		return "", err
 	}
 	return d.Name, nil
 }
@@ -994,23 +1121,15 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 		d.FractalID = selectedFractal
 	}
 
-	created, err := h.pg.InsertDashboard(r.Context(), d)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		log.Printf("[Dashboards] Failed to create dashboard from import: %v", err)
-		api.WriteError(w, http.StatusInternalServerError, "Failed to create dashboard")
-		return
-	}
-
 	legacyGrid := imported.GridColumns == 0
-	for i, wg := range imported.Widgets {
+	widgets := make([]storage.DashboardWidget, 0, len(imported.Widgets))
+	for _, wg := range imported.Widgets {
 		if legacyGrid {
 			wg.PosX, wg.Width, wg.PosY, wg.Height = wg.PosX*2, wg.Width*2, wg.PosY*5, wg.Height*5
 		}
 		widget := storage.DashboardWidget{
-			DashboardID:  created.ID,
 			QueryContent: wg.Query,
-			ChartType:    wg.ChartType,
+			ChartType:    cmp.Or(wg.ChartType, "table"),
 			PosX:         wg.PosX,
 			PosY:         wg.PosY,
 			Width:        wg.Width,
@@ -1025,9 +1144,6 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 				widget.ChartConfig = cfgJSON
 			}
 		}
-		if widget.ChartType == "" {
-			widget.ChartType = "table"
-		}
 		if widget.Width <= 0 {
 			widget.Width = 12
 		}
@@ -1035,10 +1151,16 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 			widget.Height = 16
 		}
 		widget.PosX, widget.PosY, widget.Width, widget.Height = clampLayout(widget.PosX, widget.PosY, widget.Width, widget.Height)
-		if _, err := h.pg.InsertDashboardWidget(r.Context(), widget); err != nil {
-			fmt.Printf("[Dashboards] Failed to import widget %d: %v\n", i, err)
-		}
+		widgets = append(widgets, widget)
 	}
+
+	created, err := h.pg.InsertDashboardWithWidgets(r.Context(), d, widgets)
+	if err != nil {
+		log.Printf("[Dashboards] Failed to create dashboard from import: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create dashboard")
+		return
+	}
+	created.Widgets = nil
 
 	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: map[string]interface{}{"dashboard": created}})
 }

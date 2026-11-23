@@ -44,6 +44,7 @@ func TestHandleValidate(t *testing.T) {
 		wantErr   string
 		wantType  string
 		wantSpan  bool
+		wantChart string
 	}{
 		{name: "GET", method: http.MethodGet, body: "{}", vals: viewerCtx(), wantCode: http.StatusMethodNotAllowed},
 		{name: "anonymous", body: `{"query":"*"}`, vals: ctxVals{}, wantCode: http.StatusUnauthorized, wantErr: "Authentication required"},
@@ -52,6 +53,7 @@ func TestHandleValidate(t *testing.T) {
 		{name: "empty while typing is fine", body: `{"query":""}`, vals: viewerCtx(), wantCode: http.StatusOK, wantValid: true},
 		{name: "comment-only is fine", body: jsonBody(t, QueryRequest{Query: "// todo"}), vals: viewerCtx(), wantCode: http.StatusOK, wantValid: true},
 		{name: "valid filter", body: `{"query":"level=error | groupby(host)"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantValid: true},
+		{name: "reports the chart it renders as", body: `{"query":"level=error | groupby(host) | piechart()"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantValid: true, wantChart: "piechart"},
 		{name: "prism session", body: `{"query":"level=error"}`, vals: ctxVals{"user": testViewer, "prism_role": "viewer", "selected_prism": "p1"}, wantCode: http.StatusOK, wantValid: true},
 		{name: "bad time range still validates", body: `{"query":"level=error","start":"nonsense"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantValid: true},
 		{
@@ -77,7 +79,7 @@ func TestHandleValidate(t *testing.T) {
 		// pgr() resolves its source from the database, which validation must not
 		// touch; it is checked against a stand-in of the same shape instead.
 		{name: "pgr() alone", body: `{"query":"pgr(start=\"g1\")"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantValid: true},
-		{name: "pgr() composed downstream", body: `{"query":"pgr(start=\"g1\") | anomaly_score>0.5 | pgraph()"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantValid: true},
+		{name: "pgr() composed downstream", body: `{"query":"pgr(start=\"g1\") | anomaly_score>0.5 | pgraph()"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantValid: true, wantChart: "pgraph"},
 		{name: "pgr() without start", body: `{"query":"pgr()"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantErr: "pgr() requires start=", wantType: "translate"},
 		{name: "pgr() after a filter", body: `{"query":"level=error | pgr(start=\"g1\")"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantErr: "must be the first command", wantType: "translate"},
 	}
@@ -105,6 +107,9 @@ func TestHandleValidate(t *testing.T) {
 			}
 			if resp.ErrorType != tc.wantType {
 				t.Errorf("error_type = %q, want %q", resp.ErrorType, tc.wantType)
+			}
+			if resp.ChartType != tc.wantChart {
+				t.Errorf("chart_type = %q, want %q", resp.ChartType, tc.wantChart)
 			}
 			if (resp.ErrorPos != nil) != tc.wantSpan {
 				t.Errorf("error_pos = %+v, want present=%v", resp.ErrorPos, tc.wantSpan)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"bifract/pkg/aitools"
+	"bifract/pkg/api"
 )
 
 // pendingToolCallTTL bounds how long an unapproved write stays offered. A
@@ -57,6 +58,11 @@ var exposed = map[string]bool{
 	"create_alert": true, "update_alert": true,
 	"add_comment": true, "add_tag": true, "remove_tag": true,
 	"create_notebook": true, "add_notebook_section": true,
+	"create_dashboard": true, "add_dashboard_widgets": true, "update_dashboard_widgets": true,
+	// Unlike delete_alert, a removed panel is missed by the next person who
+	// opens the dashboard, the card shows the panels from the server, and the
+	// result carries their definitions so a removal can be undone.
+	"remove_dashboard_widgets": true,
 }
 
 // toolset is the tool surface chat offers, resolved once at startup.
@@ -117,6 +123,16 @@ func (m *Manager) runTool(ctx context.Context, origin *http.Request, tool aitool
 		return nil, err
 	}
 	return tool.Call(ctx, client, args)
+}
+
+// prepare runs a write's preparation under a viewer ceiling before the user is
+// asked, so the card shows the arguments that will run and a call that would
+// fail goes back to the model instead of to the user.
+func (m *Manager) prepare(ctx context.Context, origin *http.Request, tool aitools.Tool, args json.RawMessage, fractalID string) (json.RawMessage, error) {
+	if m.router == nil {
+		return nil, errors.New("the chat tool runtime is not wired up")
+	}
+	return tool.Prepare(ctx, aitools.NewInProcess(m.router, origin, api.AccessViewer, fractalID), args)
 }
 
 // withUserWindow forces the range the UI picker selected onto any tool that

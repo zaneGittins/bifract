@@ -31,7 +31,8 @@ func relativeDuration(rangeType string) (time.Duration, bool) {
 	return time.Duration(n) * rangeUnits[m[2]], true
 }
 
-func validTimeRangeType(rangeType string) bool {
+// ValidTimeRangeType reports whether a dashboard may open with this range.
+func ValidTimeRangeType(rangeType string) bool {
 	if rangeType == "all" || rangeType == "custom" {
 		return true
 	}
@@ -39,14 +40,17 @@ func validTimeRangeType(rangeType string) bool {
 	return ok
 }
 
-const timeRangeTypeHelp = "time_range_type must be all, custom, or lastN followed by m, h, d or w (e.g. last15m, last24h)"
+// TimeRangeTypeHelp explains the accepted ranges to a caller that sent another.
+const TimeRangeTypeHelp = "time_range_type must be all, custom, or lastN followed by m, h, d or w (e.g. last15m, last24h)"
+
+// maxGridRows bounds how far down the grid a widget may sit or reach.
+const maxGridRows = 2000
 
 // clampLayout keeps a widget inside the grid and at least one cell in size.
 func clampLayout(x, y, w, h int) (int, int, int, int) {
-	const maxRows = 2000
 	w = min(max(w, 1), storage.DashboardGridColumns)
-	h = min(max(h, 1), maxRows)
+	h = min(max(h, 1), maxGridRows)
 	x = min(max(x, 0), storage.DashboardGridColumns-w)
-	y = min(max(y, 0), maxRows)
+	y = min(max(y, 0), maxGridRows)
 	return x, y, w, h
 }

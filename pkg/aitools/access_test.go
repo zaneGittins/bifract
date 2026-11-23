@@ -71,6 +71,47 @@ func TestNoToolReachesPastItsCeiling(t *testing.T) {
 	}
 }
 
+// TestPreparationOnlyReads holds every preparation step to viewer routes. Chat
+// runs it before the user is asked, so a step that wrote would write without
+// approval. The router refuses it at runtime too; this says so at build time.
+func TestPreparationOnlyReads(t *testing.T) {
+	required := routeAccess(t)
+	reaches := reachableCalls(t)
+	found := 0
+	forEachFunc(t, func(_ string, fn *ast.FuncDecl) {
+		ast.Inspect(fn, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return true
+			}
+			if name, ok := call.Fun.(*ast.Ident); !ok || name.Name != "prepared" {
+				return true
+			}
+			step, ok := call.Args[0].(*ast.Ident)
+			if !ok {
+				t.Errorf("prepared() at %v is not given a named function, so what it reaches cannot be checked", call.Pos())
+				return true
+			}
+			found++
+			for _, c := range reaches[step.Name] {
+				access, known := required[c.method+" "+flattenParams(c.path)]
+				if !known {
+					t.Errorf("%s calls %s %s (%s), which this build does not serve", step.Name, c.method, c.path, c.where)
+					continue
+				}
+				if !api.AccessViewer.Permits(access) {
+					t.Errorf("%s prepares a call before it is approved but calls %s %s (%s), which requires %s",
+						step.Name, c.method, c.path, c.where, access)
+				}
+			}
+			return true
+		})
+	})
+	if found == 0 {
+		t.Fatal("recovered no preparation steps; the pattern this test relies on changed")
+	}
+}
+
 // TestEveryWriteAsksTheUserFirst pins the confirmation rule itself. Only the
 // exemptions noConfirm names may write without being approved.
 func TestEveryWriteAsksTheUserFirst(t *testing.T) {

@@ -235,6 +235,17 @@ type provenanceSummary struct {
 	firstDay                            time.Time
 }
 
+// summaryFirstDay parses the summary's first_day. minIf over no matching rows
+// answers the Date default, 1970-01-01, not NULL: the fractal's summary is not
+// filled yet, so it is refused like any other unusable day and pgr scans.
+func summaryFirstDay(value string) (time.Time, error) {
+	day, err := time.Parse(time.DateOnly, value)
+	if err == nil && day.Unix() <= 0 {
+		return time.Time{}, errors.New("the summary has no first day for this scope yet")
+	}
+	return day, err
+}
+
 // readProvenanceSummary reads the fleet-wide inputs once the backfill has filled the summary.
 // It reports false when it has not, or the read fails, and the caller scans instead.
 func (h *QueryHandler) readProvenanceSummary(ctx context.Context, opts parser.QueryOptions) (provenanceSummary, bool) {
@@ -247,7 +258,7 @@ func (h *QueryHandler) readProvenanceSummary(ctx context.Context, opts parser.Qu
 	}
 	var day time.Time
 	if err == nil {
-		day, err = time.Parse(time.DateOnly, reconString(rows[0]["first_day"]))
+		day, err = summaryFirstDay(reconString(rows[0]["first_day"]))
 	}
 	if err != nil {
 		if ctx.Err() == nil {

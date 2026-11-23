@@ -128,6 +128,10 @@ add_comment(log_id="...", text="...", tags=["IR-Rundll32"])
 |------|-------------|
 | `list_dashboards` | Dashboard summaries |
 | `get_dashboard` | A dashboard with every widget and its BQL |
+| `create_dashboard` | Create a dashboard with its variables and widgets in one step; queries are checked and widgets laid out automatically |
+| `add_dashboard_widgets` | Add widgets below the existing ones on a dashboard, checked against its variables |
+| `update_dashboard_widgets` | Change the title or query of several widgets in one step |
+| `remove_dashboard_widgets` | Remove several widgets in one step; returns their definitions so the removal can be undone with `add_dashboard_widgets` |
 
 ### Alerts
 

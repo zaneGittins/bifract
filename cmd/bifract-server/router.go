@@ -1323,6 +1323,33 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.dashboardHandler.HandleCreateWidget,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/dashboards/{id}/widgets/batch",
+					Access:   api.AccessAnalyst,
+					Request:  dashboards.AddWidgetsRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Add several widgets to a dashboard in one transaction.",
+					Handler:  d.dashboardHandler.HandleAddWidgets,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPut,
+					Path:     "/dashboards/{id}/widgets/batch",
+					Access:   api.AccessAnalyst,
+					Request:  dashboards.EditWidgetsRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Change the title or query of several widgets in one transaction.",
+					Handler:  d.dashboardHandler.HandleEditWidgets,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/dashboards/{id}/widgets/batch/delete",
+					Access:   api.AccessAnalyst,
+					Request:  dashboards.RemoveWidgetsRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Remove several widgets from a dashboard in one transaction.",
+					Handler:  d.dashboardHandler.HandleRemoveWidgets,
+				})
+				r.Register(api.Route{
 					Method:   http.MethodPut,
 					Path:     "/dashboards/{id}/widgets/{widget_id}",
 					Access:   api.AccessViewer,

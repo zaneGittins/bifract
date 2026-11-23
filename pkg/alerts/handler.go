@@ -968,7 +968,7 @@ func (h *Handler) getUserObj(r *http.Request) *storage.User {
 // prism that owns an alert, which need not be the request's scope.
 func (h *Handler) requireObjectRole(w http.ResponseWriter, r *http.Request, fractalID, prismID string, required rbac.Role) bool {
 	user := h.getUserObj(r)
-	if !rbac.HasAccess(user, h.rbacResolver.ObjectRole(r.Context(), user, fractalID, prismID), required) {
+	if !api.GrantedRole(r, user, h.rbacResolver.ObjectRole(r.Context(), user, fractalID, prismID), required) {
 		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
 		return false
 	}

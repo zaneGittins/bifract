@@ -11574,6 +11574,277 @@
         "x-bifract-access": "viewer"
       }
     },
+    "/api/v1/dashboards/{id}/widgets/batch": {
+      "post": {
+        "operationId": "post_api_v1_dashboards_byId_widgets_batch",
+        "summary": "Add several widgets to a dashboard in one transaction.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "dashboards"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dashboards.AddWidgetsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      },
+      "put": {
+        "operationId": "put_api_v1_dashboards_byId_widgets_batch",
+        "summary": "Change the title or query of several widgets in one transaction.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "dashboards"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dashboards.EditWidgetsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/dashboards/{id}/widgets/batch/delete": {
+      "post": {
+        "operationId": "post_api_v1_dashboards_byId_widgets_batch_delete",
+        "summary": "Remove several widgets from a dashboard in one transaction.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "dashboards"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dashboards.RemoveWidgetsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
     "/api/v1/dashboards/{id}/widgets/{widget_id}": {
       "put": {
         "operationId": "put_api_v1_dashboards_byId_widgets_byWidget_id",
@@ -35529,6 +35800,21 @@
       "big.Int": {
         "type": "object"
       },
+      "bqlvars.Variable": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ]
+      },
       "chat.ChatModels": {
         "type": "object",
         "properties": {
@@ -36109,6 +36395,20 @@
           "enabled"
         ]
       },
+      "dashboards.AddWidgetsRequest": {
+        "type": "object",
+        "properties": {
+          "widgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/dashboards.CreateWidgetRequest"
+            }
+          }
+        },
+        "required": [
+          "widgets"
+        ]
+      },
       "dashboards.CreateDashboardRequest": {
         "type": "object",
         "properties": {
@@ -36131,6 +36431,18 @@
           },
           "timezone": {
             "type": "string"
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/bqlvars.Variable"
+            }
+          },
+          "widgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/dashboards.CreateWidgetRequest"
+            }
           }
         },
         "required": [
@@ -36188,6 +36500,20 @@
           "height"
         ]
       },
+      "dashboards.EditWidgetsRequest": {
+        "type": "object",
+        "properties": {
+          "widgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/storage.WidgetEdit"
+            }
+          }
+        },
+        "required": [
+          "widgets"
+        ]
+      },
       "dashboards.ExecuteWidgetRequest": {
         "type": "object",
         "properties": {
@@ -36206,6 +36532,20 @@
             "description": "Arbitrary JSON."
           }
         }
+      },
+      "dashboards.RemoveWidgetsRequest": {
+        "type": "object",
+        "properties": {
+          "widget_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "widget_ids"
+        ]
       },
       "dashboards.UpdateDashboardRequest": {
         "type": "object",
@@ -41079,6 +41419,9 @@
       "query.ValidateResponse": {
         "type": "object",
         "properties": {
+          "chart_type": {
+            "type": "string"
+          },
           "error": {
             "type": "string"
           },
@@ -42206,6 +42549,26 @@
           "granted_by",
           "created_at",
           "updated_at"
+        ]
+      },
+      "storage.WidgetEdit": {
+        "type": "object",
+        "properties": {
+          "chart_type": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "query_content": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
         ]
       },
       "storage.WidgetLayout": {

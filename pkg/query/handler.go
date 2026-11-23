@@ -1394,6 +1394,9 @@ type ValidateResponse struct {
 	Error     string     `json:"error,omitempty"`
 	ErrorType string     `json:"error_type,omitempty"` // "parse" or "translate"
 	ErrorPos  *ErrorSpan `json:"error_pos,omitempty"`
+	// ChartType is the visualization a valid query renders as: "piechart",
+	// "timechart" and so on, or empty for a table.
+	ChartType string `json:"chart_type,omitempty"`
 }
 
 // HandleValidate parses and translates a BQL query WITHOUT executing it, so the
@@ -1582,7 +1585,8 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	if _, ok, _ := parser.ProcessTreeCommand(pipeline); ok {
 		opts.ProcessTree = &parser.ProcessTree{}
 	}
-	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {
+	translated, err := parser.TranslateToSQLWithOrder(pipeline, opts)
+	if err != nil {
 		respondJSON(w, http.StatusOK, ValidateResponse{
 			Valid:     false,
 			Error:     "Query error: " + err.Error(),
@@ -1592,7 +1596,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondJSON(w, http.StatusOK, ValidateResponse{Valid: true})
+	respondJSON(w, http.StatusOK, ValidateResponse{Valid: true, ChartType: translated.ChartType})
 }
 
 // HandleQuery executes a BQL search and returns the full result set in one

@@ -113,7 +113,7 @@ func forbidden(w http.ResponseWriter) {
 // that owns an object, which need not be the request's scope.
 func (h *NotebookHandler) hasObjectRole(r *http.Request, fractalID, prismID string, required rbac.Role) bool {
 	user, _ := r.Context().Value("user").(*storage.User)
-	return rbac.HasAccess(user, h.rbacResolver.ObjectRole(r.Context(), user, fractalID, prismID), required)
+	return api.GrantedRole(r, user, h.rbacResolver.ObjectRole(r.Context(), user, fractalID, prismID), required)
 }
 
 // requireReadable gates a read of a notebook on viewer for its scope.

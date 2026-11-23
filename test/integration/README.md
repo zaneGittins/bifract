@@ -34,6 +34,7 @@ Mint a key under **Settings > API Keys > New key**, with **Tenant admin** ticked
 | `TestSplunkHEC` | Splunk HEC health, events, raw lines and the bare path with Basic auth, queried back by host and sourcetype |
 | `TestDetectionLifecycle` | Validate a query, create a rule disabled, enable it, read its executions |
 | `TestNotebookPortability` | Build a notebook, export it as YAML, import it back |
+| `TestDashboardInOneRequest` | Create a dashboard with its variables and widgets in one request, then add, edit and remove widgets in batches; a bad batch changes nothing |
 | `TestInvestigation` | Record a finding against a log, tag it into a case, find it again |
 | `TestOperations` | Topology, ingest pressure, fractal statistics, retention |
 | `TestContractErrors` | The failure envelope: status and machine-readable code |

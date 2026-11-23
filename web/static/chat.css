@@ -624,6 +624,284 @@
     color: var(--text-muted);
 }
 
+/* ---- Dashboard proposal and result ---- */
+
+.chat-dash {
+    margin-top: 0.6rem;
+}
+
+.chat-dash-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.chat-dash-name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+.chat-dash-range {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
+.chat-dash-desc {
+    margin-top: 0.2rem;
+    font-size: 0.72rem;
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
+
+.chat-dash-vars {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.45rem;
+}
+
+.chat-dash-var {
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-sunken);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+}
+
+/* The dashboard's own 24-column grid at a reduced row pitch. */
+.chat-dash-grid {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    grid-auto-rows: 9px;
+    margin-top: 0.55rem;
+    padding: 3px;
+    max-height: 400px;
+    overflow-y: auto;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-sunken);
+}
+
+.chat-dash-tile {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-width: 0;
+    margin: 2px;
+    padding: 3px 7px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    overflow: hidden;
+    cursor: default;
+}
+
+.chat-dash-tile-title {
+    font-size: 0.68rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chat-dash-tile-kind {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chat-dash-tile-glyph {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    color: var(--text-muted);
+    opacity: 0.45;
+}
+
+.chat-dash-tile-glyph svg {
+    width: 34px;
+    height: 23px;
+}
+
+.chat-dash-tile.is-existing {
+    opacity: 0.45;
+}
+
+.chat-dash-grid .chat-dash-tile.is-new {
+    border-color: color-mix(in srgb, var(--accent-primary) 60%, var(--border-color));
+    background: color-mix(in srgb, var(--accent-primary) 9%, var(--bg-secondary));
+}
+
+.chat-dash-grid .chat-dash-tile.is-edited {
+    border-color: color-mix(in srgb, var(--warning) 60%, var(--border-color));
+    background: color-mix(in srgb, var(--warning) 8%, var(--bg-secondary));
+}
+
+.chat-dash-grid .chat-dash-tile.is-removed {
+    border-color: color-mix(in srgb, var(--error) 60%, var(--border-color));
+    background: color-mix(in srgb, var(--error) 8%, var(--bg-secondary));
+}
+
+.chat-dash-tile.is-removed .chat-dash-tile-name {
+    text-decoration: line-through;
+}
+
+.chat-dash-tile.is-edited .chat-dash-tile-badge {
+    background: color-mix(in srgb, var(--warning) 28%, transparent);
+}
+
+.chat-dash-tile.is-removed .chat-dash-tile-badge {
+    background: color-mix(in srgb, var(--error) 28%, transparent);
+}
+
+.chat-dash-changes {
+    margin-top: 0.55rem;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+
+.chat-dash-change + .chat-dash-change {
+    margin-top: 0.6rem;
+}
+
+.chat-dash-change-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin-top: 0.2rem;
+}
+
+.chat-dash-change-label {
+    margin-top: 0.3rem;
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.chat-dash-change-row .chat-dash-change-label {
+    margin-top: 0;
+}
+
+.chat-dash-old {
+    color: var(--text-muted);
+    text-decoration: line-through;
+}
+
+.chat-dash-new {
+    color: var(--text-primary);
+}
+
+.chat-dash-query-text.is-old {
+    color: var(--text-muted);
+    text-decoration: line-through;
+    text-decoration-color: color-mix(in srgb, var(--error) 50%, transparent);
+}
+
+.chat-dash-query-text.is-new {
+    border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color));
+}
+
+.chat-dash-tile-badge {
+    margin-right: 0.35rem;
+    padding: 0 0.3rem;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--accent-primary) 25%, transparent);
+    color: var(--text-primary);
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.chat-dash-tile[data-kind="singleval"] {
+    border-top: 2px solid color-mix(in srgb, var(--accent-primary) 70%, transparent);
+}
+
+.chat-dash-queries {
+    margin-top: 0.45rem;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+
+.chat-dash-queries > summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    user-select: none;
+}
+
+.chat-dash-queries > summary:hover {
+    color: var(--text-primary);
+}
+
+.chat-dash-query {
+    margin-top: 0.45rem;
+}
+
+.chat-dash-query-title {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.chat-dash-query-text {
+    margin: 0.2rem 0 0;
+    padding: 0.4rem 0.55rem;
+    border-radius: 5px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-sunken);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.chat-dash-open {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+    margin: 0.5rem 0;
+    padding: 0.6rem 0.8rem;
+    min-width: 220px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    border-left: 2px solid var(--success);
+    background: var(--bg-tertiary);
+    font-family: var(--font-main);
+    text-align: left;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.chat-dash-open:hover {
+    background: var(--bg-hover);
+}
+
+.chat-dash-open-name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.chat-dash-open-meta {
+    font-size: 0.7rem;
+    color: var(--accent-primary);
+}
+
 /* ---- Mini table (tool results) ---- */
 
 .chat-mini-table-wrap {

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -83,6 +84,42 @@ func TestAnUnrecognisedCeilingAdmitsNoRoute(t *testing.T) {
 			if got := serveAt(t, route, ceiling, true); got == http.StatusTeapot {
 				t.Errorf("ceiling %q admitted a %s route", ceiling, route)
 			}
+		}
+	}
+}
+
+// A handler that checks a role on an object's own scope, rather than relying on
+// its route's declared access, is held to the ceiling as well. Without this a
+// write route declared as viewer let a viewer-capped call write, so long as the
+// user behind it could.
+func TestAnObjectRoleCheckRespectsTheCeiling(t *testing.T) {
+	admin := &storage.User{Username: "root", IsAdmin: true}
+	analyst := &storage.User{Username: "a"}
+	req := func(ceiling Access, capped bool) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/x", nil)
+		if capped {
+			r = r.WithContext(WithCeiling(r.Context(), ceiling))
+		}
+		return r
+	}
+	cases := []struct {
+		name     string
+		r        *http.Request
+		user     *storage.User
+		held     rbac.Role
+		required rbac.Role
+		want     bool
+	}{
+		{"uncapped analyst writes", req("", false), analyst, rbac.RoleAnalyst, rbac.RoleAnalyst, true},
+		{"viewer cap stops an analyst writing", req(AccessViewer, true), analyst, rbac.RoleAnalyst, rbac.RoleAnalyst, false},
+		{"viewer cap stops an admin writing", req(AccessViewer, true), admin, rbac.RoleNone, rbac.RoleAnalyst, false},
+		{"viewer cap still reads", req(AccessViewer, true), analyst, rbac.RoleAnalyst, rbac.RoleViewer, true},
+		{"analyst cap writes", req(AccessAnalyst, true), analyst, rbac.RoleAnalyst, rbac.RoleAnalyst, true},
+		{"the cap grants nothing", req(AccessAnalyst, true), analyst, rbac.RoleViewer, rbac.RoleAnalyst, false},
+	}
+	for _, c := range cases {
+		if got := GrantedRole(c.r, c.user, c.held, c.required); got != c.want {
+			t.Errorf("%s: GrantedRole = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

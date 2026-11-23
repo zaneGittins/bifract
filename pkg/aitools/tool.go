@@ -74,6 +74,7 @@ type declaration struct {
 	needs     api.Access
 	confirm   *bool
 	scopeFree bool
+	prepare   any
 }
 
 // option adjusts a tool as it is declared.
@@ -116,6 +117,18 @@ func scopeFree() option {
 	return func(d *declaration) { d.scopeFree = true }
 }
 
+// preparer checks a call and settles the arguments it runs with. It may only
+// read: chat runs it under a viewer ceiling before the user is asked, so the
+// card shows exactly what will run and a call that would fail is never offered.
+type preparer[In any] func(ctx context.Context, c Client, in In) (In, error)
+
+// prepared gives a tool a preparation step. The tool's body always receives
+// prepared arguments, on every transport, so preparing twice must change
+// nothing.
+func prepared[In any](p preparer[In]) option {
+	return func(d *declaration) { d.prepare = p }
+}
+
 // readOnly marks a tool that cannot change anything. Chat runs these without
 // asking the user, so it is an authorization fact rather than decoration: an
 // unannotated tool reads as a write, which is the safe way to be wrong.
@@ -151,8 +164,9 @@ type Tool struct {
 	// resolved before it runs.
 	scopeFree bool
 
-	addTo func(*mcp.Server, Client)
-	run   func(context.Context, Client, json.RawMessage) (any, error)
+	addTo   func(*mcp.Server, Client)
+	run     func(context.Context, Client, json.RawMessage) (any, error)
+	prepare func(context.Context, Client, json.RawMessage) (json.RawMessage, error)
 }
 
 // Name is the tool's identifier, as the model sees it.
@@ -181,6 +195,16 @@ func (t Tool) TakesWindow() bool { return t.window }
 // hold the set to an explicit list: a scoped tool marked scope-free by mistake
 // would write wherever the server falls back to, and nothing else would say so.
 func (t Tool) ScopeFree() bool { return t.scopeFree }
+
+// Prepare checks a call and returns the arguments it will run with, reading
+// only. A tool without a preparation step returns args unchanged. Chat calls it
+// before offering a write, with a client capped at viewer.
+func (t Tool) Prepare(ctx context.Context, c Client, args json.RawMessage) (json.RawMessage, error) {
+	if t.prepare == nil {
+		return args, nil
+	}
+	return t.prepare(ctx, c, args)
+}
 
 // Call runs the tool with arguments as the model produced them.
 func (t Tool) Call(ctx context.Context, c Client, args json.RawMessage) (any, error) {
@@ -278,19 +302,75 @@ func add[In any](d *set, t *mcp.Tool, h handler[In], opts ...option) {
 
 	_, windowed := schema.Properties["start"]
 
+	var prep preparer[In]
+	if spec.prepare != nil {
+		typed, ok := spec.prepare.(preparer[In])
+		if !ok {
+			panic(fmt.Sprintf("%s: its preparation takes different arguments from the tool", t.Name))
+		}
+		prep = typed
+	}
+	body := h
+	if prep != nil {
+		body = func(ctx context.Context, c Client, in In) (any, error) {
+			in, err := prep(ctx, c, in)
+			if err != nil {
+				return nil, err
+			}
+			return h(ctx, c, in)
+		}
+	}
+
+	// decode validates arguments against the same schema the MCP transport
+	// enforces, so a caller that does not speak MCP cannot reach a body with
+	// input the tool never declared.
+	decode := func(raw json.RawMessage) (In, error) {
+		var in In
+		value := any(map[string]any{})
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return in, fmt.Errorf("%s: the arguments are not valid JSON: %w", t.Name, err)
+			}
+		}
+		if err := resolved.Validate(value); err != nil {
+			return in, fmt.Errorf("%s was called with arguments it does not accept: %w", t.Name, err)
+		}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &in); err != nil {
+				return in, fmt.Errorf("%s: the arguments could not be decoded: %w", t.Name, err)
+			}
+		}
+		return in, nil
+	}
+
+	var prepareRaw func(context.Context, Client, json.RawMessage) (json.RawMessage, error)
+	if prep != nil {
+		prepareRaw = func(ctx context.Context, c Client, raw json.RawMessage) (json.RawMessage, error) {
+			in, err := decode(raw)
+			if err != nil {
+				return nil, err
+			}
+			if in, err = prep(ctx, c, in); err != nil {
+				return nil, err
+			}
+			return json.Marshal(in)
+		}
+	}
+
 	d.tools = append(d.tools, Tool{
 		Def:       t,
 		needs:     needs,
 		confirm:   confirm,
 		window:    windowed,
 		scopeFree: spec.scopeFree,
+		prepare:   prepareRaw,
 		addTo: func(s *mcp.Server, c Client) {
 			mcp.AddTool(s, &served, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 				ctx, err := scopedCall(ctx, c, spec.scopeFree, req)
 				if err != nil {
 					return nil, nil, err
 				}
-				out, err := h(ctx, c, in)
+				out, err := body(ctx, c, in)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -302,25 +382,11 @@ func add[In any](d *set, t *mcp.Tool, h handler[In], opts ...option) {
 			})
 		},
 		run: func(ctx context.Context, c Client, raw json.RawMessage) (any, error) {
-			value := any(map[string]any{})
-			if len(raw) > 0 {
-				if err := json.Unmarshal(raw, &value); err != nil {
-					return nil, fmt.Errorf("%s: the arguments are not valid JSON: %w", t.Name, err)
-				}
+			in, err := decode(raw)
+			if err != nil {
+				return nil, err
 			}
-			// Validated against the same schema the MCP transport enforces, so a
-			// caller that does not speak MCP cannot reach a body with input the
-			// tool never declared.
-			if err := resolved.Validate(value); err != nil {
-				return nil, fmt.Errorf("%s was called with arguments it does not accept: %w", t.Name, err)
-			}
-			var in In
-			if len(raw) > 0 {
-				if err := json.Unmarshal(raw, &in); err != nil {
-					return nil, fmt.Errorf("%s: the arguments could not be decoded: %w", t.Name, err)
-				}
-			}
-			return h(ctx, c, in)
+			return body(ctx, c, in)
 		},
 	})
 }
@@ -335,6 +401,7 @@ func All() []Tool {
 	registerDictionaryTools(d)
 	registerCommentTools(d)
 	registerNotebookTools(d)
+	registerDashboardTools(d)
 	registerModelTools(d)
 	registerAttackTools(d)
 	registerRecallTools(d)

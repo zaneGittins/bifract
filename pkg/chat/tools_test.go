@@ -1,11 +1,16 @@
 package chat
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"bifract/pkg/aitools"
+	"bifract/pkg/api"
 )
 
 func chatTools(t *testing.T) *toolset {
@@ -159,5 +164,40 @@ func TestWhatIsOfferedIsWhatRuns(t *testing.T) {
 	}
 	if got.Start == "2001-01-01T00:00:00Z" || got.End == "2001-01-02T00:00:00Z" {
 		t.Errorf("the model's window survived into the offer: %s", offered)
+	}
+}
+
+// A write's preparation runs before the user has said yes, so it must run
+// capped at viewer: whatever it reaches, it cannot write.
+func TestPreparationRunsBeforeApprovalAsAViewer(t *testing.T) {
+	var ceilings []api.Access
+	router := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ceiling, _ := api.CeilingFromContext(r.Context())
+		ceilings = append(ceilings, ceiling)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"valid":true,"chart_type":"singleval"}`))
+	})
+	m := &Manager{router: router}
+	tool, ok := chatTools(t).lookup("create_dashboard")
+	if !ok {
+		t.Fatal("create_dashboard is not exposed to chat")
+	}
+
+	origin := httptest.NewRequest(http.MethodPost, "/api/v1/chat", nil)
+	prepared, err := m.prepare(context.Background(), origin, tool,
+		json.RawMessage(`{"name":"Overview","widgets":[{"title":"Events","query":"* | count() | singleval()"}]}`), "f1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ceilings) == 0 {
+		t.Fatal("preparation made no calls")
+	}
+	for _, c := range ceilings {
+		if c != api.AccessViewer {
+			t.Errorf("preparation ran at the %q ceiling, want viewer", c)
+		}
+	}
+	if !strings.Contains(string(prepared), `"chart_type":"singleval"`) {
+		t.Errorf("the offered arguments are not the prepared ones: %s", prepared)
 	}
 }

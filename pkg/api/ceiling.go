@@ -3,6 +3,9 @@ package api
 import (
 	"context"
 	"net/http"
+
+	"bifract/pkg/rbac"
+	"bifract/pkg/storage"
 )
 
 // ceilingKey types the context value so nothing outside this package can set it.
@@ -58,4 +61,28 @@ func Granted(r *http.Request, access Access) bool {
 		return false
 	}
 	return access.Allows(r)
+}
+
+// GrantedRole reports whether user, holding held on an object's own scope, may
+// act with required under any ceiling in force. Handlers that check a role on
+// the object rather than on the request's scope use it, so an in-process
+// caller is held to its ceiling there as well as at the route.
+func GrantedRole(r *http.Request, user *storage.User, held, required rbac.Role) bool {
+	if ceiling, capped := CeilingFromContext(r.Context()); capped && !ceiling.Permits(accessFor(required)) {
+		return false
+	}
+	return rbac.HasAccess(user, held, required)
+}
+
+// accessFor is the route access that corresponds to an RBAC role.
+func accessFor(role rbac.Role) Access {
+	switch role {
+	case rbac.RoleViewer:
+		return AccessViewer
+	case rbac.RoleAnalyst:
+		return AccessAnalyst
+	case rbac.RoleAdmin:
+		return AccessFractalAdmin
+	}
+	return Access(role)
 }
