@@ -2549,6 +2549,12 @@ type DashboardWidget struct {
 // ============================
 
 func (c *PostgresClient) InsertDashboard(ctx context.Context, d Dashboard) (*Dashboard, error) {
+	return c.InsertDashboardWithWidgets(ctx, d, nil)
+}
+
+// InsertDashboardWithWidgets creates a dashboard and its widgets in one
+// transaction, so a failed widget leaves no half-built dashboard behind.
+func (c *PostgresClient) InsertDashboardWithWidgets(ctx context.Context, d Dashboard, widgets []DashboardWidget) (*Dashboard, error) {
 	var fractalIDPtr, prismIDPtr interface{}
 	if d.PrismID != "" {
 		prismIDPtr = d.PrismID
@@ -2561,9 +2567,15 @@ func (c *PostgresClient) InsertDashboard(ctx context.Context, d Dashboard) (*Das
 		varsJSON = json.RawMessage("[]")
 	}
 
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	var nd Dashboard
 	var scanFractalID, scanPrismID sql.NullString
-	err := c.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO dashboards (name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, variables, timezone, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
 		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, COALESCE(variables, '[]'), COALESCE(timezone, 'UTC'), COALESCE(created_by, ''), created_at, updated_at
@@ -2576,6 +2588,13 @@ func (c *PostgresClient) InsertDashboard(ctx context.Context, d Dashboard) (*Das
 	}
 	nd.FractalID = scanFractalID.String
 	nd.PrismID = scanPrismID.String
+
+	if nd.Widgets, err = insertWidgets(ctx, tx, nd.ID, widgets); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit dashboard: %w", err)
+	}
 
 	author, err := c.GetUser(ctx, nd.CreatedBy)
 	if err == nil {
@@ -2776,31 +2795,53 @@ func upgradeDashboardGrid(ctx context.Context, tx *sql.Tx, dashboardID string) e
 }
 
 func (c *PostgresClient) InsertDashboardWidget(ctx context.Context, w DashboardWidget) (*DashboardWidget, error) {
+	added, err := c.InsertDashboardWidgets(ctx, w.DashboardID, []DashboardWidget{w})
+	if err != nil {
+		return nil, err
+	}
+	return &added[0], nil
+}
+
+// InsertDashboardWidgets adds widgets to an existing dashboard in one
+// transaction, so either all of them land or none do.
+func (c *PostgresClient) InsertDashboardWidgets(ctx context.Context, dashboardID string, widgets []DashboardWidget) ([]DashboardWidget, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-	if err := upgradeDashboardGrid(ctx, tx, w.DashboardID); err != nil {
+	if err := upgradeDashboardGrid(ctx, tx, dashboardID); err != nil {
 		return nil, err
 	}
-	var nw DashboardWidget
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO dashboard_widgets (dashboard_id, title, query_content, chart_type, chart_config, pos_x, pos_y, width, height)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, dashboard_id, title, query_content, chart_type, COALESCE(chart_config, 'null'::jsonb), pos_x, pos_y, width, height, last_executed_at, COALESCE(last_results, 'null'::jsonb), created_at, updated_at
-	`, w.DashboardID, w.Title, w.QueryContent, w.ChartType, w.ChartConfig, w.PosX, w.PosY, w.Width, w.Height).Scan(
-		&nw.ID, &nw.DashboardID, &nw.Title, &nw.QueryContent, &nw.ChartType, &nw.ChartConfig,
-		&nw.PosX, &nw.PosY, &nw.Width, &nw.Height, &nw.LastExecutedAt, &nw.LastResults,
-		&nw.CreatedAt, &nw.UpdatedAt,
-	)
+	added, err := insertWidgets(ctx, tx, dashboardID, widgets)
 	if err != nil {
-		return nil, fmt.Errorf("failed to insert dashboard widget: %w", err)
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit dashboard widget: %w", err)
+		return nil, fmt.Errorf("failed to commit dashboard widgets: %w", err)
 	}
-	return &nw, nil
+	return added, nil
+}
+
+func insertWidgets(ctx context.Context, tx *sql.Tx, dashboardID string, widgets []DashboardWidget) ([]DashboardWidget, error) {
+	added := make([]DashboardWidget, 0, len(widgets))
+	for _, w := range widgets {
+		var nw DashboardWidget
+		err := tx.QueryRowContext(ctx, `
+			INSERT INTO dashboard_widgets (dashboard_id, title, query_content, chart_type, chart_config, pos_x, pos_y, width, height)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			RETURNING id, dashboard_id, title, query_content, chart_type, COALESCE(chart_config, 'null'::jsonb), pos_x, pos_y, width, height, last_executed_at, COALESCE(last_results, 'null'::jsonb), created_at, updated_at
+		`, dashboardID, w.Title, w.QueryContent, w.ChartType, w.ChartConfig, w.PosX, w.PosY, w.Width, w.Height).Scan(
+			&nw.ID, &nw.DashboardID, &nw.Title, &nw.QueryContent, &nw.ChartType, &nw.ChartConfig,
+			&nw.PosX, &nw.PosY, &nw.Width, &nw.Height, &nw.LastExecutedAt, &nw.LastResults,
+			&nw.CreatedAt, &nw.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to insert dashboard widget: %w", err)
+		}
+		added = append(added, nw)
+	}
+	return added, nil
 }
 
 func (c *PostgresClient) GetDashboardWidgets(ctx context.Context, dashboardID string) ([]DashboardWidget, error) {
@@ -2938,6 +2979,63 @@ func (c *PostgresClient) UpdateDashboardWidgetLayouts(ctx context.Context, dashb
 func (c *PostgresClient) DeleteDashboardWidget(ctx context.Context, dashboardID, widgetID string) error {
 	res, err := c.db.ExecContext(ctx, `DELETE FROM dashboard_widgets WHERE id = $1 AND dashboard_id = $2`, widgetID, dashboardID)
 	return widgetWriteResult(res, err, "delete")
+}
+
+// WidgetEdit changes a widget's title, query or chart type. A nil field is
+// left as it is.
+type WidgetEdit struct {
+	ID           string  `json:"id"`
+	Title        *string `json:"title,omitempty"`
+	QueryContent *string `json:"query_content,omitempty"`
+	ChartType    *string `json:"chart_type,omitempty"`
+}
+
+// UpdateDashboardWidgets applies several edits to one dashboard's widgets in a
+// transaction. An edit naming a widget that is not on this dashboard rolls the
+// whole set back with ErrDashboardWidgetNotFound.
+func (c *PostgresClient) UpdateDashboardWidgets(ctx context.Context, dashboardID string, edits []WidgetEdit) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+	for _, e := range edits {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE dashboard_widgets SET
+				title = COALESCE($1, title),
+				query_content = COALESCE($2, query_content),
+				chart_type = COALESCE($3, chart_type)
+			WHERE id = $4 AND dashboard_id = $5
+		`, e.Title, e.QueryContent, e.ChartType, e.ID, dashboardID)
+		if err := widgetWriteResult(res, err, "update"); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit dashboard widgets: %w", err)
+	}
+	return nil
+}
+
+// DeleteDashboardWidgets removes several widgets of one dashboard in a
+// transaction. If any id is not on this dashboard, nothing is removed and
+// ErrDashboardWidgetNotFound is returned.
+func (c *PostgresClient) DeleteDashboardWidgets(ctx context.Context, dashboardID string, widgetIDs []string) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+	for _, id := range widgetIDs {
+		res, err := tx.ExecContext(ctx, `DELETE FROM dashboard_widgets WHERE id = $1 AND dashboard_id = $2`, id, dashboardID)
+		if err := widgetWriteResult(res, err, "delete"); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit dashboard widgets: %w", err)
+	}
+	return nil
 }
 
 // ============================

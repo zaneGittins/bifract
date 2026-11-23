@@ -223,3 +223,185 @@ test.describe('chat rendering', () => {
       .toBeLessThan(await page.evaluate(() => 4 * parseFloat(getComputedStyle(document.body).fontSize) * 1.6));
   });
 });
+
+// A proposed dashboard is drawn as it will be laid out. Every string in it was
+// written by the model, which read attacker-influenced logs, so none of it may
+// reach the page as markup.
+test.describe('dashboard proposals', () => {
+  test.beforeEach(({ page }) => loadChat(page));
+
+  const HOSTILE = '<img src=x onerror="window.__pwned=1">';
+  const ARGS = {
+    name: HOSTILE,
+    description: HOSTILE,
+    time_range: 'last7d',
+    variables: [{ name: 'host', value: HOSTILE }],
+    widgets: [
+      { title: HOSTILE, query: `x="${HOSTILE}" | count() | singleval()`, chart_type: 'singleval', pos_x: 0, pos_y: 0, width: 6, height: 5 },
+      { title: 'Trend', query: '* | timechart(span=1h)', chart_type: 'timechart', pos_x: 6, pos_y: 0, width: 18, height: 10 },
+    ],
+  };
+
+  test('shows everything that will be saved, as text', async ({ page }) => {
+    await page.evaluate((args) => {
+      const bubble = Chat.createAssistantBubble();
+      document.getElementById('chatMessages').appendChild(bubble);
+      Chat.renderToolConfirm(bubble.querySelector('.chat-msg-content'), 'create_dashboard', args, 'p1');
+    }, ARGS);
+
+    await expect(page.locator('.chat-confirm-head')).toHaveText('Create a dashboard');
+    await expect(page.locator('.chat-dash-name')).toHaveText(HOSTILE);
+    await expect(page.locator('.chat-dash-range')).toHaveText('Last 7 days');
+    await expect(page.locator('.chat-dash-var')).toHaveText(`@host = ${HOSTILE}`);
+    await expect(page.locator('.chat-dash-query-text')).toHaveCount(2);
+    await expect(page.locator('.chat-dash-query-text').first()).toHaveText(ARGS.widgets[0].query);
+    await expect(page.locator('.chat-dash img')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__pwned)).toBeUndefined();
+
+    // Tiles sit where the layout put them.
+    const trend = page.locator('.chat-dash-tile').nth(1);
+    await expect(trend).toHaveCSS('grid-column-start', '7');
+    await expect(trend.locator('.chat-dash-tile-kind')).toHaveText('Trend');
+  });
+
+  test('a created dashboard leaves a way to open it, live and on reload', async ({ page }) => {
+    const count = await page.evaluate(() => {
+      window.__opened = null;
+      window.App = { showFractalViewTab: (tab, id) => { window.__opened = `${tab}/${id}`; } };
+      const rows = [
+        { role: 'assistant', content: '', tool_calls: [{ id: 'c1', function: { name: 'create_dashboard', arguments: '{}' } }] },
+        { role: 'tool', content: '', tool_results: [{ tool_call_id: 'c1', tool_name: 'create_dashboard', result: { id: 'd1', name: 'Logons', widgets: 2 } }] },
+      ];
+      Chat.renderHistory([{ role: 'user', content: 'q' }, ...rows]);
+      return document.querySelectorAll('.chat-dash-open').length;
+    });
+    expect(count).toBe(1);
+    await expect(page.locator('.chat-dash-open-name')).toHaveText('Logons');
+    await page.locator('.chat-dash-open').click();
+    expect(await page.evaluate(() => window.__opened)).toBe('dashboards/d1');
+  });
+});
+
+// Panels proposed for an existing dashboard. The board is read from the server,
+// so the card names the dashboard that will really change rather than one the
+// model describes.
+test.describe('dashboard additions', () => {
+  test.beforeEach(({ page }) => loadChat(page));
+
+  const NEW = { title: 'By source', query: 'event_id=4625 | groupby(src_ip) | barchart()', chart_type: 'barchart', pos_x: 0, pos_y: 5, width: 24, height: 12 };
+  const BOARD = {
+    id: 'd1', name: '<b>Auth</b>', variables: [{ name: 'host', value: '*' }],
+    widgets: [{ title: 'Count', query_content: '* | count()', chart_type: 'singleval', pos_x: 0, pos_y: 0, width: 24, height: 5 }],
+  };
+
+  async function render(page, board) {
+    await page.evaluate(({ board, widget }) => {
+      window.fetch = async (url) => ({ json: async () => (url.endsWith('/dashboards/d1') ? { success: true, data: board } : { success: false }) });
+      const bubble = Chat.createAssistantBubble();
+      document.getElementById('chatMessages').appendChild(bubble);
+      Chat.renderToolConfirm(bubble.querySelector('.chat-msg-content'), 'add_dashboard_widgets', { dashboard_id: 'd1', widgets: [widget] }, 'p1');
+    }, { board, widget: NEW });
+  }
+
+  test('names the board from the server and keeps its panels apart from the new ones', async ({ page }) => {
+    await render(page, BOARD);
+    await expect(page.locator('.chat-confirm-head')).toHaveText('Add panels to a dashboard');
+    await expect(page.locator('.chat-dash-name')).toHaveText('<b>Auth</b>');
+    await expect(page.locator('.chat-dash-name b')).toHaveCount(0);
+    await expect(page.locator('.chat-dash-range')).toHaveText('1 existing panel');
+    await expect(page.locator('.chat-dash-tile.is-existing')).toHaveCount(1);
+    await expect(page.locator('.chat-dash-tile.is-new')).toHaveCount(1);
+    await expect(page.locator('.chat-dash-var')).toHaveText('@host = *');
+    await expect(page.locator('.chat-dash-query-text')).toHaveText(NEW.query);
+  });
+
+  // Reopened after approval, the board already holds the new panel.
+  test('an approved addition is not drawn twice when reopened', async ({ page }) => {
+    const added = { title: NEW.title, query_content: NEW.query, chart_type: NEW.chart_type, pos_x: 0, pos_y: 5, width: 24, height: 12 };
+    await render(page, { ...BOARD, widgets: [...BOARD.widgets, added] });
+    await expect(page.locator('.chat-dash-range')).toHaveText('1 existing panel');
+    await expect(page.locator('.chat-dash-tile')).toHaveCount(2);
+  });
+
+  test('says so when the board cannot be read', async ({ page }) => {
+    await page.evaluate((widget) => {
+      window.fetch = async () => ({ json: async () => ({ success: false }) });
+      const bubble = Chat.createAssistantBubble();
+      document.getElementById('chatMessages').appendChild(bubble);
+      Chat.renderToolConfirm(bubble.querySelector('.chat-msg-content'), 'add_dashboard_widgets', { dashboard_id: 'gone', widgets: [widget] }, 'p1');
+    }, NEW);
+    await expect(page.locator('.chat-dash-range')).toHaveText('Could not load the dashboard');
+    await expect(page.locator('.chat-dash-tile.is-new')).toHaveCSS('grid-row-start', '1');
+  });
+});
+
+// Edits and removals are shown against the board the server holds, so the
+// card says what will really change, whatever the model claims.
+test.describe('dashboard edits and removals', () => {
+  test.beforeEach(({ page }) => loadChat(page));
+
+  const BOARD = {
+    id: 'd1', name: 'Auth', variables: [],
+    widgets: [
+      { id: 'w1', title: '<i>Count</i>', query_content: '* | count() | singleval()', chart_type: 'singleval', pos_x: 0, pos_y: 0, width: 24, height: 5 },
+      { id: 'w2', title: 'Trend', query_content: '* | timechart(span=1h)', chart_type: 'timechart', pos_x: 0, pos_y: 5, width: 24, height: 10 },
+    ],
+  };
+
+  async function render(page, tool, args, board) {
+    await page.evaluate(({ tool, args, board }) => {
+      window.fetch = async () => ({ json: async () => (board ? { success: true, data: board } : { success: false }) });
+      const bubble = Chat.createAssistantBubble();
+      document.getElementById('chatMessages').appendChild(bubble);
+      Chat.renderToolConfirm(bubble.querySelector('.chat-msg-content'), tool, args, 'p1');
+    }, { tool, args, board });
+  }
+
+  test('an edit shows the current query beside the proposed one', async ({ page }) => {
+    await render(page, 'update_dashboard_widgets', {
+      dashboard_id: 'd1',
+      edits: [{ widget_id: 'w2', query: '* | timechart(span=1h, groupby(level))', chart_type: 'timechart' }],
+    }, BOARD);
+    await expect(page.locator('.chat-confirm-head')).toHaveText('Change panels on a dashboard');
+    await expect(page.locator('.chat-dash-range')).toHaveText('1 panel to change');
+    await expect(page.locator('.chat-dash-query-text.is-old')).toHaveText('* | timechart(span=1h)');
+    await expect(page.locator('.chat-dash-query-text.is-new')).toHaveText('* | timechart(span=1h, groupby(level))');
+    await expect(page.locator('.chat-dash-tile.is-edited .chat-dash-tile-name')).toHaveText('Trend');
+    await expect(page.locator('.chat-dash-tile.is-existing .chat-dash-tile-name')).toHaveText('<i>Count</i>');
+    await expect(page.locator('.chat-dash i')).toHaveCount(0);
+  });
+
+  test('a rename shows the old title struck through', async ({ page }) => {
+    await render(page, 'update_dashboard_widgets', { dashboard_id: 'd1', edits: [{ widget_id: 'w1', title: 'Events' }] }, BOARD);
+    await expect(page.locator('.chat-dash-old')).toHaveText('<i>Count</i>');
+    await expect(page.locator('.chat-dash-new')).toHaveText('Events');
+    await expect(page.locator('.chat-dash-tile.is-edited .chat-dash-tile-name')).toHaveText('Events');
+  });
+
+  test('a removal marks the panels on the board and lists their queries', async ({ page }) => {
+    await render(page, 'remove_dashboard_widgets', { dashboard_id: 'd1', widget_ids: ['w2'] }, BOARD);
+    await expect(page.locator('.chat-confirm-head')).toHaveText('Remove panels from a dashboard');
+    await expect(page.locator('.chat-dash-range')).toHaveText('1 panel of 2 to remove');
+    await expect(page.locator('.chat-dash-tile.is-removed .chat-dash-tile-name')).toHaveText('Trend');
+    await expect(page.locator('.chat-dash-tile.is-existing')).toHaveCount(1);
+    await expect(page.locator('.chat-dash-changes .chat-dash-query-text')).toHaveText('* | timechart(span=1h)');
+  });
+
+  // Reopened after approval, the panel is gone from the board.
+  test('an approved removal reopens without the panel', async ({ page }) => {
+    await render(page, 'remove_dashboard_widgets', { dashboard_id: 'd1', widget_ids: ['w2'] }, { ...BOARD, widgets: [BOARD.widgets[0]] });
+    await expect(page.locator('.chat-dash-tile.is-removed')).toHaveCount(0);
+    await expect(page.locator('.chat-dash-changes')).toContainText('1 panel no longer on the dashboard.');
+  });
+
+  test('a removal result links to the dashboard', async ({ page }) => {
+    await page.evaluate(() => {
+      const rows = [
+        { role: 'assistant', content: '', tool_calls: [{ id: 'c1', function: { name: 'remove_dashboard_widgets', arguments: '{}' } }] },
+        { role: 'tool', content: '', tool_results: [{ tool_call_id: 'c1', tool_name: 'remove_dashboard_widgets', result: { id: 'd1', name: 'Auth', removed: 2 } }] },
+      ];
+      Chat.renderHistory([{ role: 'user', content: 'q' }, ...rows]);
+    });
+    await expect(page.locator('.chat-dash-open-meta')).toHaveText('2 panels removed · Open dashboard');
+  });
+});

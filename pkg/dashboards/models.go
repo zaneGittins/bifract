@@ -2,6 +2,7 @@ package dashboards
 
 import (
 	"bifract/pkg/api"
+	"bifract/pkg/bqlvars"
 	"bifract/pkg/storage"
 	"encoding/json"
 	"time"
@@ -62,6 +63,11 @@ type CreateDashboardRequest struct {
 	TimeRangeStart *time.Time `json:"time_range_start,omitempty"`
 	TimeRangeEnd   *time.Time `json:"time_range_end,omitempty"`
 	Timezone       string     `json:"timezone,omitempty"`
+	// Variables and Widgets build the whole dashboard in one request. Every
+	// widget must parse and sit on the grid without overlap, or nothing is
+	// created.
+	Variables []bqlvars.Variable    `json:"variables,omitempty"`
+	Widgets   []CreateWidgetRequest `json:"widgets,omitempty"`
 }
 
 // UpdateDashboardRequest is the request body for updating a dashboard
@@ -83,6 +89,22 @@ type CreateWidgetRequest struct {
 	PosY         int     `json:"pos_y"`
 	Width        int     `json:"width"`
 	Height       int     `json:"height"`
+}
+
+// AddWidgetsRequest adds several widgets to a dashboard at once. They must
+// parse with the dashboard's variables and fit beside what is already there.
+type AddWidgetsRequest struct {
+	Widgets []CreateWidgetRequest `json:"widgets"`
+}
+
+// EditWidgetsRequest edits several widgets of a dashboard at once.
+type EditWidgetsRequest struct {
+	Widgets []storage.WidgetEdit `json:"widgets"`
+}
+
+// RemoveWidgetsRequest removes several widgets of a dashboard at once.
+type RemoveWidgetsRequest struct {
+	WidgetIDs []string `json:"widget_ids"`
 }
 
 // UpdateWidgetRequest is the request body for updating widget query/title

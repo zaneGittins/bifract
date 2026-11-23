@@ -4,13 +4,13 @@ import "testing"
 
 func TestValidTimeRangeType(t *testing.T) {
 	for _, ok := range []string{"all", "custom", "last1h", "last15m", "last24h", "last7d", "last30d", "last2w", "last99999m"} {
-		if !validTimeRangeType(ok) {
-			t.Errorf("validTimeRangeType(%q) = false, want true", ok)
+		if !ValidTimeRangeType(ok) {
+			t.Errorf("ValidTimeRangeType(%q) = false, want true", ok)
 		}
 	}
 	for _, bad := range []string{"", "last", "last0h", "last01h", "last5y", "last100000m", "1h", "last-1h", "LAST1H", "last1h "} {
-		if validTimeRangeType(bad) {
-			t.Errorf("validTimeRangeType(%q) = true, want false", bad)
+		if ValidTimeRangeType(bad) {
+			t.Errorf("ValidTimeRangeType(%q) = true, want false", bad)
 		}
 	}
 }

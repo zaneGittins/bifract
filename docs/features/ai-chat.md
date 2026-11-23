@@ -44,10 +44,33 @@ Tools that change something are proposed, not run. A card shows the exact argume
 |------|--------------|
 | `add_comment`, `add_tag`, `remove_tag` | Writes a comment or changes its tags |
 | `create_notebook`, `add_notebook_section` | Writes to a notebook |
+| `create_dashboard` | Creates a dashboard with all its panels |
+| `add_dashboard_widgets` | Adds panels below the existing ones on a dashboard |
+| `update_dashboard_widgets` | Changes the title or query of panels on a dashboard |
+| `remove_dashboard_widgets` | Removes panels from a dashboard |
 | `create_alert`, `update_alert` | Creates or changes a live detection |
 | `search_archive` | Starts an archive scan (minutes, reads object storage) |
 
+A proposed dashboard is drawn as it will be laid out, with its name, time range, variables and every panel's query. Every query is checked before the card appears, so a dashboard that would fail is sent back to the assistant instead of to you. After approval, **Open dashboard** takes you to it.
+
 The server holds the arguments, so what the card shows is what runs. The action runs with your own role, so approving never grants more than you have. Unanswered proposals expire after 15 minutes.
+
+## Build a dashboard
+
+Ask for one in plain words, for example *Build a dashboard for authentication activity on Windows hosts*. The assistant runs each candidate panel's query first and keeps the ones that return data, then proposes the whole dashboard at once:
+
+- Headline numbers first, then trends, then breakdowns and tables.
+- Each panel's chart comes from its query (`singleval()`, `timechart()`, `barchart()`, `piechart()`, `worldmap()`, or a table).
+- Panels are laid out automatically on the 24-column grid; each row fills the width.
+- Filters you will want to change, such as a host, become dashboard variables (`@host`).
+
+Ask for changes before approving and the assistant proposes a new version. Once created, it is an ordinary dashboard you can edit, share or export.
+
+To extend a dashboard, ask for it by name, for example *Add where the failed logons come from to the authentication dashboard*. The assistant reads the dashboard, reuses its variables, and proposes only the new panels. The card shows the dashboard as the server has it, with existing panels dimmed and the new ones marked **New** below them. Existing panels are never moved or changed, and anyone viewing the dashboard sees the new panels appear once you approve.
+
+To change or remove panels, say which, for example *Split the trend by event and rename the failures chart*, or *Remove the pie chart*. The card shows the dashboard as the server has it: edited panels are marked **Edit** with the current title and query struck through beside the new ones, and removed panels are marked **Remove** with their queries listed. Several changes go through as one approval, all or nothing. Panels are never moved or resized, and the assistant cannot delete a whole dashboard.
+
+A removal can be undone: the assistant keeps the removed panels' definitions and can put them back where they were if you ask.
 
 ## What the assistant can read
 

@@ -45,6 +45,10 @@ const TOOL_LABELS = {
     update_alert: 'Updated an alert',
     create_notebook: 'Created a notebook',
     add_notebook_section: 'Added a notebook section',
+    create_dashboard: 'Created a dashboard',
+    add_dashboard_widgets: 'Added dashboard panels',
+    update_dashboard_widgets: 'Changed dashboard panels',
+    remove_dashboard_widgets: 'Removed dashboard panels',
 };
 
 // What approving a proposed action will actually do, in the user's terms. The
@@ -57,7 +61,45 @@ const CONFIRM_TITLES = {
     update_alert: 'Change a detection alert',
     create_notebook: 'Create a notebook',
     add_notebook_section: 'Add a section to a notebook',
+    create_dashboard: 'Create a dashboard',
+    add_dashboard_widgets: 'Add panels to a dashboard',
+    update_dashboard_widgets: 'Change panels on a dashboard',
+    remove_dashboard_widgets: 'Remove panels from a dashboard',
     search_archive: 'Search the archive (slow, and it costs storage reads)',
+};
+
+// The dashboard writes whose result leaves a link to the dashboard.
+const DASHBOARD_WRITES = new Set(['create_dashboard', 'add_dashboard_widgets', 'update_dashboard_widgets', 'remove_dashboard_widgets']);
+
+// How each chart kind reads in a dashboard preview. The query decides the kind,
+// so an unlisted one is shown as its own name.
+const PANEL_KINDS = {
+    '': 'Table',
+    table: 'Table',
+    singleval: 'Number',
+    timechart: 'Trend',
+    barchart: 'Bar chart',
+    piechart: 'Pie chart',
+    histogram: 'Histogram',
+    heatmap: 'Heatmap',
+    boxplot: 'Box plot',
+    scatter: 'Scatter',
+    worldmap: 'Map',
+    graph: 'Graph',
+    pgraph: 'Process graph',
+    mesh: 'Mesh',
+    mitre: 'ATT&CK matrix',
+};
+
+// A faint outline of each chart kind for the dashboard preview, drawn in a
+// 24x16 box with the current text colour.
+const PANEL_GLYPHS = {
+    timechart: '<polyline points="1,13 6,8 10,10 15,4 19,7 23,2"/>',
+    barchart: '<line x1="4" y1="15" x2="4" y2="7"/><line x1="10" y1="15" x2="10" y2="3"/><line x1="16" y1="15" x2="16" y2="9"/><line x1="22" y1="15" x2="22" y2="5"/>',
+    histogram: '<line x1="4" y1="15" x2="4" y2="10"/><line x1="10" y1="15" x2="10" y2="3"/><line x1="16" y1="15" x2="16" y2="6"/><line x1="22" y1="15" x2="22" y2="12"/>',
+    piechart: '<circle cx="12" cy="8" r="7"/><polyline points="12,1 12,8 18,11"/>',
+    worldmap: '<circle cx="12" cy="8" r="7"/><ellipse cx="12" cy="8" rx="3" ry="7"/><line x1="5" y1="8" x2="19" y2="8"/>',
+    table: '<line x1="2" y1="3" x2="22" y2="3"/><line x1="2" y1="8" x2="22" y2="8"/><line x1="2" y1="13" x2="22" y2="13"/>',
 };
 
 // What became of a proposed action, in the card's own words. The keys are the
@@ -923,10 +965,20 @@ const Chat = {
         note.textContent = 'This changes what other people see. Nothing happens until you approve it.';
         card.appendChild(note);
 
-        const detail = document.createElement('pre');
-        detail.className = 'chat-confirm-args';
-        detail.textContent = JSON.stringify(args ?? {}, null, 2);
-        card.appendChild(detail);
+        if (toolName === 'create_dashboard' && Array.isArray(args?.widgets)) {
+            card.appendChild(this._dashboardPreview(args));
+        } else if (toolName === 'add_dashboard_widgets' && Array.isArray(args?.widgets)) {
+            card.appendChild(this._dashboardAdditionPreview(args));
+        } else if (toolName === 'update_dashboard_widgets' && Array.isArray(args?.edits)) {
+            card.appendChild(this._dashboardEditPreview(args));
+        } else if (toolName === 'remove_dashboard_widgets' && Array.isArray(args?.widget_ids)) {
+            card.appendChild(this._dashboardRemovalPreview(args));
+        } else {
+            const detail = document.createElement('pre');
+            detail.className = 'chat-confirm-args';
+            detail.textContent = JSON.stringify(args ?? {}, null, 2);
+            card.appendChild(detail);
+        }
 
         const actions = document.createElement('div');
         actions.className = 'chat-confirm-actions';
@@ -953,6 +1005,227 @@ const Chat = {
         contentEl.appendChild(card);
         this.scrollToBottom();
         return card;
+    },
+
+    // A proposed dashboard drawn as it will be laid out, with everything that
+    // will be saved: name, range, variables and every query. The model wrote all
+    // of it, so it only ever reaches the page as text.
+    _dashboardPreview(args) {
+        const wrap = this._el('div', 'chat-dash');
+
+        const head = this._el('div', 'chat-dash-head');
+        head.appendChild(this._el('span', 'chat-dash-name', args.name || 'Untitled dashboard'));
+        head.appendChild(this._el('span', 'chat-dash-range', this._rangeLabel(args.time_range)));
+        wrap.appendChild(head);
+        if (args.description) wrap.appendChild(this._el('div', 'chat-dash-desc', args.description));
+
+        const vars = Array.isArray(args.variables) ? args.variables : [];
+        if (vars.length) wrap.appendChild(this._dashVars(vars));
+
+        const grid = this._el('div', 'chat-dash-grid');
+        args.widgets.forEach((w, i) => grid.appendChild(this._dashTile(w, i)));
+        wrap.appendChild(grid);
+        wrap.appendChild(this._dashQueries(args.widgets));
+        return wrap;
+    },
+
+    // Panels proposed for an existing dashboard. Which dashboard, and what is
+    // already on it, is read from the server rather than taken from the model,
+    // so the card names the board that will really change.
+    _dashboardAdditionPreview(args) {
+        const { wrap, head, name, meta, grid } = this._dashFrame();
+        const added = args.widgets;
+        added.forEach((w, i) => grid.appendChild(this._dashTile(w, i, 'is-new')));
+        wrap.appendChild(this._dashQueries(added));
+
+        this._loadBoard(args.dashboard_id, { name, meta }, (board) => {
+            // Once approved, the new panels are on the board too; they are
+            // drawn once, as new.
+            const same = (a, b) => a.pos_x === b.pos_x && a.pos_y === b.pos_y && a.width === b.width
+                && a.height === b.height && a.query_content === b.query;
+            const existing = (board.widgets || []).filter(e => !added.some(n => same(e, n)));
+            meta.textContent = this._count(existing.length, 'existing panel');
+            const vars = Array.isArray(board.variables) ? board.variables : [];
+            if (vars.length) head.after(this._dashVars(vars));
+            existing.forEach((w, i) => grid.prepend(this._dashTile(this._boardWidget(w), i, 'is-existing')));
+            // The new panels sit below the board, which may be taller than the frame.
+            const first = grid.querySelector('.is-new');
+            if (first) grid.scrollTop = Math.max(0, first.offsetTop - 48);
+        }, () => {
+            // Without the board the new panels are drawn from the top.
+            const top = Math.min(...added.map(w => w.pos_y ?? 0));
+            grid.querySelectorAll('.is-new').forEach((tile, i) => {
+                const w = added[i];
+                if (Number.isInteger(w.pos_y)) tile.style.gridRow = `${w.pos_y - top + 1} / span ${w.height}`;
+            });
+        });
+        return wrap;
+    },
+
+    // Edits to panels already on a dashboard, shown against what the server
+    // holds now: the current title and query beside the proposed ones.
+    _dashboardEditPreview(args) {
+        const { wrap, name, meta, grid } = this._dashFrame();
+        const edits = args.edits;
+        const changes = this._el('div', 'chat-dash-changes');
+        wrap.appendChild(changes);
+
+        const describe = (edit, current) => {
+            const item = this._el('div', 'chat-dash-change');
+            item.appendChild(this._el('div', 'chat-dash-query-title', current?.title || edit.title || `Widget ${edit.widget_id}`));
+            if (edit.title !== undefined && edit.title !== null) {
+                const row = this._el('div', 'chat-dash-change-row');
+                row.appendChild(this._el('span', 'chat-dash-change-label', 'Title'));
+                if (current && current.title !== edit.title) row.appendChild(this._el('span', 'chat-dash-old', current.title || 'Untitled'));
+                row.appendChild(this._el('span', 'chat-dash-new', edit.title || 'Untitled'));
+                item.appendChild(row);
+            }
+            if (edit.query !== undefined && edit.query !== null) {
+                item.appendChild(this._el('div', 'chat-dash-change-label', 'Query'));
+                if (current && current.query_content !== edit.query) item.appendChild(this._el('pre', 'chat-dash-query-text is-old', current.query_content || ''));
+                item.appendChild(this._el('pre', 'chat-dash-query-text is-new', edit.query));
+            }
+            return item;
+        };
+        edits.forEach(e => changes.appendChild(describe(e, null)));
+
+        this._loadBoard(args.dashboard_id, { name, meta }, (board) => {
+            const byId = new Map((board.widgets || []).map(w => [w.id, w]));
+            meta.textContent = this._count(edits.length, 'panel') + ' to change';
+            changes.replaceChildren(...edits.map(e => describe(e, byId.get(e.widget_id))));
+            const edited = new Map(edits.map(e => [e.widget_id, e]));
+            (board.widgets || []).forEach((w, i) => {
+                const e = edited.get(w.id);
+                const shown = this._boardWidget(w);
+                if (e?.title !== undefined && e?.title !== null) shown.title = e.title;
+                grid.appendChild(this._dashTile(shown, i, e ? 'is-edited' : 'is-existing'));
+            });
+        }, () => grid.remove());
+        return wrap;
+    },
+
+    // Panels to remove, marked on the board as the server holds it.
+    _dashboardRemovalPreview(args) {
+        const { wrap, name, meta, grid } = this._dashFrame();
+        const ids = args.widget_ids;
+        const list = this._el('div', 'chat-dash-changes');
+        wrap.appendChild(list);
+        ids.forEach(id => list.appendChild(this._el('div', 'chat-dash-query-title', `Widget ${id}`)));
+
+        this._loadBoard(args.dashboard_id, { name, meta }, (board) => {
+            const removing = new Set(ids);
+            const widgets = board.widgets || [];
+            const doomed = widgets.filter(w => removing.has(w.id));
+            meta.textContent = this._count(doomed.length, 'panel') + ` of ${widgets.length} to remove`;
+            widgets.forEach((w, i) => grid.appendChild(this._dashTile(this._boardWidget(w), i, removing.has(w.id) ? 'is-removed' : 'is-existing')));
+            list.replaceChildren(...doomed.map(w => {
+                const item = this._el('div', 'chat-dash-change');
+                item.appendChild(this._el('div', 'chat-dash-query-title', w.title || 'Untitled'));
+                item.appendChild(this._el('pre', 'chat-dash-query-text is-old', w.query_content || ''));
+                return item;
+            }));
+            const gone = ids.length - doomed.length;
+            if (gone > 0) list.appendChild(this._el('div', 'chat-dash-desc', `${this._count(gone, 'panel')} no longer on the dashboard.`));
+            if (doomed.length) list.appendChild(this._el('div', 'chat-dash-desc', 'The assistant keeps these definitions, so you can ask it to put them back.'));
+        }, () => grid.remove());
+        return wrap;
+    },
+
+    // The shared top of a card about an existing dashboard.
+    _dashFrame() {
+        const wrap = this._el('div', 'chat-dash');
+        const head = this._el('div', 'chat-dash-head');
+        const name = this._el('span', 'chat-dash-name', 'Loading dashboard...');
+        const meta = this._el('span', 'chat-dash-range', '');
+        head.append(name, meta);
+        const grid = this._el('div', 'chat-dash-grid');
+        wrap.append(head, grid);
+        return { wrap, head, name, meta, grid };
+    },
+
+    // Reads a dashboard as the signed-in user sees it.
+    _loadBoard(id, { name, meta }, onBoard, onFail) {
+        id = String(id || '');
+        fetch(`/api/v1/dashboards/${encodeURIComponent(id)}`, { credentials: 'include' })
+            .then(r => r.json())
+            .then(data => {
+                if (!data?.success || !data.data) throw new Error(data?.error || 'not found');
+                name.textContent = data.data.name || 'Untitled dashboard';
+                onBoard(data.data);
+            })
+            .catch(() => {
+                name.textContent = `Dashboard ${id}`;
+                meta.textContent = 'Could not load the dashboard';
+                onFail();
+            });
+    },
+
+    // A stored widget in the shape the preview tiles take.
+    _boardWidget(w) {
+        return { title: w.title, query: w.query_content, chart_type: w.chart_type, pos_x: w.pos_x, pos_y: w.pos_y, width: w.width, height: w.height };
+    },
+
+    _count(n, noun) {
+        return `${n} ${noun}${n === 1 ? '' : 's'}`;
+    },
+
+    _el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+    },
+
+    _dashVars(vars) {
+        const row = this._el('div', 'chat-dash-vars');
+        for (const v of vars) row.appendChild(this._el('code', 'chat-dash-var', `@${v.name} = ${v.value === '' ? '*' : v.value}`));
+        return row;
+    },
+
+    _dashTile(w, i, state) {
+        const tile = this._el('div', 'chat-dash-tile' + (state ? ' ' + state : ''));
+        tile.dataset.kind = w.chart_type || 'table';
+        const placed = Number.isInteger(w.pos_x) && Number.isInteger(w.pos_y) && w.width > 0 && w.height > 0;
+        if (placed) {
+            tile.style.gridColumn = `${w.pos_x + 1} / span ${w.width}`;
+            tile.style.gridRow = `${w.pos_y + 1} / span ${w.height}`;
+        }
+        tile.title = w.query || '';
+        const title = this._el('span', 'chat-dash-tile-title');
+        const badge = { 'is-new': 'New', 'is-edited': 'Edit', 'is-removed': 'Remove' }[state];
+        if (badge) title.appendChild(this._el('span', 'chat-dash-tile-badge', badge));
+        title.appendChild(this._el('span', 'chat-dash-tile-name', w.title || `Widget ${i + 1}`));
+        tile.appendChild(title);
+        const glyph = PANEL_GLYPHS[w.chart_type || 'table'];
+        if (glyph && (!placed || w.height >= 8)) {
+            const icon = this._el('span', 'chat-dash-tile-glyph');
+            icon.innerHTML = `<svg viewBox="0 0 24 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${glyph}</svg>`;
+            tile.appendChild(icon);
+        }
+        tile.appendChild(this._el('span', 'chat-dash-tile-kind', PANEL_KINDS[w.chart_type || ''] || w.chart_type));
+        return tile;
+    },
+
+    _dashQueries(widgets) {
+        const queries = this._el('details', 'chat-dash-queries');
+        queries.appendChild(this._el('summary', '', `${widgets.length} ${widgets.length === 1 ? 'query' : 'queries'}`));
+        widgets.forEach((w, i) => {
+            const item = this._el('div', 'chat-dash-query');
+            item.appendChild(this._el('div', 'chat-dash-query-title', `${i + 1}. ${w.title || 'Untitled'}`));
+            item.appendChild(this._el('pre', 'chat-dash-query-text', w.query || ''));
+            queries.appendChild(item);
+        });
+        return queries;
+    },
+
+    // "last24h" as a person would say it.
+    _rangeLabel(range) {
+        if (!range || range === 'all') return range ? 'All time' : 'Last 24 hours';
+        const m = /^last(\d+)([mhdw])$/.exec(range);
+        if (!m) return range;
+        const units = { m: 'minute', h: 'hour', d: 'day', w: 'week' };
+        const n = Number(m[1]);
+        return `Last ${n} ${units[m[2]]}${n === 1 ? '' : 's'}`;
     },
 
     // The answered state of a card, applied whether the user just clicked, the
@@ -993,6 +1266,34 @@ const Chat = {
         resultDiv.className = 'chat-trace-result';
         resultDiv.innerHTML = this._toolResultHtml(toolName, result);
         targetCall.appendChild(resultDiv);
+
+        if (DASHBOARD_WRITES.has(toolName) && result?.id && !result.error) {
+            this.trimTrailingWhitespace(contentEl);
+            contentEl.appendChild(this._dashboardLink(result));
+            this.scrollToBottom();
+        }
+    },
+
+    // What a created dashboard leaves in the conversation: a way to open it.
+    _dashboardLink(result) {
+        const link = document.createElement('button');
+        link.type = 'button';
+        link.className = 'chat-dash-open';
+        const label = document.createElement('span');
+        label.className = 'chat-dash-open-name';
+        label.textContent = result.name || 'Dashboard';
+        const meta = document.createElement('span');
+        meta.className = 'chat-dash-open-meta';
+        const panels = result.added ? this._count(result.added, 'panel') + ' added'
+            : result.updated ? this._count(result.updated, 'panel') + ' updated'
+            : result.removed ? this._count(result.removed, 'panel') + ' removed'
+            : this._count(result.widgets || 0, 'panel');
+        meta.textContent = `${panels} · Open dashboard`;
+        link.append(label, meta);
+        link.addEventListener('click', () => {
+            if (window.App) App.showFractalViewTab('dashboards', result.id);
+        });
+        return link;
     },
 
     // Tools answer in the API's own shapes, so this reads the shape rather than
