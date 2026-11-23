@@ -45,3 +45,34 @@ func TestWatchLockStops(t *testing.T) {
 		t.Fatal("context still live after stop")
 	}
 }
+
+// The work ending mid-ping must not cancel the ping: lib/pq marks a connection
+// bad when a query's context is cancelled, and the unlock that follows then fails.
+func TestWatchLockPingOutlivesTheWork(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	pingErr := make(chan error, 1)
+	ping := func(ctx context.Context) error {
+		close(started)
+		<-release
+		pingErr <- ctx.Err()
+		return ctx.Err()
+	}
+	parent, cancelWork := context.WithCancel(context.Background())
+	ctx, stop := watchLock(parent, ping, time.Millisecond)
+	<-started
+	cancelWork()
+	<-ctx.Done()
+
+	stopped := make(chan struct{})
+	go func() { stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("stop returned while a ping was still using the connection")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-stopped
+	if err := <-pingErr; err != nil {
+		t.Errorf("ping context = %v, want it left alive until the ping finishes", err)
+	}
+}
