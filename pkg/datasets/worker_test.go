@@ -52,6 +52,7 @@ type fakeQueue struct {
 	refuse  int // refuse this many batches first; -1 refuses forever
 	busy    int // report a full queue for this many Depth calls
 	full    bool
+	offered int // batches offered, accepted or not
 	entries []storage.LogEntry
 	events  *[]string
 	// onEnqueue runs after each accepted batch.
@@ -75,6 +76,7 @@ func (q *fakeQueue) Enqueue(logs []storage.LogEntry) bool {
 	if q.full {
 		*q.events = append(*q.events, "enqueue while full")
 	}
+	q.offered++
 	if q.refuse != 0 {
 		if q.refuse > 0 {
 			q.refuse--
@@ -497,8 +499,12 @@ func TestWorkerStopsWhenClaimIsLost(t *testing.T) {
 	t.Cleanup(func() { reportInterval = old })
 	r := newRig(t, compress(t, exportedLines(3)), "", 3)
 	r.queue.refuse = -1
+	// The claim is lost only once a batch was offered, whatever the scheduling.
 	r.pg.Respond(func(query string, _ []driver.Value) (fakedb.PGResult, bool) {
-		if strings.Contains(query, "SET status = $3, bytes_done") {
+		r.queue.mu.Lock()
+		offered := r.queue.offered
+		r.queue.mu.Unlock()
+		if offered > 0 && strings.Contains(query, "SET status = $3, bytes_done") {
 			return fakedb.Affected(0), true
 		}
 		return fakedb.PGResult{}, false
