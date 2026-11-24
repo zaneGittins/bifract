@@ -398,8 +398,10 @@ var alertTS = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 func TestHandleAlertStats(t *testing.T) {
 	db, _ := storagetest.ClickHouse()
 	pgc, pg := storagetest.Postgres()
-	pg.On("PERCENTILE_CONT", fakedb.Row(int64(10), int64(2), 61.4, 300.6)).
-		On("NULLS FIRST", fakedb.Row("slow-alert")).
+	pg.On("(SELECT count(*) FROM alerts WHERE enabled)", fakedb.Row(int64(10), int64(2))).
+		On("AS since_sec", fakedb.RowsOf(
+			[]driver.Value{"slow-alert", "event", alertTS, 300.6, int64(0), ""},
+			[]driver.Value{"hourly", "compound", alertTS, 3000.0, int64(3600), ""})).
 		On("count(DISTINCT alert_id)", fakedb.Row(int64(5), int64(3), int64(400), int64(1), int64(20))).
 		On("(SELECT name FROM acts WHERE NOT ok", fakedb.Row(int64(2), int64(9), "pager")).
 		On("FROM system_metrics", fakedb.Row(alertTS, 41.6)).
@@ -410,7 +412,7 @@ func TestHandleAlertStats(t *testing.T) {
 	out := decodeMap(t, serve(h.HandleAlertStats, "/?range=30d"))
 	s := out["summary"].(map[string]interface{})
 	want := map[string]interface{}{
-		"evaluating": 10.0, "disabled": 2.0, "lag_p95_sec": 61.0, "lag_max_sec": 301.0, "lag_max_alert": "slow-alert",
+		"evaluating": 10.0, "disabled": 2.0, "lag_p95_sec": 286.0, "lag_max_sec": 301.0, "lag_max_alert": "slow-alert",
 		"fires": 5.0, "firing_alerts": 3.0, "logs_matched": 400.0, "throttled": 1.0, "logs_suppressed": 20.0,
 		"action_failures": 2.0, "action_total": 9.0, "action_worst": "pager",
 		// However wide the selector, the window is capped at a day.
@@ -450,7 +452,7 @@ func TestHandleAlertRows(t *testing.T) {
 	db, _ := storagetest.ClickHouse()
 	pgc, pg := storagetest.Postgres()
 	pg.On("LEFT JOIN fired", fakedb.RowsOf([]driver.Value{
-		"a1", "noisy", "high", "f1", "", false, "Auto-disabled: boom", 12.6, int64(80), int64(4), int64(1), int64(40), int64(3), int64(1), "pager",
+		"a1", "noisy", "high", "f1", "", false, "Auto-disabled: boom", "event", alertTS, 12.6, int64(0), "", int64(80), int64(4), int64(1), int64(40), int64(3), int64(1), "pager",
 	})).On("ORDER BY ae.triggered_at DESC", fakedb.RowsOf([]driver.Value{
 		alertTS, "noisy", "high", "f1", "", int64(4), int64(0), false, "", int64(15),
 		`[{"webhook_name":"pager","success":false,"status_code":502}]`, `[]`, `[{"success":true}]`,

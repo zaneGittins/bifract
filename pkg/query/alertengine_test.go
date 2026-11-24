@@ -158,3 +158,109 @@ func TestAlertStatsReportsTheIngestWatermark(t *testing.T) {
 		t.Errorf("an unreadable watermark must be reported, got %v", sum)
 	}
 }
+
+// Lag is how long an alert has been due without being evaluated. A compound
+// alert's cursor is the start of a window that cannot run until it closes, and a
+// scheduled one waits for its cron, so time since the cursor is not lag for
+// either: a healthy 60m compound alert read as up to two hours behind.
+func TestAlertCursorLag(t *testing.T) {
+	top := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		c    alertCursor
+		want float64
+	}{
+		{"event counts from its cursor", alertCursor{alertType: "event", last: top, sinceSec: 45}, 45},
+		{"compound inside its window", alertCursor{alertType: "compound", last: top, sinceSec: 30 * 60, windowSec: 3600}, 0},
+		{"compound past its window", alertCursor{alertType: "compound", last: top, sinceSec: 70 * 60, windowSec: 3600}, 10 * 60},
+		{"compound without a window is not evaluating", alertCursor{alertType: "compound", last: top, sinceSec: 500}, 500},
+		{"scheduled before its next run", alertCursor{alertType: "scheduled", last: top, sinceSec: 50 * 60, cron: "0 * * * *"}, 0},
+		{"scheduled past its next run", alertCursor{alertType: "scheduled", last: top.Add(-15 * time.Minute), sinceSec: 90 * 60, cron: "0 * * * *"}, 75 * 60},
+		{"scheduled daily", alertCursor{alertType: "scheduled", last: top, sinceSec: 20 * 3600, cron: "0 6 * * *"}, 0},
+		{"scheduled with a bad cron is not evaluating", alertCursor{alertType: "scheduled", last: top, sinceSec: 500, cron: "nope"}, 500},
+		{"a cursor ahead of the clock is not negative lag", alertCursor{alertType: "event", last: top, sinceSec: -3}, 0},
+	}
+	for _, tc := range cases {
+		if got := tc.c.lagSec(); got != tc.want {
+			t.Errorf("%s: lag %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The tile's p95 matches Postgres PERCENTILE_CONT, which it replaced, and the
+// culprit it names is the alert with the most lag, not the oldest cursor.
+func TestSummarizeAlertLag(t *testing.T) {
+	p95, max, worst := summarizeAlertLag(nil)
+	if p95 != 0 || max != 0 || worst != "" {
+		t.Errorf("empty fleet: %v %v %q", p95, max, worst)
+	}
+	lags := []alertLag{{"a", 0}, {"b", 10}, {"c", 20}, {"d", 30}, {"e", 40}}
+	p95, max, worst = summarizeAlertLag(lags)
+	if p95 != 38 || max != 40 || worst != "e" {
+		t.Errorf("got p95=%v max=%v worst=%q, want 38 40 e", p95, max, worst)
+	}
+	if _, _, worst = summarizeAlertLag([]alertLag{{"a", 0}, {"b", 0}}); worst != "" {
+		t.Errorf("nothing is behind, yet %q was named", worst)
+	}
+}
+
+// End to end through the handler: a healthy hourly compound alert whose window
+// is still open must not be named over an event alert that is behind.
+func TestAlertStatsLagIgnoresCompoundWindow(t *testing.T) {
+	pgc, fake := storagetest.Postgres()
+	defer pgc.Close()
+	h := &PerformanceHandler{pg: pgc}
+	now := time.Now().UTC()
+	fake.On("AS since_sec", fakedb.RowsOf(
+		[]driver.Value{"hourly compound", "compound", now.Add(-50 * time.Minute), 50 * 60.0, int64(3600), ""},
+		[]driver.Value{"slow event", "event", now.Add(-5 * time.Minute), 5 * 60.0, int64(0), ""},
+	))
+	rec := httptest.NewRecorder()
+	h.HandleAlertStats(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	var out map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	sum := out["summary"].(map[string]interface{})
+	if sum["lag_max_alert"] != "slow event" || sum["lag_max_sec"].(float64) != 300 {
+		t.Errorf("worst = %v at %vs, want slow event at 300s", sum["lag_max_alert"], sum["lag_max_sec"])
+	}
+}
+
+// The table sorts disabled alerts first, then by lag past due, so a healthy
+// compound alert with an old cursor does not outrank one that is behind.
+func TestAlertRowsSortByLagPastDue(t *testing.T) {
+	pgc, fake := storagetest.Postgres()
+	defer pgc.Close()
+	h := &PerformanceHandler{pg: pgc}
+	ts := time.Now().UTC()
+	row := func(name string, enabled bool, typ string, since float64, window int64) []driver.Value {
+		return []driver.Value{"id-" + name, name, "medium", "f1", "", enabled, "", typ, ts, since, window, "",
+			int64(0), int64(0), int64(0), int64(0), int64(0), int64(0), ""}
+	}
+	fake.On("LEFT JOIN fired", fakedb.RowsOf(
+		row("healthy compound", true, "compound", 50*60, 3600),
+		row("event", true, "event", 10*60, 0),
+		row("late compound", true, "compound", 90*60, 3600),
+		row("disabled", false, "event", 5, 0),
+	))
+	rec := httptest.NewRecorder()
+	h.HandleAlertRows(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	var out struct {
+		Rows []struct {
+			Name string  `json:"name"`
+			Lag  float64 `json:"lag_sec"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"disabled 5", "late compound 1800", "event 600", "healthy compound 0"}
+	var got []string
+	for _, r := range out.Rows {
+		got = append(got, fmt.Sprintf("%s %.0f", r.Name, r.Lag))
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("rows = %v, want %v", got, want)
+	}
+}
