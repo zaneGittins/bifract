@@ -225,6 +225,47 @@ func TestManagerUpdate(t *testing.T) {
 	}
 }
 
+// Ingest token caches hold the compiled normalizer, so edits and deletes must
+// announce themselves, and failed ones must not.
+func TestManagerChangeHook(t *testing.T) {
+	count := func(m *Manager) *int {
+		n := 0
+		m.SetOnChangeHook(func() { n++ })
+		return &n
+	}
+
+	m, fake := newManager()
+	calls := count(m)
+	fake.On("UPDATE normalizers", fakedb.Row(sysmonRow()...))
+	if _, err := m.Update(context.Background(), "n-1", UpdateRequest{Name: "sysmon"}); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 1 {
+		t.Errorf("update: hook ran %d times, want 1", *calls)
+	}
+
+	m, fake = newManager()
+	calls = count(m)
+	fake.On("SELECT is_default", fakedb.Row(false))
+	fake.On("DELETE FROM normalizers", fakedb.Affected(1))
+	if err := m.Delete(context.Background(), "n-1"); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 1 {
+		t.Errorf("delete: hook ran %d times, want 1", *calls)
+	}
+
+	m, fake = newManager()
+	calls = count(m)
+	fake.On("UPDATE normalizers", fakedb.PGResult{Err: errors.New("deadlock")})
+	m.Update(context.Background(), "n-1", UpdateRequest{Name: "x"})
+	fake.On("SELECT is_default", fakedb.Row(true))
+	m.Delete(context.Background(), "n-0")
+	if *calls != 0 {
+		t.Errorf("failed changes ran the hook %d times", *calls)
+	}
+}
+
 func TestManagerDelete(t *testing.T) {
 	t.Run("deletes a non-default normalizer", func(t *testing.T) {
 		m, fake := newManager()

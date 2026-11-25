@@ -11,11 +11,23 @@ import (
 )
 
 type Manager struct {
-	pg *storage.PostgresClient
+	pg       *storage.PostgresClient
+	onChange func()
 }
 
 func NewManager(pg *storage.PostgresClient) *Manager {
 	return &Manager{pg: pg}
+}
+
+// SetOnChangeHook registers a callback run after a normalizer is edited or deleted.
+func (m *Manager) SetOnChangeHook(hook func()) {
+	m.onChange = hook
+}
+
+func (m *Manager) changed() {
+	if m.onChange != nil {
+		m.onChange()
+	}
 }
 
 func (m *Manager) List(ctx context.Context) ([]Normalizer, error) {
@@ -142,6 +154,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*No
 		}
 		return nil, fmt.Errorf("update normalizer %s: %w", id, err)
 	}
+	m.changed()
 	return &n, nil
 }
 
@@ -168,6 +181,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if n == 0 {
 		return fmt.Errorf("normalizer not found")
 	}
+	m.changed()
 	return nil
 }
 
