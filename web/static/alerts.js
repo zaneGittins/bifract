@@ -4741,10 +4741,12 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
             const endpoint = type === 'webhook' ? `/api/v1/webhooks/${id}/test` : `/api/v1/email-actions/${id}/test`;
             const resp = await fetch(endpoint, { method: 'POST', credentials: 'include' });
             const data = await resp.json();
-            if (data.success && data.data.success) {
+            // Webhook tests nest the delivery under result; email tests return it flat.
+            const r = type === 'webhook' ? data.data?.result : data.data;
+            if (data.success && r?.success) {
                 Toast.show('Test sent successfully', 'success');
             } else {
-                Toast.show('Test failed: ' + (data.data?.error || data.error || 'Unknown error'), 'error');
+                Toast.show('Test failed: ' + (r?.error || data.data?.render_error || data.error || 'Unknown error'), 'error');
             }
         } catch (e) {
             Toast.show('Test failed: ' + e.message, 'error');
