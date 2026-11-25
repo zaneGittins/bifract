@@ -44,6 +44,8 @@ ClickHouse is IO-bound for both ingest and queries. Size each shard volume for y
 | Random-read IOPS (per node) | 5,000 provisioned | 50,000+ (NVMe) |
 | Read latency (per node) | under 10 ms | under 1 ms |
 
+Bifract keeps small parts in ClickHouse's compact format so ingest writes far fewer files per insert. See [Part format](../ingestion/tuning.md#part-format).
+
 ## Ingress throughput
 
 All traffic enters through the `caddy` Service, which provisions a cloud load balancer on managed clusters. Size it for your peak ingest rate.

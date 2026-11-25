@@ -444,6 +444,33 @@ func TestInsertDedupWindowOnLogsAndViewTargets(t *testing.T) {
 	}
 }
 
+// An ingest batch over the 10 MiB default is written as a wide part, one file per JSON
+// path stream (~2,500 files), which makes inserts and merges slow on network volumes.
+// Fresh and upgraded installs must both raise the threshold so batches stay compact.
+func TestWidePartThresholdOnLogsAndHot(t *testing.T) {
+	migs, err := loadClickHouseMigrations(dbsql.ClickHouseMigrations, dbsql.ClickHouseMigrationsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrated []string
+	for _, m := range migs {
+		migrated = append(migrated, splitClickHouseSQL(m.sql)...)
+	}
+	for table, bytes := range map[string]string{"logs": "1073741824", "logs_hot": "2147483648"} {
+		setting := "min_bytes_for_wide_part = " + bytes
+		ddl, err := initTableDDL(table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(ddl, setting) {
+			t.Errorf("init-clickhouse.sql: %s has no %s", table, setting)
+		}
+		if !slices.Contains(migrated, "ALTER TABLE "+table+" MODIFY SETTING "+setting) {
+			t.Errorf("no migration sets %s on %s for upgraded installs", setting, table)
+		}
+	}
+}
+
 // Endpoint-analysis views are permanently detached while the feature is off, and
 // ClickHouse cannot MODIFY QUERY a detached view. The runner attaches it around the
 // statement and detaches it again, so the upgrade applies whatever the toggle says.

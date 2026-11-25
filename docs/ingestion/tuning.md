@@ -44,3 +44,18 @@ Alerts and model state never read past logs that are still buffered or retrying.
 | `BIFRACT_INGEST_BUFFER_BYTES` | `268435456` (256 MB) | Buffered-bytes rejections while memory is free |
 
 On Kubernetes, `--install-k8s` sets `BIFRACT_INGEST_WORKERS` and `BIFRACT_INGEST_QUEUE_SIZE` per resource profile. See the [Sizing Guide](../getting-started/sizing.md#ingest-concurrency).
+
+## Part format
+
+Each insert writes a new part to ClickHouse. A part is stored **compact** (all columns in one file) or **wide** (one file per column). Because `fields` is a JSON column with up to 1,024 paths, a wide part can be 2,500 files or more, while a compact part is about 20. Writing that many files is slow on network volumes such as cloud block storage on Kubernetes, and makes inserts and merges back up.
+
+Bifract keeps parts compact until they are large: `logs` switches to wide at 1 GiB of uncompressed data and `logs_hot` at 2 GiB (the ClickHouse default is 10 MiB, which a typical batch exceeds). Larger merged parts still become wide, so searches over long time ranges read the same way as before. In a test with 5,000-log batches, this made each insert about 9x faster and merges about 4x faster, with no slower queries.
+
+New installs and upgrades get these values automatically. To change them, run on every shard:
+
+```sql
+ALTER TABLE logs.logs MODIFY SETTING min_bytes_for_wide_part = 1073741824;
+ALTER TABLE logs.logs_hot MODIFY SETTING min_bytes_for_wide_part = 2147483648;
+```
+
+The change applies to new parts only; existing parts change format as they merge.
