@@ -3020,9 +3020,17 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Path:     "/models/{id}/score-range",
 				Access:   api.AccessAnalyst,
 				Request:  models.ScoreRangeRequest{},
-				Response: api.Response[*models.ScoreRangeResult]{},
-				Summary:  "Score a network model over a past range and keep the scores.",
+				Response: api.Response[*models.Model]{},
+				Summary:  "Queue a background job scoring a network model over a past range.",
 				Handler:  d.modelHandler.HandleScoreRange,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/models/{id}/score-range/cancel",
+				Access:   api.AccessAnalyst,
+				Response: api.Response[*models.Model]{},
+				Summary:  "Stop a network model's queued or running Score range job.",
+				Handler:  d.modelHandler.HandleCancelScoreRange,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,

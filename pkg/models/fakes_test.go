@@ -41,6 +41,18 @@ type modelRow struct {
 	bfError               string
 
 	watermark, lastScored, scoredPass *time.Time
+
+	sr srRow
+}
+
+// srRow is a row's score_range_* columns.
+type srRow struct {
+	status           string
+	from, to, queued *time.Time
+	phase            string
+	read, total      int64
+	result           []byte
+	err              string
 }
 
 // alertRow is the part of an alerts row the model columns subselect.
@@ -67,6 +79,8 @@ type modelDB struct {
 	fail map[string]error
 	// hook, set before any goroutine starts, sees every statement first.
 	hook func(stmt string)
+	// phases are the Score range phases recorded, in order.
+	phases []string
 	// fractalEnds are the fractals with a default range, by id.
 	fractalEnds map[string]*time.Time
 }
@@ -114,6 +128,9 @@ func (db *modelDB) add(r modelRow) *modelRow {
 	}
 	if r.bfStatus == "" {
 		r.bfStatus = "none"
+	}
+	if r.sr.status == "" {
+		r.sr.status = "none"
 	}
 	if r.alertMode == "" {
 		r.alertMode = "none"
@@ -184,7 +201,9 @@ func (db *modelDB) columns(r *modelRow) []driver.Value {
 		r.id, r.fractalID, r.prismID, r.name, r.description, r.modelType, []byte(r.definition),
 		r.chTable, r.chMV, r.status, r.alertMode, r.linkedAlertID, r.errorMessage, r.createdBy,
 		r.createdAt, r.updatedAt, r.bfStatus, r.bfWindow, r.bfTotal, r.bfDone,
-		tval(r.bfStartedAt), tval(r.bfFrom), tval(r.bfTo), r.bfError, tval(r.watermark), tval(r.scoredPass), enabled, last, tval(db.fractalEnds[r.fractalID]),
+		tval(r.bfStartedAt), tval(r.bfFrom), tval(r.bfTo), r.bfError, tval(r.watermark), tval(r.scoredPass),
+		r.sr.status, tval(r.sr.from), tval(r.sr.to), tval(r.sr.queued), r.sr.phase, r.sr.read, r.sr.total, r.sr.result, r.sr.err,
+		enabled, last, tval(db.fractalEnds[r.fractalID]),
 	}
 }
 
@@ -315,7 +334,7 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 		id := fmt.Sprintf("00000000-0000-0000-0000-%012d", db.seq)
 		r := &modelRow{id: id, fractalID: arg(0), name: arg(1), description: arg(2), modelType: arg(3),
 			definition: arg(4), status: "rebuilding", alertMode: arg(5), createdBy: arg(6),
-			createdAt: now, updatedAt: now, bfStatus: "none"}
+			createdAt: now, updatedAt: now, bfStatus: "none", sr: srRow{status: "none"}}
 		db.rows[id] = r
 		db.order = append(db.order, id)
 		return fakedb.Row(id), true
@@ -431,6 +450,56 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 		}
 		return res, true
 
+	case "UPDATE analytics_models SET score_range_status = 'queued', score_range_from = $2, score_range_to = $3, score_range_queued_at = $4, score_range_phase = '', score_range_read = 0, score_range_total = 0, score_range_result = NULL, score_range_error = '' WHERE id = $1 AND status = 'active' AND ($5 OR score_range_status NOT IN ('queued', 'running'))":
+		r := row(0)
+		if r == nil || r.status != "active" || (!args[4].(bool) && r.sr.active()) {
+			return affected(0), true
+		}
+		r.sr = srRow{status: "queued", from: tptr(args[1].(time.Time)), to: tptr(args[2].(time.Time)), queued: tptr(args[3].(time.Time))}
+		return affected(1), true
+	case "UPDATE analytics_models SET score_range_status = 'cancelled', score_range_error = $2 WHERE id = $1 AND score_range_status IN ('queued', 'running')":
+		if r := row(0); r != nil && r.sr.active() {
+			r.sr.status, r.sr.err = "cancelled", arg(1)
+			return affected(1), true
+		}
+		return affected(0), true
+	case "SELECT EXISTS (SELECT 1 FROM analytics_models WHERE score_range_status IN ('queued', 'running'))":
+		for _, r := range db.rows {
+			if r.sr.active() {
+				return fakedb.Row(true), true
+			}
+		}
+		return fakedb.Row(false), true
+	case "UPDATE analytics_models SET score_range_status = 'running', score_range_phase = 'waiting', score_range_read = 0, score_range_total = 0 WHERE id = (SELECT id FROM analytics_models WHERE score_range_status IN ('queued', 'running') ORDER BY score_range_queued_at, id LIMIT 1) RETURNING id, score_range_queued_at, score_range_from, score_range_to":
+		var next *modelRow
+		for _, r := range db.sorted(nil) {
+			if r.sr.active() && (next == nil || r.sr.queued.Before(*next.sr.queued) || (r.sr.queued.Equal(*next.sr.queued) && r.id < next.id)) {
+				next = r
+			}
+		}
+		if next == nil {
+			return fakedb.PGResult{}, true
+		}
+		next.sr.status, next.sr.phase, next.sr.read, next.sr.total = "running", "waiting", 0, 0
+		return fakedb.Row(next.id, *next.sr.queued, *next.sr.from, *next.sr.to), true
+	case "UPDATE analytics_models SET score_range_phase = $3, score_range_read = $4, score_range_total = $5 WHERE id = $1 AND score_range_status = 'running' AND score_range_queued_at = $2":
+		if r := row(0); r != nil && r.sr.status == "running" && sameTime(r.sr.queued, args[1]) {
+			r.sr.phase, r.sr.read, r.sr.total = arg(2), args[3].(int64), args[4].(int64)
+			db.phases = append(db.phases, arg(2))
+			return affected(1), true
+		}
+		return affected(0), true
+	case "UPDATE analytics_models SET score_range_status = $3, score_range_result = $4, score_range_error = $5, score_range_phase = '' WHERE id = $1 AND score_range_status = 'running' AND score_range_queued_at = $2":
+		if r := row(0); r != nil && r.sr.status == "running" && sameTime(r.sr.queued, args[1]) {
+			r.sr.status, r.sr.err, r.sr.phase = arg(2), arg(4), ""
+			r.sr.result = nil
+			if b, ok := args[3].([]byte); ok {
+				r.sr.result = b
+			}
+			return affected(1), true
+		}
+		return affected(0), true
+
 	case norm(dueModelsQuery):
 		var res fakedb.PGResult
 		for _, r := range db.sorted(nil) {
@@ -472,6 +541,8 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 	db.unknown = append(db.unknown, n)
 	return fakedb.PGResult{Err: fmt.Errorf("modelDB: unmodelled statement")}, true
 }
+
+func (s srRow) active() bool { return s.status == "queued" || s.status == "running" }
 
 func (db *modelDB) update(r *modelRow, set func(*modelRow)) fakedb.PGResult {
 	if r == nil {

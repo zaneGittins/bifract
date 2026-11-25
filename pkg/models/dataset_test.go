@@ -98,10 +98,26 @@ func scriptLongConn(env *fakeEnv) {
 	env.ch.On("AS ts_list", longConnPairs(2, labEnd))
 }
 
+// runScoreWorker runs the replica's Score range worker for the test.
+func runScoreWorker(t *testing.T, env *fakeEnv) {
+	t.Helper()
+	old := scoreRangeWaitPoll
+	scoreRangeWaitPoll = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { env.mgr.RunScoreRanges(ctx); close(done) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		scoreRangeWaitPoll = old
+	})
+}
+
 // Only network models need this, and the range is widened to whole hours so the
 // dataset's last log is inside it.
 func TestScoreFractalScoresNetworkModelsOverTheRange(t *testing.T) {
 	env := newEnv(t)
+	runScoreWorker(t, env)
 	seedModel(env, ModelTypeRarity, rarityDef, nil)
 	net := seedModel(env, ModelTypeLongConnection, ModelDefinition{}, func(r *modelRow) { r.name = "net" })
 	seedIn(env, fracB, "other", ModelTypeLongConnection, ModelDefinition{})
@@ -122,10 +138,8 @@ func TestScoreFractalScoresNetworkModelsOverTheRange(t *testing.T) {
 // Logs landing in bulk put ingest under pressure and a backfill can hold the
 // slot, so a busy scorer is waited out rather than reported as a failure.
 func TestScoreFractalWaitsOutABusySlot(t *testing.T) {
-	old := scoreBusyPoll
-	scoreBusyPoll = time.Millisecond
-	t.Cleanup(func() { scoreBusyPoll = old })
 	env := newEnv(t)
+	runScoreWorker(t, env)
 	seedModel(env, ModelTypeLongConnection, ModelDefinition{}, nil)
 	scriptLongConn(env)
 	env.mgr.bfSem <- struct{}{}
@@ -139,18 +153,21 @@ func TestScoreFractalWaitsOutABusySlot(t *testing.T) {
 	}
 }
 
-func TestScoreFractalGivesUpOnABusySlot(t *testing.T) {
-	oldPoll, oldWait := scoreBusyPoll, scoreBusyWait
-	scoreBusyPoll, scoreBusyWait = time.Millisecond, 5*time.Millisecond
-	t.Cleanup(func() { scoreBusyPoll, scoreBusyWait = oldPoll, oldWait })
+// A new import replaces a Score range already in progress on the model.
+func TestScoreFractalReplacesAJobInProgress(t *testing.T) {
 	env := newEnv(t)
-	seedModel(env, ModelTypeLongConnection, ModelDefinition{}, nil)
-	env.mgr.bfSem <- struct{}{}
-	defer func() { <-env.mgr.bfSem }()
-
-	warnings := env.mgr.ScoreFractal(context.Background(), fracA, labStart, labEnd)
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "busy") {
+	runScoreWorker(t, env)
+	queued := time.Now().UTC().Add(-time.Hour)
+	from, to := labStart.Add(-48*time.Hour), labStart.Add(-24*time.Hour)
+	seedModel(env, ModelTypeLongConnection, ModelDefinition{}, func(r *modelRow) {
+		r.sr = srRow{status: "queued", from: &from, to: &to, queued: &queued}
+	})
+	scriptLongConn(env)
+	if warnings := env.mgr.ScoreFractal(context.Background(), fracA, labStart, labEnd); len(warnings) != 0 {
 		t.Fatalf("warnings: %v", warnings)
+	}
+	if q := strings.Join(env.ch.Queried(), "\n"); !strings.Contains(q, "2026-03-04 18:00:00") || len(env.ch.Batches()) != 1 {
+		t.Errorf("the import's range was not the one scored:\n%s", q)
 	}
 }
 
@@ -158,11 +175,29 @@ func TestScoreFractalGivesUpOnABusySlot(t *testing.T) {
 // detail out of what is shown.
 func TestScoreFractalReportsEachFailure(t *testing.T) {
 	env := newEnv(t)
+	runScoreWorker(t, env)
 	seedModel(env, ModelTypeLongConnection, ModelDefinition{}, func(r *modelRow) { r.name = "beta" })
 	env.ch.On("AS network_size", fakedb.CHResult{Err: errors.New("code: 241 on host ch-0.int")})
 
 	warnings := env.mgr.ScoreFractal(context.Background(), fracA, labStart, labEnd)
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "beta") || strings.Contains(warnings[0], "ch-0.int") {
+		t.Fatalf("warnings: %v", warnings)
+	}
+}
+
+// A model cancelled while the import waits on it is named, not waited on forever.
+func TestScoreFractalNamesACancelledModel(t *testing.T) {
+	env := newEnv(t)
+	r := seedModel(env, ModelTypeLongConnection, ModelDefinition{}, func(r *modelRow) { r.name = "gamma" })
+	old := scoreRangeWaitPoll
+	scoreRangeWaitPoll = time.Millisecond
+	t.Cleanup(func() { scoreRangeWaitPoll = old })
+	go func() {
+		waitFor(t, "the job to queue", func() bool { got, _ := env.db.get(r.id); return got.sr.status == "queued" })
+		_ = env.mgr.CancelScoreRange(context.Background(), r.id, "")
+	}()
+	warnings := env.mgr.ScoreFractal(context.Background(), fracA, labStart, labEnd)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "gamma") || !strings.Contains(warnings[0], "cancelled") {
 		t.Fatalf("warnings: %v", warnings)
 	}
 }
@@ -179,6 +214,7 @@ func TestScoreFractalRefusesARangeOverTheLimit(t *testing.T) {
 // Rounding up to the hour must not refuse a dataset that fits.
 func TestScoreFractalAcceptsExactlyTheLimit(t *testing.T) {
 	env := newEnv(t)
+	runScoreWorker(t, env)
 	seedModel(env, ModelTypeLongConnection, ModelDefinition{}, nil)
 	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(0)))
 	start := time.Date(2026, 3, 1, 10, 20, 0, 0, time.UTC)
@@ -200,6 +236,7 @@ func TestScoreFractalNamesInactiveModels(t *testing.T) {
 // Some pairs were written, so this must not read as a model left unscored.
 func TestScoreFractalSaysWhenItTruncates(t *testing.T) {
 	env := newEnv(t)
+	runScoreWorker(t, env)
 	seedModel(env, ModelTypeLongConnection, ModelDefinition{}, nil)
 	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(100)))
 	env.ch.On("AS prev_total", prevalenceRows(map[string]uint64{"203.0.113.5": 1}))
@@ -210,34 +247,15 @@ func TestScoreFractalSaysWhenItTruncates(t *testing.T) {
 	}
 }
 
-// The wait is one budget for the pass, so many models cannot multiply it.
-func TestScoreFractalSharesOneWait(t *testing.T) {
-	oldPoll, oldWait := scoreBusyPoll, scoreBusyWait
-	scoreBusyPoll, scoreBusyWait = time.Millisecond, 20*time.Millisecond
-	t.Cleanup(func() { scoreBusyPoll, scoreBusyWait = oldPoll, oldWait })
-	env := newEnv(t)
-	for _, name := range []string{"a", "b", "c", "d", "e"} {
-		seedModel(env, ModelTypeLongConnection, ModelDefinition{}, func(r *modelRow) { r.name = name })
-	}
-	env.mgr.bfSem <- struct{}{}
-	defer func() { <-env.mgr.bfSem }()
-	began := time.Now()
-	if warnings := env.mgr.ScoreFractal(context.Background(), fracA, labStart, labEnd); len(warnings) != 5 {
-		t.Fatalf("warnings: %v", warnings)
-	}
-	if took := time.Since(began); took >= 5*scoreBusyWait {
-		t.Errorf("took %v: each model waited in turn", took)
-	}
-}
-
+// An import stopped while it waits returns without waiting for the job.
 func TestScoreFractalStopsWithItsContext(t *testing.T) {
 	env := newEnv(t)
 	seedModel(env, ModelTypeLongConnection, ModelDefinition{}, nil)
-	env.mgr.bfSem <- struct{}{}
-	defer func() { <-env.mgr.bfSem }()
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	env.mgr.ScoreFractal(ctx, fracA, labStart, labEnd)
+	time.AfterFunc(10*time.Millisecond, cancel)
+	if warnings := env.mgr.ScoreFractal(ctx, fracA, labStart, labEnd); warnings != nil {
+		t.Errorf("warnings: %v", warnings)
+	}
 	if len(env.ch.Batches()) != 0 {
 		t.Error("a stopped pass wrote scores")
 	}

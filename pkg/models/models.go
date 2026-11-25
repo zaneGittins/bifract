@@ -449,6 +449,9 @@ type Model struct {
 	// its first. Its findings are the pairs scored since; older rows are history.
 	ScoredPassAt *time.Time `json:"scored_pass_at,omitempty"`
 
+	// ScoreRange is a network model's latest Score range job.
+	ScoreRange ScoreRangeJob `json:"score_range"`
+
 	// SourceQuery is the derived BQL source query (filter + extraction) for the
 	// model builder editor. It is computed on read, never persisted.
 	SourceQuery string `json:"source_query,omitempty"`

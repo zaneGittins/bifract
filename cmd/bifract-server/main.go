@@ -610,6 +610,8 @@ func main() {
 	// starts: a surviving view writes the same rows and doubles every aggregate.
 	modelManager.ReconcileStateViews(context.Background())
 	modelManager.RecoverBackfills(context.Background())
+	// Score range jobs run here; a job a stopped replica left running resumes too.
+	go modelManager.RunScoreRanges(context.Background())
 
 	ingestHandler := ingest.NewIngestHandler(ingestQueue, config.MaxBodySize, tokenCache, ingestTokenStorage)
 	ingestHandler.SetQuotaManager(quotaManager)

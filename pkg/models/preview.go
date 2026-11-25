@@ -534,7 +534,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 	}
 	var top []scoredPair
 
-	pass, err := m.scoreNetRaw(ctx, fractalID, mt, def, w, rng.End, loadPreviewConfig().settings(), func(s netScored) error {
+	pass, err := m.scoreNetRaw(ctx, fractalID, mt, def, w, rng.End, loadPreviewConfig().settings(), nil, func(s netScored) error {
 		scanned++
 		if scored >= previewNetworkPairCap {
 			return nil // keep counting scanned; stop scoring past the cap

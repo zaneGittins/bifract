@@ -2,19 +2,11 @@ package models
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"bifract/pkg/sqlquote"
-)
-
-var (
-	// scoreBusyPoll is how often a dataset's scoring pass retries a busy slot, and
-	// scoreBusyWait how long the whole pass may wait for one.
-	scoreBusyPoll = 5 * time.Second
-	scoreBusyWait = 15 * time.Minute
 )
 
 // BuildingModels names a fractal's models whose ClickHouse objects are still being
@@ -47,10 +39,13 @@ func (m *Manager) ResetFractal(ctx context.Context, fractalID string) error {
 			continue
 		}
 		m.CancelBackfill(mo.ID)
+		// Cancelling stops a Score range read of the dropped logs writing.
+		if err := m.CancelScoreRange(ctx, mo.ID, "the fractal's logs were reset"); err != nil {
+			return fmt.Errorf("reset model %s: %w", mo.Name, err)
+		}
 		if err := m.ch.ClearModelData(ctx, mo.ID); err != nil {
 			return fmt.Errorf("reset model %s: %w", mo.Name, err)
 		}
-		// updated_at is what stops a Score range read of the dropped logs writing.
 		if _, err := m.pg.Exec(ctx,
 			`UPDATE analytics_models
 			    SET backfill_status = 'none', backfill_window = '', backfill_total = 0, backfill_done = 0,
@@ -65,9 +60,10 @@ func (m *Manager) ResetFractal(ctx context.Context, fractalID string) error {
 
 // ScoreFractal scores a fractal's network models over a dataset's range, which
 // their rolling state cannot cover. The other types read the logs as they arrive.
-// It returns a line, safe to show, for anything to know about the pass: a model
-// left unscored, or one that recorded nothing because it is not active. An import
-// is complete without them, and Score range can run them again.
+// It queues a Score range job per model, replacing any in progress, and waits for
+// them. It returns a line, safe to show, for anything to know about the pass: a
+// model left unscored, or one that recorded nothing because it is not active. An
+// import is complete without them, and Score range can run them again.
 func (m *Manager) ScoreFractal(ctx context.Context, fractalID string, start, end time.Time) []string {
 	list, err := m.List(ctx, fractalID)
 	if err != nil {
@@ -80,51 +76,73 @@ func (m *Manager) ScoreFractal(ctx context.Context, fractalID string, start, end
 	if limit := start.Add(previewMaxSpan); to.After(limit) && !end.After(limit) {
 		to = limit
 	}
-	deadline := time.Now().Add(scoreBusyWait)
 	var warnings []string
+	queued := map[*Model]time.Time{}
+	var order []*Model
 	for _, mo := range list {
 		switch {
 		case mo.Status != "active":
 			warnings = append(warnings, fmt.Sprintf("%s is not active, so it did not record this import.", mo.Name))
-		case mo.ModelType.IsScheduled():
-			warnings = append(warnings, m.scoreDatasetModel(ctx, mo, start, to, deadline)...)
+		case !mo.ModelType.IsScheduled():
+		case to.Sub(start) > previewMaxSpan:
+			warnings = append(warnings, fmt.Sprintf("%s was not scored: the dataset spans more than 90 days. Use Score range on part of it under Analytics.", mo.Name))
+		default:
+			job, err := m.QueueScoreRange(ctx, mo, ScoreRangeRequest{From: &start, To: &to}, true)
+			if err != nil {
+				log.Printf("[Models] Queueing %s to score its dataset: %v", mo.Name, err)
+				warnings = append(warnings, unscored(mo, "the server log has the details"))
+				continue
+			}
+			queued[mo], order = *job.QueuedAt, append(order, mo)
 		}
+	}
+	for _, mo := range order {
+		notes, ok := m.awaitScoreRange(ctx, mo, queued[mo])
+		if !ok {
+			return nil
+		}
+		warnings = append(warnings, notes...)
 	}
 	return warnings
 }
 
-// scoreDatasetModel scores one model, waiting out a busy scorer until deadline.
-func (m *Manager) scoreDatasetModel(ctx context.Context, mo *Model, start, end, deadline time.Time) []string {
-	unscored := func(why string) []string {
-		return []string{fmt.Sprintf("%s was not scored: %s. Use Score range on it under Analytics.", mo.Name, why)}
-	}
-	if end.Sub(start) > previewMaxSpan {
-		return []string{fmt.Sprintf("%s was not scored: the dataset spans more than 90 days. Use Score range on part of it under Analytics.", mo.Name)}
-	}
+func unscored(mo *Model, why string) string {
+	return fmt.Sprintf("%s was not scored: %s. Use Score range on it under Analytics.", mo.Name, why)
+}
+
+// awaitScoreRange waits for the job queued at queuedAt to end and says what to
+// know about it. ok is false once ctx ends.
+func (m *Manager) awaitScoreRange(ctx context.Context, mo *Model, queuedAt time.Time) (notes []string, ok bool) {
 	for {
-		res, err := m.ScoreRange(ctx, mo, ScoreRangeRequest{From: &start, To: &end})
+		cur, err := m.Get(ctx, mo.ID)
 		switch {
-		case err == nil:
-			var notes []string
+		case ctx.Err() != nil:
+			return nil, false
+		case err != nil:
+			return []string{unscored(mo, "it was deleted")}, true
+		case cur.ScoreRange.QueuedAt == nil || !cur.ScoreRange.QueuedAt.Equal(queuedAt):
+			return []string{unscored(mo, "another Score range replaced it")}, true
+		case cur.ScoreRange.Active():
+		case cur.ScoreRange.Status == scoreRangeCompleted && cur.ScoreRange.Result != nil:
+			res := cur.ScoreRange.Result
 			if res.Truncated {
 				notes = append(notes, fmt.Sprintf("%s scored its first %d pairs, which is all a pass keeps.", mo.Name, res.PairsScored))
 			}
 			for _, w := range res.Warnings {
 				notes = append(notes, mo.Name+": "+w)
 			}
-			return notes
-		case errors.Is(err, errScoreTimeout):
-			return unscored("the dataset took too long to score")
-		case !errors.Is(err, errScoreBusy) && !errors.Is(err, errScoreIngest):
-			log.Printf("[Models] Scoring %s over its dataset: %v", mo.Name, err)
-			return unscored("the server log has the details")
-		case time.Now().After(deadline):
-			return unscored("the server stayed busy")
+			return notes, true
+		case cur.ScoreRange.Status == scoreRangeCancelled:
+			return []string{unscored(mo, "it was cancelled")}, true
+		case cur.ScoreRange.Error == errScoreTimeout.Error():
+			return []string{unscored(mo, "the dataset took too long to score")}, true
+		default:
+			return []string{unscored(mo, "the server log has the details")}, true
 		}
 		select {
 		case <-ctx.Done():
-			return nil
-		case <-time.After(scoreBusyPoll):
+			return nil, false
+		case <-time.After(scoreRangeWaitPoll):
 		}
 	}
 }

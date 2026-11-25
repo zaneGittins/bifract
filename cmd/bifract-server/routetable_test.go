@@ -314,6 +314,7 @@ var routeTable = []string{
 	"GET /api/v1/models/{id}/export 8 auth viewer",
 	"GET /api/v1/models/{id}/histogram 8 auth resp viewer",
 	"POST /api/v1/models/{id}/score-range 8 auth body resp analyst",
+	"POST /api/v1/models/{id}/score-range/cancel 8 auth resp analyst",
 	"GET /api/v1/models/{id}/stats 8 auth resp viewer",
 	"GET /api/v1/normalizers 8 auth resp viewer",
 	"POST /api/v1/normalizers 8 auth body resp tenant_admin",

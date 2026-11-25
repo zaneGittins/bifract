@@ -136,6 +136,45 @@ const AnalyticsModels = {
         return `${m.backfill_window || 'history'} of history`;
     },
 
+    // A model is busy while a backfill or a Score range job is in flight.
+    _jobActive(m) {
+        const sr = m?.score_range?.status;
+        return m?.backfill_status === 'running' || sr === 'queued' || sr === 'running';
+    },
+
+    SCORE_RANGE_STEPS: [
+        ['network', 'Measuring the network'],
+        ['prevalence', 'Counting destinations'],
+        ['first_seen', 'Reading first sightings'],
+        ['pairs', 'Scoring pairs'],
+        ['writing', 'Writing scores'],
+    ],
+
+    // Where a Score range job is: its step, and how far ClickHouse has read
+    // into it, as a share of the whole job.
+    _scoreRangeProgress(m) {
+        const sr = m.score_range || {};
+        const steps = this.SCORE_RANGE_STEPS;
+        const i = steps.findIndex(([k]) => k === sr.phase);
+        if (sr.status === 'queued' || i < 0) {
+            return { label: sr.status === 'queued' ? 'Queued to score' : 'Waiting for a free scoring slot', count: '', pct: 0 };
+        }
+        const read = Number(sr.rows_read || 0), total = Number(sr.rows_total || 0);
+        const frac = total > 0 ? Math.min(1, read / total) : 0;
+        const rows = total > 0 ? `, ${this._fmtNum(read)} of ${this._fmtNum(total)} rows` : '';
+        return {
+            label: steps[i][1] + '…',
+            count: `Step ${i + 1} of ${steps.length}${rows}`,
+            pct: Math.round((i + frac) / steps.length * 100),
+        };
+    },
+
+    _scoreRangeSpan(m) {
+        const sr = m.score_range || {};
+        if (!sr.from || !sr.to) return '';
+        return `${TZ.format(sr.from, 'minute')} to ${TZ.format(sr.to, 'minute')} ${TZ.abbrev()}`;
+    },
+
     _backfillPct(m) {
         const total = Number(m.backfill_total || 0);
         if (total <= 0) return 0;
@@ -248,7 +287,7 @@ const AnalyticsModels = {
 
         // Keep the listing live while any model is seeding, or while the server is
         // still reading a model's state for its health.
-        const pending = m => m.backfill_status === 'running' || m.health?.state === 'checking';
+        const pending = m => this._jobActive(m) || m.health?.state === 'checking';
         if (this.models.some(pending)) this._startListPoll();
         else this._stopListPoll();
     },
@@ -741,7 +780,7 @@ const AnalyticsModels = {
         this._render();
         await this._loadViewerData();
         this._loadStats();
-        if (model.backfill_status === 'running') this._startViewerPoll();
+        if (this._jobActive(model)) this._startViewerPoll();
     },
 
     _hasFindings(model) {
@@ -865,7 +904,7 @@ const AnalyticsModels = {
         this._renderBackfillBar();
         // Resume progress polling if a backfill is running (e.g. after returning
         // to this view). _startViewerPoll guards against dupes.
-        if (this.viewer.model && this.viewer.model.backfill_status === 'running') this._startViewerPoll();
+        if (this._jobActive(this.viewer.model)) this._startViewerPoll();
         document.getElementById('modelsEditFromViewer').addEventListener('click', () => {
             this._editModel(m.id);
         });
@@ -1346,10 +1385,12 @@ ${m.description ? `<div class="me-sec">
         // Scheduled types score their rolling window, so instead of a backfill
         // they score a past range, such as an imported dataset's.
         if (this._isNetworkType(m.model_type)) {
-            btn.disabled = m.status !== 'active' || this.viewer.scoring;
-            btn.textContent = this.viewer.scoring ? 'Scoring…' : 'Score range';
-            btn.title = btn.disabled ? 'Available once the model finishes initializing'
-                : 'Score a past range, such as an imported dataset, and keep the scores';
+            const scoring = this.viewer.scoring || this._jobActive(m);
+            btn.disabled = m.status !== 'active' || scoring;
+            btn.textContent = scoring ? 'Scoring…' : 'Score range';
+            btn.title = scoring ? 'A range is being scored'
+                : btn.disabled ? 'Available once the model finishes initializing'
+                    : 'Score a past range, such as an imported dataset, and keep the scores';
             btn.onclick = () => this._openScoreRangeModal();
             return;
         }
@@ -1389,6 +1430,24 @@ ${m.description ? `<div class="me-sec">
         const el = document.getElementById('modelsBackfillBar');
         if (!el) return;
         const m = this.viewer.model;
+        const sr = m.score_range?.status;
+        if (sr === 'queued' || sr === 'running') {
+            const p = this._scoreRangeProgress(m);
+            el.className = 'model-backfill-bar active';
+            el.innerHTML = `
+<div class="backfill-running">
+    <div class="backfill-running-head">
+        <span class="spinner spinner-inline"></span>
+        <span class="backfill-label" title="${_esc(this._scoreRangeSpan(m))}">${_esc(p.label)}</span>
+        <span class="backfill-count">${_esc(p.count)}</span>
+        <span class="backfill-spacer"></span>
+        <button class="btn-secondary btn-sm" id="scoreRangeCancelBtn">Cancel</button>
+    </div>
+    <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${p.pct}%"></div></div>
+</div>`;
+            document.getElementById('scoreRangeCancelBtn')?.addEventListener('click', () => this._cancelScoreRange());
+            return;
+        }
         if ((m.backfill_status || 'none') !== 'running') {
             el.className = 'model-backfill-bar';
             el.innerHTML = '';
@@ -1534,6 +1593,7 @@ ${m.description ? `<div class="me-sec">
         });
     },
 
+    // The range scores in the background; the banner follows its progress.
     async _scoreRange(body) {
         const viewer = this.viewer;
         const id = viewer.model.id;
@@ -1541,17 +1601,27 @@ ${m.description ? `<div class="me-sec">
         this._renderBackfillButton();
         try {
             const data = await this._api('POST', `/models/${id}/score-range`, body);
-            const n = data?.data?.pairs_scored || 0;
-            Toast.success(`Scored ${n.toLocaleString()} pair${n === 1 ? '' : 's'}${data?.data?.truncated ? ' (capped)' : ''}`);
-            if (this.viewer.model?.id === id) {
-                this._loadViewerData();
-                this._loadStats();
-            }
+            if (this.viewer === viewer && data?.data) viewer.model = data.data;
+            this._startViewerPoll();
         } catch (e) {
             Toast.error('Failed to score range: ' + (e?.message || 'error'));
         }
         viewer.scoring = false;
-        if (this.viewer === viewer) this._renderBackfillButton();
+        if (this.viewer === viewer) this._renderBackfillBar();
+    },
+
+    async _cancelScoreRange() {
+        const m = this.viewer.model;
+        const btn = document.getElementById('scoreRangeCancelBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Cancelling…'; }
+        try {
+            const data = await this._api('POST', `/models/${m.id}/score-range/cancel`);
+            if (data?.data && this.viewer.model?.id === m.id) this.viewer.model = data.data;
+            this._renderBackfillBar();
+        } catch (e) {
+            Toast.error('Failed to cancel scoring');
+            if (btn) { btn.disabled = false; btn.textContent = 'Cancel'; }
+        }
     },
 
     // body is ignored by a resume, which continues the stored range.
@@ -1604,18 +1674,29 @@ ${m.description ? `<div class="me-sec">
             model = data?.data;
         } catch (e) { return; /* transient; keep polling */ }
         if (!model) return;
-        const prev = this.viewer.model.backfill_status;
+        const prev = this.viewer.model;
         this.viewer.model = model;
         this._renderBackfillBar();
-        if (model.backfill_status !== 'running') {
-            this._stopViewerPoll();
-            if (prev === 'running') {
-                // Just finished: refresh the rows and the summary so backfilled data shows.
-                this._loadViewerData();
-                this._loadStats();
-                if (model.backfill_status === 'completed') Toast.success('Backfill complete');
-                else if (model.backfill_status === 'failed') Toast.error('Backfill failed: ' + (model.backfill_error || 'error'));
-            }
+        if (this._jobActive(model)) return;
+        this._stopViewerPoll();
+        const backfilled = prev.backfill_status === 'running';
+        const scored = this._jobActive({ score_range: prev.score_range });
+        if (!backfilled && !scored) return;
+        // Just finished: refresh the rows and the summary so the new data shows.
+        this._loadViewerData();
+        this._loadStats();
+        if (backfilled) {
+            if (model.backfill_status === 'completed') Toast.success('Backfill complete');
+            else if (model.backfill_status === 'failed') Toast.error('Backfill failed: ' + (model.backfill_error || 'error'));
+        }
+        const sr = model.score_range || {};
+        if (scored && sr.status === 'completed') {
+            const n = sr.result?.pairs_scored || 0;
+            Toast.success(`Scored ${n.toLocaleString()} pair${n === 1 ? '' : 's'}${sr.result?.truncated ? ' (capped)' : ''}`);
+        } else if (scored && sr.status === 'failed') {
+            Toast.error('Scoring failed: ' + (sr.error || 'error'));
+        } else if (scored && sr.status === 'cancelled' && sr.error) {
+            Toast.error('Scoring stopped: ' + sr.error);
         }
     },
 

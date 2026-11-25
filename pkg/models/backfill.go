@@ -34,6 +34,8 @@ type backfillConfig struct {
 	chunkTimeoutSec  int   // per-chunk max_execution_time / ctx timeout
 	osThreadPriority int   // per-chunk os_thread_priority (nice): 0..19, higher = lower OS priority
 	chunkSleepMs     int   // cooldown slept between chunks so interactive load can drain
+
+	scoreRangeTimeoutSec int // a Score range job's read budget: one pass, not chunked
 }
 
 func loadBackfillConfig() backfillConfig {
@@ -44,6 +46,8 @@ func loadBackfillConfig() backfillConfig {
 		chunkTimeoutSec:  300,
 		osThreadPriority: 19,  // lowest OS scheduling priority: interactive queries always win CPU
 		chunkSleepMs:     500, // brief yield between chunks for merges + health re-check
+
+		scoreRangeTimeoutSec: 7200,
 	}
 	if v, ok := envInt("BIFRACT_MODEL_BACKFILL_CONCURRENCY"); ok && v >= 1 {
 		cfg.concurrency = v
@@ -70,6 +74,9 @@ func loadBackfillConfig() backfillConfig {
 	}
 	if v, ok := envInt("BIFRACT_MODEL_BACKFILL_CHUNK_SLEEP_MS"); ok && v >= 0 {
 		cfg.chunkSleepMs = v
+	}
+	if v, ok := envInt("BIFRACT_MODEL_SCORE_RANGE_TIMEOUT"); ok && v >= 1 {
+		cfg.scoreRangeTimeoutSec = v
 	}
 	return cfg
 }

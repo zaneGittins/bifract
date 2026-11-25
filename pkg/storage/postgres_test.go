@@ -15,6 +15,7 @@ func TestAdvisoryLockIDsAreDistinct(t *testing.T) {
 		"LockRepartition":        LockRepartition,
 		"LockFieldPathReconcile": LockFieldPathReconcile,
 		"LockEndpointAnalysis":   LockEndpointAnalysis,
+		"LockModelScoreRange":    LockModelScoreRange,
 	}
 	seen := map[int64]string{}
 	for name, id := range ids {
