@@ -287,6 +287,11 @@ func main() {
 	changeBus := startChangeBus(pg)
 	log.Println("Settings initialized")
 
+	// Every ingest pod caches tokens with their fractal and normalizer, so
+	// changing either clears it everywhere.
+	tokenCache := ingesttokens.NewTokenCache(60 * time.Second)
+	tokenCache.Watch(changeBus)
+
 	// Reconcile the "Advanced endpoint analysis" MVs (proc_lineage/proc_freq) to the
 	// persisted toggle before ingest starts, so the heavy per-insert triggers only fire
 	// when the operator has opted in. Off by default; runs on every startup (idempotent).
@@ -444,7 +449,10 @@ func main() {
 			}
 		}()
 	}
-	fractalManager.SetOnDeleteHook(dropOrphanedLookups)
+	fractalManager.SetOnDeleteHook(func(ctx context.Context, id string) {
+		tokenCache.InvalidateAll()
+		dropOrphanedLookups(ctx, id)
+	})
 	prismManager.SetOnDeleteHook(dropOrphanedLookups)
 
 	// Converge each dictionary's ClickHouse objects with its Postgres definition.
@@ -490,6 +498,7 @@ func main() {
 	}
 	// Initialize normalizer system (before alerts, since alert manager uses it for Sigma translation)
 	normalizerManager := normalizers.NewManager(pg)
+	normalizerManager.SetOnChangeHook(tokenCache.InvalidateAll)
 	normalizerHandler := normalizers.NewHandler(normalizerManager, db)
 
 	schemaFieldsHandler := schemafields.NewHandler(schemaFieldsManager, db, func(custom map[string]bool) {
@@ -530,8 +539,6 @@ func main() {
 	// Initialize ingest token system
 	log.Println("Initializing ingest token system...")
 	ingestTokenStorage := ingesttokens.NewStorage(pg)
-	tokenCache := ingesttokens.NewTokenCache(60 * time.Second)
-	tokenCache.Watch(changeBus)
 	ingestTokenHandler := ingesttokens.NewHandler(ingestTokenStorage, fractalManager, tokenCache)
 
 	// Wire fractal create hook to auto-create default ingest token
