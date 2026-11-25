@@ -110,9 +110,11 @@ Network models score their rolling window, so they have no backfill. To score ol
 2. Keep the prefilled range (the fractal's dataset range when it has one) or enter another, up to 90 days.
 3. Click **Score range**.
 
-The range is scored as the editor's preview scores it and the scores are kept, dated at the range's end. For each pair the newest date wins: a live score replaces a range score, and a range that ends later replaces one that ends earlier. The range counts as a scoring pass as of its end. On a dataset fractal the latest range sets the findings and its scores never expire; elsewhere a range that ends before the latest pass only adds to **History**. Scoring runs within the request, about a minute; if a range is too large it writes nothing and asks for a shorter one.
+The range is scored as the editor's preview scores it and the scores are kept, dated at the range's end. For each pair the newest date wins: a live score replaces a range score, and a range that ends later replaces one that ends earlier. The range counts as a scoring pass as of its end. On a dataset fractal the latest range sets the findings and its scores never expire; elsewhere a range that ends before the latest pass only adds to **History**.
 
-API: `POST /models/{id}/score-range` with `from` and `to` (RFC 3339).
+Scoring runs in the background, so a large range does not have to finish within a request. The model shows which step it is on and how many rows it has read, and the job can be cancelled. Every score is written once the whole range has been read, so a cancelled or failed run writes nothing. One range scores at a time across all replicas; others wait in a queue, and a job whose replica stops is picked up by another. Editing the model's definition cancels its job, since the scores would follow the old one. A run has two hours to finish (`BIFRACT_MODEL_SCORE_RANGE_TIMEOUT`, in seconds).
+
+API: `POST /models/{id}/score-range` with `from` and `to` (RFC 3339) queues the job and returns the model; its `score_range` reports the job's `status`, `phase`, `rows_read`, `rows_total`, and when done its `result` or `error`. `POST /models/{id}/score-range/cancel` stops it.
 
 A [bundle with a dataset](../exchange/using.md#bundles-with-a-dataset) does this for you once its logs are stored.
 

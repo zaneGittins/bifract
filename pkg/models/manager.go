@@ -45,6 +45,9 @@ type Manager struct {
 	bfMu      sync.Mutex     // guards bfCancels
 	bfCancels map[string]*backfillRun
 
+	// srNudge wakes RunScoreRanges when this replica queues a job.
+	srNudge chan struct{}
+
 	// health caches each model's state summary for the listing.
 	health *healthCache
 
@@ -65,6 +68,7 @@ func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Manag
 		bfCfg:     cfg,
 		bfSem:     make(chan struct{}, cfg.concurrency),
 		bfCancels: make(map[string]*backfillRun),
+		srNudge:   make(chan struct{}, 1),
 		health:    newHealthCache(),
 	}
 }
@@ -331,6 +335,13 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 	}
 
 	rebuild := detectionChanged(existing.Definition, req.Definition)
+
+	// A Score range scores with the definition it read, so a new one supersedes it.
+	if !reflect.DeepEqual(existing.Definition, req.Definition) {
+		if err := m.CancelScoreRange(ctx, id, "the model's definition changed; score the range again"); err != nil {
+			return nil, fmt.Errorf("cancel score range: %w", err)
+		}
+	}
 
 	if rebuild {
 		// A rebuild drops and recreates the model's data, so any in-flight backfill
@@ -1698,6 +1709,8 @@ const modelColumns = `id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text
 	       COALESCE(created_by,''), created_at, updated_at,
 	       backfill_status, backfill_window, backfill_total, backfill_done,
 	       backfill_started_at, backfill_from, backfill_to, backfill_error, state_watermark, scored_pass_at,
+	       score_range_status, score_range_from, score_range_to, score_range_queued_at, score_range_phase,
+	       score_range_read, score_range_total, score_range_result, score_range_error,
 	       (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id),
 	       (SELECT al.last_triggered FROM alerts al WHERE al.id = analytics_models.linked_alert_id),
 	       (SELECT f.default_range_end FROM fractals f WHERE f.id = analytics_models.fractal_id)`
@@ -1707,6 +1720,8 @@ func scanModelRow(row modelScannable) (*Model, error) {
 	var defRaw []byte
 	var alertEnabled sql.NullBool
 	var lastTriggered sql.NullTime
+	var scoreRangeResult []byte
+	sr := &mo.ScoreRange
 	err := row.Scan(
 		&mo.ID, &mo.FractalID, &mo.PrismID,
 		&mo.Name, &mo.Description, &mo.ModelType,
@@ -1716,6 +1731,8 @@ func scanModelRow(row modelScannable) (*Model, error) {
 		&mo.BackfillStatus, &mo.BackfillWindow, &mo.BackfillTotal, &mo.BackfillDone,
 		&mo.BackfillStartedAt, &mo.BackfillFrom, &mo.BackfillTo, &mo.BackfillError,
 		&mo.StateWatermark, &mo.ScoredPassAt,
+		&sr.Status, &sr.From, &sr.To, &sr.QueuedAt, &sr.Phase,
+		&sr.RowsRead, &sr.RowsTotal, &scoreRangeResult, &sr.Error,
 		&alertEnabled,
 		&lastTriggered,
 		&mo.DatasetEnd,
@@ -1729,6 +1746,12 @@ func scanModelRow(row modelScannable) (*Model, error) {
 	}
 	if err := json.Unmarshal(defRaw, &mo.Definition); err != nil {
 		mo.Definition = ModelDefinition{}
+	}
+	if len(scoreRangeResult) > 0 {
+		sr.Result = new(ScoreRangeResult)
+		if json.Unmarshal(scoreRangeResult, sr.Result) != nil {
+			sr.Result = nil
+		}
 	}
 	// Derive the alert mode from the backing alert so it stays accurate no matter
 	// where the alert was toggled (the Alerts page, the model list, the API). The

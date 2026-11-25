@@ -39,6 +39,7 @@ var bodylessRoutes = []string{
 	"POST /api/v1/models/{id}/backfill/cancel",
 	"POST /api/v1/models/{id}/disable-alert",
 	"POST /api/v1/models/{id}/enable-alert",
+	"POST /api/v1/models/{id}/score-range/cancel",
 	"POST /api/v1/normalizers/{id}/duplicate",
 	"POST /api/v1/normalizers/{id}/set-default",
 	"POST /api/v1/notebooks/active",

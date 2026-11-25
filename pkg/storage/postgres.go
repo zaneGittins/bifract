@@ -1432,6 +1432,9 @@ const (
 	LockFieldPathReconcile int64 = 0x6269667261637407
 	// LockEndpointAnalysis serializes endpoint-analysis toggles across replicas.
 	LockEndpointAnalysis int64 = 0x6269667261637408
+	// LockModelScoreRange elects the replica that runs queued Score range jobs, one
+	// at a time across the cluster.
+	LockModelScoreRange int64 = 0x6269667261637409
 )
 
 // WithAdvisoryLock runs fn holding lockID, first waiting for any other holder.

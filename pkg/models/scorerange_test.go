@@ -26,6 +26,23 @@ func scoreRangeModel(t *testing.T, mt ModelType) (*fakeEnv, *Model, *modelRow) {
 	return env, mo, r
 }
 
+// scoreRangeNow queues a job and runs the queue as a replica would, returning how
+// the job ended.
+func scoreRangeNow(env *fakeEnv, mo *Model, req ScoreRangeRequest) (*ScoreRangeResult, error) {
+	if _, err := env.mgr.QueueScoreRange(context.Background(), mo, req, false); err != nil {
+		return nil, err
+	}
+	env.mgr.runQueuedScoreRanges(context.Background())
+	cur, err := env.mgr.Get(context.Background(), mo.ID)
+	if err != nil {
+		return nil, err
+	}
+	if j := cur.ScoreRange; j.Status != scoreRangeCompleted {
+		return nil, fmt.Errorf("job %s: %s", j.Status, j.Error)
+	}
+	return cur.ScoreRange.Result, nil
+}
+
 // The same long-connection pairs as TestPreviewNetworkLongConnection score the
 // same (0.65, 0.639, 0.25, 0), and every row carries the range's end as scored_at.
 func TestScoreRangeWritesPreviewScoresAtRangeEnd(t *testing.T) {
@@ -43,7 +60,7 @@ func TestScoreRangeWritesPreviewScoresAtRangeEnd(t *testing.T) {
 	}})
 
 	before := time.Now()
-	res, err := env.mgr.ScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to})
+	res, err := scoreRangeNow(env, mo, ScoreRangeRequest{From: &from, To: &to})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +137,7 @@ func TestScoreRangePass(t *testing.T) {
 			statePair("10.1.1.1", "203.0.113.5", 3, []uint32{uint32(end.Unix()) - 7200}, []float64{1}, 28800),
 		}})
 		from, to := end.Add(-48*time.Hour), end
-		if _, err := env.mgr.ScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
+		if _, err := scoreRangeNow(env, mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
 			t.Fatal(err)
 		}
 		exp := env.ch.Batches()[0].Appended[0][20].(time.Time)
@@ -145,7 +162,7 @@ func TestScoreRangePassIsNeverInTheFuture(t *testing.T) {
 		statePair("10.1.1.1", "203.0.113.5", 3, []uint32{uint32(now.Unix()) - 60}, []float64{1}, 28800),
 	}})
 	from, to := now.Add(-time.Minute), now
-	if _, err := env.mgr.ScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
+	if _, err := scoreRangeNow(env, mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := env.db.get(r.id); got.scoredPass == nil || got.scoredPass.After(time.Now()) {
@@ -175,7 +192,7 @@ func TestScoreRangeGuards(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			env, mo, _ := scoreRangeModel(t, ModelTypeBeacon)
 			c.edit(mo)
-			_, err := env.mgr.ScoreRange(context.Background(), mo, c.req)
+			_, err := scoreRangeNow(env, mo, c.req)
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Errorf("err = %v, want %q", err, c.want)
 			}
@@ -194,7 +211,7 @@ func TestScoreRangeEmptyAndFailures(t *testing.T) {
 
 	env, mo, _ := scoreRangeModel(t, ModelTypeBeacon)
 	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(0)))
-	res, err := env.mgr.ScoreRange(context.Background(), mo, req)
+	res, err := scoreRangeNow(env, mo, req)
 	if err != nil || res.PairsScored != 0 || len(env.ch.Batches()) != 0 {
 		t.Errorf("empty range: %+v %v batches %d", res, err, len(env.ch.Batches()))
 	}
@@ -215,7 +232,7 @@ func TestScoreRangeEmptyAndFailures(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			env, mo, _ := scoreRangeModel(t, ModelTypeLongConnection)
 			script(env)
-			if _, err := env.mgr.ScoreRange(context.Background(), mo, req); err == nil || !strings.Contains(err.Error(), name) {
+			if _, err := scoreRangeNow(env, mo, req); err == nil || !strings.Contains(err.Error(), name) {
 				t.Errorf("err = %v, want it to name the %s", err, name)
 			}
 		})
@@ -241,7 +258,7 @@ func TestScoreRangeWritesOnceAtTheEnd(t *testing.T) {
 	env, mo, _ := scoreRangeModel(t, ModelTypeLongConnection)
 	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(3)))
 	env.ch.On("AS ts_list", longConnPairs(2500, to))
-	res, err := env.mgr.ScoreRange(context.Background(), mo, req)
+	res, err := scoreRangeNow(env, mo, req)
 	if err != nil || res.PairsScored != 2500 {
 		t.Fatalf("%+v %v", res, err)
 	}
@@ -254,7 +271,7 @@ func TestScoreRangeWritesOnceAtTheEnd(t *testing.T) {
 	cut := longConnPairs(2500, to)
 	cut.IterErr = errors.New("context deadline exceeded")
 	env.ch.On("AS ts_list", cut)
-	if _, err := env.mgr.ScoreRange(context.Background(), mo, req); err == nil {
+	if _, err := scoreRangeNow(env, mo, req); err == nil {
 		t.Fatal("a cut-short read succeeded")
 	}
 	if len(env.ch.Batches()) != 0 {
@@ -262,51 +279,190 @@ func TestScoreRangeWritesOnceAtTheEnd(t *testing.T) {
 	}
 }
 
-// A run bounded by the request's deadline tells ClickHouse the same budget.
-func TestScoreRangeFollowsTheRequestDeadline(t *testing.T) {
-	from := time.Now().UTC().Add(-48 * time.Hour)
-	to := from.Add(24 * time.Hour)
-	env, mo, _ := scoreRangeModel(t, ModelTypeBeacon)
-	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(0)))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := env.mgr.ScoreRange(ctx, mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range env.ch.Queried() {
-		if !strings.Contains(q, "max_execution_time=29,") && !strings.Contains(q, "max_execution_time=30,") {
-			t.Errorf("query outlives the request: ...%s", q[max(0, len(q)-200):])
-		}
-	}
-}
-
-// A backfill holding the slot fails the request at once rather than holding it
-// until the request times out.
-func TestScoreRangeBusy(t *testing.T) {
-	from := time.Now().UTC().Add(-48 * time.Hour)
-	to := from.Add(24 * time.Hour)
-	env, mo, _ := scoreRangeModel(t, ModelTypeBeacon)
-	env.mgr.bfSem <- struct{}{}
-	defer func() { <-env.mgr.bfSem }()
-	_, err := env.mgr.ScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to})
-	if err == nil || !strings.Contains(err.Error(), "running") || len(env.ch.Queried()) != 0 {
-		t.Errorf("err = %v, queries %d", err, len(env.ch.Queried()))
-	}
-}
-
-// A model edited while it scored keeps its new table free of old scores.
-func TestScoreRangeModelChangedMidRun(t *testing.T) {
+// A model edited mid-read cancels the run, and the run notices before it writes:
+// its scores belong to the old definition.
+func TestScoreRangeEditedMidRunWritesNothing(t *testing.T) {
 	from := time.Now().UTC().Add(-48 * time.Hour)
 	to := from.Add(24 * time.Hour)
 	env, mo, r := scoreRangeModel(t, ModelTypeLongConnection)
 	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(3)))
-	env.ch.On("AS ts_list", longConnPairs(3, to))
+	env.ch.Respond(func(q string, _ []any) (fakedb.CHResult, bool) {
+		if !strings.Contains(q, "AS ts_list") {
+			return fakedb.CHResult{}, false
+		}
+		def := mo.Definition
+		def.LongConn = &LongConnParams{ScoreThreshold: 0.9}
+		if _, err := env.mgr.Update(context.Background(), r.id, UpdateRequest{Name: mo.Name, Definition: def}); err != nil {
+			t.Error(err)
+		}
+		return longConnPairs(3, to), true
+	})
+	_, err := scoreRangeNow(env, mo, ScoreRangeRequest{From: &from, To: &to})
+	if err == nil || !strings.Contains(err.Error(), "cancelled") || !strings.Contains(err.Error(), "definition changed") {
+		t.Errorf("err = %v", err)
+	}
+	for _, b := range env.ch.Batches() {
+		if strings.Contains(b.Query, r.chTable) {
+			t.Errorf("an edited model's run wrote scores: %s", b.Query)
+		}
+	}
+}
+
+// Queueing returns at once, before any read, with the range resolved to whole
+// hours; the job runs on the replica's worker.
+func TestQueueScoreRangeReturnsBeforeReading(t *testing.T) {
+	env, mo, r := scoreRangeModel(t, ModelTypeBeacon)
+	from := time.Date(2026, 3, 2, 10, 20, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 4, 17, 45, 0, 0, time.UTC)
+	job, err := env.mgr.QueueScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(env.ch.Queried()) != 0 {
+		t.Error("queueing read ClickHouse")
+	}
+	got, _ := env.db.get(r.id)
+	wantFrom, wantTo := time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC), time.Date(2026, 3, 4, 17, 0, 0, 0, time.UTC)
+	if got.sr.status != "queued" || !got.sr.from.Equal(wantFrom) || !got.sr.to.Equal(wantTo) || !got.sr.queued.Equal(*job.QueuedAt) {
+		t.Errorf("row: %+v", got.sr)
+	}
+	select {
+	case <-env.mgr.srNudge:
+	default:
+		t.Error("the worker was not woken")
+	}
+}
+
+// One job per model: a second is refused while one is queued or running, unless
+// it replaces it, and then the replaced run's writes no longer match.
+func TestQueueScoreRangeOnePerModel(t *testing.T) {
+	env, mo, r := scoreRangeModel(t, ModelTypeBeacon)
+	from := time.Now().UTC().Add(-48 * time.Hour)
+	to := from.Add(24 * time.Hour)
+	req := ScoreRangeRequest{From: &from, To: &to}
+	first, err := env.mgr.QueueScoreRange(context.Background(), mo, req, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.mgr.QueueScoreRange(context.Background(), mo, req, false); !errors.Is(err, errScoreRangeActive) {
+		t.Errorf("err = %v", err)
+	}
+	time.Sleep(time.Microsecond)
+	second, err := env.mgr.QueueScoreRange(context.Background(), mo, req, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := env.db.get(r.id); !got.sr.queued.Equal(*second.QueuedAt) || got.sr.queued.Equal(*first.QueuedAt) {
+		t.Errorf("not replaced: %+v", got.sr)
+	}
+}
+
+// Another replica holding the lock runs the queue; this one leaves it alone.
+func TestScoreRangesRunOneReplicaAtATime(t *testing.T) {
+	env, mo, r := scoreRangeModel(t, ModelTypeBeacon)
+	from := time.Now().UTC().Add(-48 * time.Hour)
+	to := from.Add(24 * time.Hour)
+	if _, err := env.mgr.QueueScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to}, false); err != nil {
+		t.Fatal(err)
+	}
+	env.db.setLockHeld(true)
+	env.mgr.runQueuedScoreRanges(context.Background())
+	if got, _ := env.db.get(r.id); got.sr.status != "queued" || len(env.ch.Queried()) != 0 {
+		t.Errorf("ran without the lock: %+v", got.sr)
+	}
+}
+
+// Holding the lock, a job still marked running was left by a replica that
+// stopped, so it runs again from the start.
+func TestScoreRangeResumesARunLeftByAStoppedReplica(t *testing.T) {
+	env, _, r := scoreRangeModel(t, ModelTypeBeacon)
+	from := time.Now().UTC().Truncate(time.Hour).Add(-48 * time.Hour)
+	to, queued := from.Add(24*time.Hour), time.Now().UTC().Add(-time.Hour)
 	env.db.mu.Lock()
-	env.db.rows[r.id].updatedAt = mo.UpdatedAt.Add(time.Second)
+	env.db.rows[r.id].sr = srRow{status: "running", phase: "pairs", from: &from, to: &to, queued: &queued}
 	env.db.mu.Unlock()
-	_, err := env.mgr.ScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to})
-	if err == nil || !strings.Contains(err.Error(), "changed") || len(env.ch.Batches()) != 0 {
-		t.Errorf("err = %v, batches %d", err, len(env.ch.Batches()))
+	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(0)))
+	env.mgr.runQueuedScoreRanges(context.Background())
+	if got, _ := env.db.get(r.id); got.sr.status != "completed" || got.sr.err != "" {
+		t.Errorf("row: %+v", got.sr)
+	}
+}
+
+// A run reports each step as it reaches it, then clears its phase when done.
+func TestScoreRangeRecordsProgress(t *testing.T) {
+	env, mo, r := scoreRangeModel(t, ModelTypeLongConnection)
+	from := time.Now().UTC().Add(-48 * time.Hour)
+	to := from.Add(24 * time.Hour)
+	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(3)))
+	env.ch.On("AS ts_list", longConnPairs(3, to))
+	if _, err := scoreRangeNow(env, mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{phaseNetwork, phasePrevalence, phaseFirstSeen, phasePairs, phaseWriting}
+	env.db.mu.Lock()
+	phases := append([]string(nil), env.db.phases...)
+	env.db.mu.Unlock()
+	if strings.Join(phases, ",") != strings.Join(want, ",") {
+		t.Errorf("phases %v, want %v", phases, want)
+	}
+	if got, _ := env.db.get(r.id); got.sr.phase != "" {
+		t.Errorf("phase left at %q", got.sr.phase)
+	}
+}
+
+// A cancelled job never runs; Cancel on a finished one changes nothing.
+func TestCancelScoreRange(t *testing.T) {
+	env, mo, r := scoreRangeModel(t, ModelTypeBeacon)
+	from := time.Now().UTC().Add(-48 * time.Hour)
+	to := from.Add(24 * time.Hour)
+	if _, err := env.mgr.QueueScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.mgr.CancelScoreRange(context.Background(), r.id, ""); err != nil {
+		t.Fatal(err)
+	}
+	env.mgr.runQueuedScoreRanges(context.Background())
+	if got, _ := env.db.get(r.id); got.sr.status != "cancelled" || len(env.ch.Queried()) != 0 {
+		t.Errorf("row %+v, queries %d", got.sr, len(env.ch.Queried()))
+	}
+	env.db.mu.Lock()
+	env.db.rows[r.id].sr.status = "completed"
+	env.db.mu.Unlock()
+	if err := env.mgr.CancelScoreRange(context.Background(), r.id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := env.db.get(r.id); got.sr.status != "completed" {
+		t.Errorf("cancel rewrote a finished job: %+v", got.sr)
+	}
+}
+
+// A run waits for the raw-log slot a backfill holds rather than failing, and
+// a run tells ClickHouse its own budget, not a request's.
+func TestScoreRangeWaitsForTheSlot(t *testing.T) {
+	env, mo, r := scoreRangeModel(t, ModelTypeBeacon)
+	env.mgr.bfCfg.scoreRangeTimeoutSec = 4321
+	from := time.Now().UTC().Add(-48 * time.Hour)
+	to := from.Add(24 * time.Hour)
+	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(0)))
+	if _, err := env.mgr.QueueScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to}, false); err != nil {
+		t.Fatal(err)
+	}
+	env.mgr.bfSem <- struct{}{}
+	done := make(chan struct{})
+	go func() { env.mgr.runQueuedScoreRanges(context.Background()); close(done) }()
+	waitFor(t, "the run to claim the job", func() bool { got, _ := env.db.get(r.id); return got.sr.status == "running" })
+	if len(env.ch.Queried()) != 0 {
+		t.Error("read without the slot")
+	}
+	<-env.mgr.bfSem
+	<-done
+	if got, _ := env.db.get(r.id); got.sr.status != "completed" {
+		t.Errorf("row: %+v", got.sr)
+	}
+	for _, q := range env.ch.Queried() {
+		if !strings.Contains(q, "max_execution_time=4321,") {
+			t.Errorf("query not bounded by the job's budget: ...%s", q[max(0, len(q)-200):])
+		}
 	}
 }
 
@@ -335,7 +491,7 @@ func TestScoreRangeReadsRunOnTheAlertIdentity(t *testing.T) {
 	}})
 	reads := recordReads(env)
 
-	if _, err := env.mgr.ScoreRange(context.Background(), mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
+	if _, err := scoreRangeNow(env, mo, ScoreRangeRequest{From: &from, To: &to}); err != nil {
 		t.Fatal(err)
 	}
 	assertScoringReads(t, reads(), 3)

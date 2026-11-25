@@ -22604,7 +22604,7 @@
     "/api/v1/models/{id}/score-range": {
       "post": {
         "operationId": "post_api_v1_models_byId_score_range",
-        "summary": "Score a network model over a past range and keep the scores.",
+        "summary": "Queue a background job scoring a network model over a past range.",
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "models"
@@ -22649,7 +22649,88 @@
                       "type": "string"
                     },
                     "data": {
-                      "$ref": "#/components/schemas/models.ScoreRangeResult"
+                      "$ref": "#/components/schemas/models.Model"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/models/{id}/score-range/cancel": {
+      "post": {
+        "operationId": "post_api_v1_models_byId_score_range_cancel",
+        "summary": "Stop a network model's queued or running Score range job.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "models"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/models.Model"
                     },
                     "error": {
                       "type": "string"
@@ -39197,6 +39278,9 @@
           "prism_id": {
             "type": "string"
           },
+          "score_range": {
+            "$ref": "#/components/schemas/models.ScoreRangeJob"
+          },
           "scored_pass_at": {
             "type": "string",
             "format": "date-time"
@@ -39242,7 +39326,8 @@
           "backfill_status",
           "backfill_window",
           "backfill_total",
-          "backfill_done"
+          "backfill_done",
+          "score_range"
         ]
       },
       "models.ModelDefinition": {
@@ -39403,6 +39488,9 @@
           "row_count": {
             "type": "integer"
           },
+          "score_range": {
+            "$ref": "#/components/schemas/models.ScoreRangeJob"
+          },
           "scored_pass_at": {
             "type": "string",
             "format": "date-time"
@@ -39449,6 +39537,7 @@
           "backfill_window",
           "backfill_total",
           "backfill_done",
+          "score_range",
           "row_count"
         ]
       },
@@ -39789,6 +39878,46 @@
           "steps",
           "bins",
           "cells"
+        ]
+      },
+      "models.ScoreRangeJob": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "queued_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "result": {
+            "$ref": "#/components/schemas/models.ScoreRangeResult"
+          },
+          "rows_read": {
+            "type": "integer"
+          },
+          "rows_total": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "status",
+          "rows_read",
+          "rows_total"
         ]
       },
       "models.ScoreRangeRequest": {

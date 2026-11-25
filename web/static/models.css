@@ -182,6 +182,8 @@
 .backfill-running-head { margin-bottom: 8px; }
 .backfill-label { font-size: 13px; color: var(--text-primary); font-weight: 500; }
 .backfill-count { font-size: 12px; color: var(--text-muted, #888); }
+.backfill-running .stat-bar-track { height: 4px; border-radius: 2px; background: var(--bg-tertiary); overflow: hidden; }
+.backfill-running .stat-bar-fill { height: 100%; background: var(--accent-primary); transition: width 0.4s ease; }
 .spinner-inline { width: 13px; height: 13px; border-width: 2px; display: inline-block; vertical-align: middle; }
 
 .btn-remove-row {
