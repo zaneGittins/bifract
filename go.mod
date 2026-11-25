@@ -3,7 +3,7 @@ module bifract
 go 1.27.4
 
 require (
-	github.com/ClickHouse/clickhouse-go/v2 v2.50.0
+	github.com/ClickHouse/clickhouse-go/v2 v2.51.0
 	github.com/KimMachineGun/automemlimit v1.0.2
 	github.com/apache/arrow-go/v18 v18.9.0
 	github.com/apache/iceberg-go v0.7.0
@@ -51,7 +51,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.0 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.8.0 // indirect
-	github.com/ClickHouse/ch-go v0.74.0 // indirect
+	github.com/ClickHouse/ch-go v0.75.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.35.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.57.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.57.0 // indirect
@@ -106,7 +106,7 @@ require (
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/geoarrow/geoarrow-go v0.0.0-20260403143023-f54751c3e3a1 // indirect
 	github.com/go-faster/city v1.0.1 // indirect
-	github.com/go-faster/errors v0.7.1 // indirect
+	github.com/go-faster/errors v0.8.0 // indirect
 	github.com/go-git/gcfg/v2 v2.0.2 // indirect
 	github.com/go-git/go-billy/v6 v6.0.0-beta.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
@@ -167,7 +167,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/parquet-go/bitpack v1.0.0 // indirect
 	github.com/parquet-go/jsonlite v1.0.0 // indirect
-	github.com/paulmach/orb v0.13.0 // indirect
+	github.com/paulmach/orb v0.14.0 // indirect
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
 	github.com/pjbgf/sha1cd v0.7.0 // indirect
@@ -185,7 +185,7 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
-	github.com/shopspring/decimal v1.5.0 // indirect
+	github.com/shopspring/decimal v1.6.0 // indirect
 	github.com/sigstore/protobuf-specs v0.5.2 // indirect
 	github.com/sigstore/rekor v1.5.5 // indirect
 	github.com/sigstore/rekor-tiles/v2 v2.4.0 // indirect
