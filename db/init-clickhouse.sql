@@ -106,7 +106,8 @@ PARTITION BY (fractal_id, toDate(ingest_timestamp))
 ORDER BY (timestamp, log_id)
 -- The dedup window drops a retried insert batch (same insert_deduplication_token); its
 -- view targets keep one too. 10000 matches the replicated engines' default.
-SETTINGS index_granularity = 8192, non_replicated_deduplication_window = 10000;
+-- The wide-part threshold keeps ingest batches compact (see migration 028).
+SETTINGS index_granularity = 8192, non_replicated_deduplication_window = 10000, min_bytes_for_wide_part = 1073741824;
 
 -- Pre-normalization original log text, split out of the logs table into its own
 -- daily-partitioned table so its 7-day retention is a metadata-only DROP PARTITION
@@ -255,7 +256,7 @@ CREATE TABLE IF NOT EXISTS logs_hot (
 PARTITION BY toStartOfFiveMinutes(ingest_timestamp)
 ORDER BY (fractal_id, ingest_timestamp, log_id)
 TTL toDateTime(ingest_timestamp) + INTERVAL 4 HOUR DELETE
-SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000;
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000, min_bytes_for_wide_part = 2147483648;
 
 -- Feeds logs_hot from every insert into the local logs table.
 -- The MV writes to local logs_hot on each shard — it fires per-shard when distributed
