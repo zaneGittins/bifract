@@ -442,7 +442,7 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 	var pinnedPages []*instructions.Page
 	var pageIndex []instructions.PageSummary
 	if m.instructionManager != nil {
-		libIDs, err := m.instructionManager.ResolveLibraryIDs(ctx, conv.ID, conv.FractalID)
+		libIDs, err := m.instructionManager.ResolveLibraryIDs(ctx, conv.ID, conv.FractalID, conv.PrismID)
 		if err != nil {
 			log.Printf("[Chat] Failed to resolve libraries: %v", err)
 		}
