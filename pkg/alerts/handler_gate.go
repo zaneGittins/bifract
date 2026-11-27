@@ -11,6 +11,7 @@ import (
 
 	"bifract/pkg/api"
 	"bifract/pkg/rbac"
+	"bifract/pkg/storage"
 )
 
 // ReviewRequest is a reviewer's decision.
@@ -51,7 +52,7 @@ func (h *Handler) changeRequestAccess(w http.ResponseWriter, r *http.Request, re
 	}
 	// A draft exists only for its author. Anyone else is told it does not exist,
 	// which is both the truth of the matter and the answer that leaks nothing.
-	if cr.Draft() && cr.Author != h.attributionUser(r) {
+	if cr.Draft() && cr.Author != storage.AttributionUser(r.Context()) {
 		h.respondError(w, http.StatusNotFound, "Proposal not found")
 		return nil, false
 	}
@@ -98,7 +99,7 @@ func (h *Handler) HandleSaveGateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	saved, err := h.manager.SaveGateConfig(r.Context(), fractalID, prismID, cfg, h.attributionUser(r))
+	saved, err := h.manager.SaveGateConfig(r.Context(), fractalID, prismID, cfg, storage.AttributionUser(r.Context()))
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -142,7 +143,7 @@ func (h *Handler) HandleSubmitChangeRequest(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	cr, err := h.manager.SubmitChangeRequest(r.Context(), chi.URLParam(r, "id"), fractalID, prismID, in, h.attributionUser(r))
+	cr, err := h.manager.SubmitChangeRequest(r.Context(), chi.URLParam(r, "id"), fractalID, prismID, in, storage.AttributionUser(r.Context()))
 	if err != nil {
 		// Shared with the other proposal handlers, so one underlying failure cannot
 		// answer 400 here and 409 there.
@@ -161,7 +162,7 @@ func (h *Handler) HandleGetChangeRequest(w http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 
 	detail := ChangeRequestDetail{ChangeRequest: cr}
-	username := h.attributionUser(r)
+	username := storage.AttributionUser(r.Context())
 	detail.IsAuthor = cr.Author == username
 
 	// The definition the proposal would replace, so the reviewer sees a diff rather
@@ -217,7 +218,7 @@ func (h *Handler) HandleReviewChangeRequest(w http.ResponseWriter, r *http.Reque
 	isAdmin := user != nil && user.IsAdmin
 
 	cr, err := h.manager.ReviewChangeRequest(r.Context(), chi.URLParam(r, "id"),
-		req.Decision, req.Comment, h.attributionUser(r), isAdmin)
+		req.Decision, req.Comment, storage.AttributionUser(r.Context()), isAdmin)
 	if err != nil {
 		h.changeRequestError(w, err)
 		return
@@ -231,7 +232,7 @@ func (h *Handler) HandleMergeChangeRequest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	cr, err := h.manager.MergeChangeRequest(r.Context(), chi.URLParam(r, "id"), h.attributionUser(r))
+	cr, err := h.manager.MergeChangeRequest(r.Context(), chi.URLParam(r, "id"), storage.AttributionUser(r.Context()))
 	if err != nil {
 		var blocked *MergeBlockedError
 		if errors.As(err, &blocked) {
@@ -258,7 +259,7 @@ func (h *Handler) HandleWithdrawChangeRequest(w http.ResponseWriter, r *http.Req
 	user := h.getUserObj(r)
 	isAdmin := user != nil && user.IsAdmin
 
-	cr, err := h.manager.WithdrawChangeRequest(r.Context(), chi.URLParam(r, "id"), h.attributionUser(r), isAdmin)
+	cr, err := h.manager.WithdrawChangeRequest(r.Context(), chi.URLParam(r, "id"), storage.AttributionUser(r.Context()), isAdmin)
 	if err != nil {
 		h.changeRequestError(w, err)
 		return
@@ -361,7 +362,7 @@ func (h *Handler) HandleProposeFromYAML(w http.ResponseWriter, r *http.Request) 
 	}
 
 	cr, err := h.manager.ProposeFromYAML(r.Context(), req.Content, req.Summary,
-		h.attributionUser(r), fractalID, prismID, req.NormalizerID)
+		storage.AttributionUser(r.Context()), fractalID, prismID, req.NormalizerID)
 	if err != nil {
 		h.importChangeError(w, err)
 		return
@@ -393,7 +394,7 @@ func (h *Handler) HandleDraftFromYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	draft, err := h.manager.DraftFromYAML(r.Context(), req.Content, h.attributionUser(r), fractalID, prismID, req.NormalizerID)
+	draft, err := h.manager.DraftFromYAML(r.Context(), req.Content, storage.AttributionUser(r.Context()), fractalID, prismID, req.NormalizerID)
 	if err != nil {
 		h.importChangeError(w, err)
 		return

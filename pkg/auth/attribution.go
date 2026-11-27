@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-
-	"bifract/pkg/storage"
 )
 
 // DenyAPIKey blocks API key requests from a route group that manages per-user
@@ -34,27 +32,4 @@ func DenyAPIKey(what string) func(http.Handler) http.Handler {
 func IsAPIKey(ctx context.Context) bool {
 	authType, _ := ctx.Value("auth_type").(string)
 	return authType == "api_key"
-}
-
-// AttributionUsername returns the username to record in a `created_by` /
-// `updated_by` column for the current principal. Those columns are foreign
-// keys against users(username), so they may only ever hold a username that
-// exists in the users table, or NULL.
-//
-// API key requests authenticate as a synthetic "apikey_<id>" principal that
-// has no users row, so writes are attributed to the user who created the key
-// (the same rule comments already use). An empty result means "no attributable
-// user" and must be stored as NULL, not as an empty string; pass it through
-// storage.NullableUser at the bind site.
-func AttributionUsername(ctx context.Context) string {
-	if authType, _ := ctx.Value("auth_type").(string); authType == "api_key" {
-		if keyData, ok := ctx.Value("api_key").(*ValidatedAPIKey); ok {
-			return keyData.CreatedBy
-		}
-		return ""
-	}
-	if user, ok := ctx.Value("user").(*storage.User); ok && user != nil {
-		return user.Username
-	}
-	return ""
 }

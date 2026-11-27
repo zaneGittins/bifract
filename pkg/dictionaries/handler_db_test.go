@@ -17,6 +17,7 @@ import (
 
 	"bifract/internal/fakedb"
 	"bifract/pkg/api"
+	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -32,6 +33,7 @@ func call(t *testing.T, h http.HandlerFunc, method, target string, body io.Reade
 	}
 	if who.user != nil {
 		c = context.WithValue(c, "user", who.user)
+		c = context.WithValue(c, storage.AttributionUserKey, who.user.Username)
 	}
 	if who.role != "" {
 		c = context.WithValue(c, "fractal_role", string(who.role))
@@ -387,6 +389,7 @@ func TestHandlerImportCSV(t *testing.T) {
 func serveWith(h http.HandlerFunc, r *http.Request, who principal, id string) *httptest.ResponseRecorder {
 	c := context.WithValue(r.Context(), "selected_fractal", fractalA)
 	c = context.WithValue(c, "user", who.user)
+	c = context.WithValue(c, storage.AttributionUserKey, who.user.Username)
 	c = context.WithValue(c, "fractal_role", string(who.role))
 	rc := chi.NewRouteContext()
 	rc.URLParams.Add("id", id)

@@ -43,6 +43,7 @@ func scopedRequest(method, body string, who principal) *http.Request {
 	ctx := context.WithValue(r.Context(), "selected_fractal", "f-1")
 	if who.user != nil {
 		ctx = context.WithValue(ctx, "user", who.user)
+		ctx = context.WithValue(ctx, storage.AttributionUserKey, who.user.Username)
 	}
 	if who.role != "" {
 		ctx = context.WithValue(ctx, "fractal_role", string(who.role))

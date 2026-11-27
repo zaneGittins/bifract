@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/prisms"
 	"bifract/pkg/rbac"
@@ -198,7 +197,7 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 	// comments.author is NOT NULL and references users(username), so an API key
 	// posts as its creator. A key whose creator was deleted has nobody to
 	// attribute to and is refused rather than left to fail on the constraint.
-	author := auth.AttributionUsername(r.Context())
+	author := storage.AttributionUser(r.Context())
 	if author == "" {
 		api.WriteError(w, http.StatusForbidden, "This API key has no owning user to attribute the comment to")
 		return
@@ -397,7 +396,7 @@ func (h *CommentHandler) HandleUpdateComment(w http.ResponseWriter, r *http.Requ
 	// Ownership matches on what was written as the author, which for an API key is
 	// the person who created it, not the synthetic apikey_<id> principal. Matching
 	// on the principal meant a key could not edit or delete its own comments.
-	err := h.pg.UpdateComment(r.Context(), commentID, auth.AttributionUsername(r.Context()), req.Text, req.Tags)
+	err := h.pg.UpdateComment(r.Context(), commentID, storage.AttributionUser(r.Context()), req.Text, req.Tags)
 	if errors.Is(err, storage.ErrCommentInLockedNotebook) {
 		api.WriteError(w, http.StatusConflict, lockedEvidenceMessage)
 		return
@@ -432,7 +431,7 @@ func (h *CommentHandler) HandleDeleteComment(w http.ResponseWriter, r *http.Requ
 	}
 	commentID := comment.ID
 
-	err := h.pg.DeleteComment(r.Context(), commentID, auth.AttributionUsername(r.Context()))
+	err := h.pg.DeleteComment(r.Context(), commentID, storage.AttributionUser(r.Context()))
 	if errors.Is(err, storage.ErrCommentInLockedNotebook) {
 		api.WriteError(w, http.StatusConflict, lockedEvidenceMessage)
 		return
@@ -612,7 +611,7 @@ func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	count, err := h.pg.BulkAddTagToComments(r.Context(), req.CommentIDs, req.Tag, auth.AttributionUsername(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
+	count, err := h.pg.BulkAddTagToComments(r.Context(), req.CommentIDs, req.Tag, storage.AttributionUser(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk add tag failed: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to add tag")
@@ -658,7 +657,7 @@ func (h *CommentHandler) HandleBulkRemoveTag(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	count, err := h.pg.BulkRemoveTagFromComments(r.Context(), req.CommentIDs, req.Tag, auth.AttributionUsername(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
+	count, err := h.pg.BulkRemoveTagFromComments(r.Context(), req.CommentIDs, req.Tag, storage.AttributionUser(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk remove tag failed: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to remove tag")
@@ -705,7 +704,7 @@ func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http
 	if !ok {
 		return
 	}
-	count, err := h.pg.BulkDeleteComments(r.Context(), req.CommentIDs, auth.AttributionUsername(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
+	count, err := h.pg.BulkDeleteComments(r.Context(), req.CommentIDs, storage.AttributionUser(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk delete failed: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to delete comments")

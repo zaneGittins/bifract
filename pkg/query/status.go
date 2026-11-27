@@ -2,7 +2,6 @@ package query
 
 import (
 	"bifract/pkg/api"
-	"bifract/pkg/auth"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -296,7 +295,7 @@ func (h *StatusHandler) HandleClearLogs(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	h.notifyAllCleared(ctx)
-	log.Printf("[Admin] all logs cleared by %s", auth.AttributionUsername(r.Context()))
+	log.Printf("[Admin] all logs cleared by %s", storage.AttributionUser(r.Context()))
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"message": "All logs and associated comments have been cleared",
@@ -370,7 +369,7 @@ func (h *StatusHandler) clearFractalLogs(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	log.Printf("[Admin] logs for fractal %s cleared by %s", fractalID, auth.AttributionUsername(r.Context()))
+	log.Printf("[Admin] logs for fractal %s cleared by %s", fractalID, storage.AttributionUser(r.Context()))
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"message": fmt.Sprintf("All logs and associated comments for fractal %s have been cleared", fractalID),

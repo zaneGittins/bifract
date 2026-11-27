@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"bifract/pkg/attack"
-	"bifract/pkg/auth"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
 
@@ -285,7 +284,7 @@ func (h *DashboardHandler) HandleCreateSharedLink(w http.ResponseWriter, r *http
 		expiresAt = &t
 	}
 
-	createdBy := auth.AttributionUsername(r.Context())
+	createdBy := storage.AttributionUser(r.Context())
 
 	full, hash, prefix, err := generateShareToken()
 	if err != nil {

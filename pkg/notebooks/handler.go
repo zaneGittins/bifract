@@ -313,7 +313,7 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 		TimeRangeEnd:         req.TimeRangeEnd,
 		MaxResultsPerSection: req.MaxResultsPerSection,
 		Timezone:             req.Timezone,
-		CreatedBy:            auth.AttributionUsername(r.Context()),
+		CreatedBy:            storage.AttributionUser(r.Context()),
 	}
 	if selectedPrism != "" {
 		notebook.PrismID = selectedPrism
@@ -1472,7 +1472,7 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 		// An unknown or absent zone falls back to UTC rather than failing the
 		// import, matching how a stale stored zone is handled on read.
 		Timezone:  storage.SafeTimezone(imported.Timezone),
-		CreatedBy: auth.AttributionUsername(r.Context()),
+		CreatedBy: storage.AttributionUser(r.Context()),
 	}
 	if selectedPrism != "" {
 		nb.PrismID = selectedPrism
@@ -1831,7 +1831,7 @@ func (h *NotebookHandler) resolveGenerateTarget(w http.ResponseWriter, r *http.R
 		Description:          fmt.Sprintf("Comments tagged %q", req.Tag),
 		TimeRangeType:        "all",
 		MaxResultsPerSection: 1000,
-		CreatedBy:            auth.AttributionUsername(r.Context()),
+		CreatedBy:            storage.AttributionUser(r.Context()),
 	}
 	if prismID != "" {
 		notebook.PrismID = prismID

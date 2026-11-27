@@ -224,7 +224,7 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 		TimeRangeStart: req.TimeRangeStart,
 		TimeRangeEnd:   req.TimeRangeEnd,
 		Timezone:       req.Timezone,
-		CreatedBy:      auth.AttributionUsername(r.Context()),
+		CreatedBy:      storage.AttributionUser(r.Context()),
 	}
 	if req.Variables != nil {
 		d.Variables, _ = json.Marshal(req.Variables)
@@ -1113,7 +1113,7 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 		TimeRangeType: imported.TimeRange,
 		Timezone:      storage.SafeTimezone(imported.Timezone),
 		Variables:     varsJSON,
-		CreatedBy:     auth.AttributionUsername(r.Context()),
+		CreatedBy:     storage.AttributionUser(r.Context()),
 	}
 	if selectedPrism != "" {
 		d.PrismID = selectedPrism

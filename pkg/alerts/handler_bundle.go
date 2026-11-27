@@ -8,6 +8,7 @@ import (
 
 	"bifract/pkg/api"
 	"bifract/pkg/rbac"
+	"bifract/pkg/storage"
 )
 
 // origin records which scope an archive came from, as provenance in the manifest.
@@ -76,7 +77,7 @@ func (h *Handler) HandleImportBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.manager.ImportBundle(r.Context(), data, h.attributionUser(r), fractalID, prismID,
+	result, err := h.manager.ImportBundle(r.Context(), data, storage.AttributionUser(r.Context()), fractalID, prismID,
 		r.URL.Query().Get("overwrite") == "true")
 	if err != nil {
 		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {

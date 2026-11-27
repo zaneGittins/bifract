@@ -169,7 +169,7 @@ func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKey, err := h.storage.CreateFractalAPIKey(r.Context(), req, fractalID, auth.AttributionUsername(r.Context()), fullKey, keyID)
+	apiKey, err := h.storage.CreateFractalAPIKey(r.Context(), req, fractalID, storage.AttributionUser(r.Context()), fullKey, keyID)
 	if err != nil {
 		log.Printf("[APIKeys] Failed to create API key: %v", err)
 		h.sendError(w, http.StatusInternalServerError, "Failed to create API key")
@@ -460,7 +460,7 @@ func (h *Handler) HandleCreatePrismAPIKey(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	apiKey, err := h.storage.CreatePrismAPIKey(r.Context(), req, prismID, auth.AttributionUsername(r.Context()), fullKey, keyID)
+	apiKey, err := h.storage.CreatePrismAPIKey(r.Context(), req, prismID, storage.AttributionUser(r.Context()), fullKey, keyID)
 	if err != nil {
 		log.Printf("[APIKeys] Failed to create prism API key: %v", err)
 		h.sendError(w, http.StatusInternalServerError, "Failed to create API key")
@@ -694,7 +694,7 @@ func (h *Handler) HandleCreateTenantAPIKey(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	apiKey, err := h.storage.CreateTenantAPIKey(r.Context(), req, auth.AttributionUsername(r.Context()), fullKey, keyID)
+	apiKey, err := h.storage.CreateTenantAPIKey(r.Context(), req, storage.AttributionUser(r.Context()), fullKey, keyID)
 	if err != nil {
 		log.Printf("[APIKeys] Failed to create instance-wide API key: %v", err)
 		h.sendError(w, http.StatusInternalServerError, "Failed to create API key")
@@ -816,7 +816,7 @@ func (h *Handler) HandleToggleTenantAPIKey(w http.ResponseWriter, r *http.Reques
 // mayEmpower reports whether the caller may raise a key. A key stops with its
 // creator, so one raised by anyone else would outlive that person's access.
 func mayEmpower(r *http.Request, user *storage.User, key *APIKey) bool {
-	return user.IsAdmin || (key.CreatedBy != "" && key.CreatedBy == auth.AttributionUsername(r.Context()))
+	return user.IsAdmin || (key.CreatedBy != "" && key.CreatedBy == storage.AttributionUser(r.Context()))
 }
 
 // withinCallerExpiry refuses an expiry later than the calling key's own, or

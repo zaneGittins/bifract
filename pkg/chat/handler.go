@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 
-	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/instructions"
 	"bifract/pkg/llm"
@@ -386,7 +385,7 @@ func (h *Handler) HandleCreateInstruction(w http.ResponseWriter, r *http.Request
 		h.respondError(w, http.StatusBadRequest, "Legacy instructions are not available in prism context. Use instruction libraries instead.")
 		return
 	}
-	username := auth.AttributionUsername(r.Context())
+	username := storage.AttributionUser(r.Context())
 
 	var req InstructionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

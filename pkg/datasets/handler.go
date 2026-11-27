@@ -15,7 +15,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"bifract/pkg/api"
-	"bifract/pkg/auth"
 	"bifract/pkg/exchange"
 	"bifract/pkg/fractals"
 	"bifract/pkg/sse"
@@ -104,7 +103,7 @@ func (h *Handler) HandleAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := it.Dataset
-	user := auth.AttributionUsername(r.Context())
+	user := storage.AttributionUser(r.Context())
 	f, err := h.fractals.CreateFractalForDataset(r.Context(), it.ID, fractalDescription(it), user, d.Start, d.End)
 	if errors.Is(err, fractals.ErrNameTaken) {
 		api.WriteError(w, http.StatusConflict, err.Error())

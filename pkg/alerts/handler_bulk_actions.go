@@ -8,6 +8,7 @@ import (
 
 	"bifract/pkg/api"
 	"bifract/pkg/rbac"
+	"bifract/pkg/storage"
 )
 
 // BulkActionRequest adds and removes actions across many alerts.
@@ -39,7 +40,7 @@ func (h *Handler) HandleApplyBulkActions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	plan, err := h.manager.ApplyActionChanges(r.Context(), BulkActionChange{Changes: req.Changes}, req.Summary,
-		fractalID, prismID, h.attributionUser(r))
+		fractalID, prismID, storage.AttributionUser(r.Context()))
 	if err != nil {
 		h.bulkActionError(w, err)
 		return
