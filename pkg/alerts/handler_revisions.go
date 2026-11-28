@@ -12,6 +12,7 @@ import (
 
 	"bifract/pkg/api"
 	"bifract/pkg/rbac"
+	"bifract/pkg/storage"
 )
 
 // RestoreRevisionRequest is the body of a restore.
@@ -111,7 +112,7 @@ func (h *Handler) HandleRestoreRevision(w http.ResponseWriter, r *http.Request) 
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
 
-	alert, err := h.manager.RestoreRevision(r.Context(), alertID, number, h.attributionUser(r), req.DropMissingActions)
+	alert, err := h.manager.RestoreRevision(r.Context(), alertID, number, storage.AttributionUser(r.Context()), req.DropMissingActions)
 	if err != nil {
 		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {
 			return

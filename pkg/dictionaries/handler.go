@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
@@ -93,7 +92,7 @@ func (h *Handler) HandleCreateDictionary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	username := auth.AttributionUsername(r.Context())
+	username := storage.AttributionUser(r.Context())
 	dict, err := h.manager.CreateDictionary(r.Context(), CreateOptions{
 		FractalID: fractalID, PrismID: prismID, Name: req.Name, Description: req.Description,
 		KeyColumn: req.KeyColumn, Columns: req.Columns, CreatedBy: username,
@@ -672,7 +671,7 @@ func (h *Handler) HandleCreateDictionaryAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	username := auth.AttributionUsername(r.Context())
+	username := storage.AttributionUser(r.Context())
 	action, err := h.manager.CreateDictionaryAction(r.Context(), req.Name, req.Description,
 		req.DictionaryName, req.MaxLogsPerTrigger, req.Enabled, username, fractalID, prismID)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 
 	"bifract/pkg/api"
 	"bifract/pkg/rbac"
+	"bifract/pkg/storage"
 )
 
 // SavePoliciesRequest replaces a fractal's whole rule set.
@@ -127,7 +128,7 @@ func (h *Handler) HandleSavePolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policies, err := h.manager.ReplacePolicies(r.Context(), fractalID, prismID, req.Policies, h.attributionUser(r))
+	policies, err := h.manager.ReplacePolicies(r.Context(), fractalID, prismID, req.Policies, storage.AttributionUser(r.Context()))
 	if err != nil {
 		if strings.Contains(err.Error(), "rule ") || strings.Contains(err.Error(), "at most") {
 			h.respondError(w, http.StatusBadRequest, err.Error())
@@ -271,7 +272,7 @@ func (h *Handler) HandleImportPolicies(w http.ResponseWriter, r *http.Request) {
 		combined = mergePolicies(existing, imported)
 	}
 
-	saved, err := h.manager.ReplacePolicies(r.Context(), fractalID, prismID, combined, h.attributionUser(r))
+	saved, err := h.manager.ReplacePolicies(r.Context(), fractalID, prismID, combined, storage.AttributionUser(r.Context()))
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return

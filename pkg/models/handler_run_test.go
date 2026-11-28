@@ -19,7 +19,7 @@ import (
 
 // Handler paths past permission and scope checks, over a loaded model.
 
-var analystA = scope{"user": &storage.User{Username: "ana"}, "fractal_role": "analyst", "selected_fractal": fracA}
+var analystA = scope{"user": &storage.User{Username: "ana"}, storage.AttributionUserKey: "ana", "fractal_role": "analyst", "selected_fractal": fracA}
 
 func callModel(t *testing.T, h http.HandlerFunc, target, body, id string, sc scope) *httptest.ResponseRecorder {
 	t.Helper()

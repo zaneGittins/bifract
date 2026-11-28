@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
@@ -136,7 +135,7 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	alert, err := h.manager.CreateAlert(ctx, req, h.attributionUser(r), fractalID, prismID)
+	alert, err := h.manager.CreateAlert(ctx, req, storage.AttributionUser(r.Context()), fractalID, prismID)
 	if err != nil {
 		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {
 			return
@@ -226,7 +225,7 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update alert
-	alert, err := h.manager.UpdateAlert(ctx, alertID, req, h.attributionUser(r))
+	alert, err := h.manager.UpdateAlert(ctx, alertID, req, storage.AttributionUser(r.Context()))
 	if err != nil {
 		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {
 			return
@@ -345,7 +344,7 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	alert, err := h.manager.ImportFromYAML(ctx, yamlContent, h.attributionUser(r), fractalID, prismID, normalizerID)
+	alert, err := h.manager.ImportFromYAML(ctx, yamlContent, storage.AttributionUser(r.Context()), fractalID, prismID, normalizerID)
 	if err != nil {
 		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {
 			return
@@ -543,7 +542,7 @@ func (h *Handler) HandleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	webhook, err := h.manager.CreateWebhookAction(ctx, req, h.attributionUser(r), fractalID, prismID)
+	webhook, err := h.manager.CreateWebhookAction(ctx, req, storage.AttributionUser(r.Context()), fractalID, prismID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "already exists") {
 			h.respondError(w, http.StatusConflict, "Webhook name already exists in this scope")
@@ -806,7 +805,7 @@ func (h *Handler) HandleCreateFractalAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	fractalAction, err := h.manager.CreateFractalAction(ctx, req, h.attributionUser(r), fractalID, prismID)
+	fractalAction, err := h.manager.CreateFractalAction(ctx, req, storage.AttributionUser(r.Context()), fractalID, prismID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "already exists") {
 			h.respondError(w, http.StatusConflict, "Fractal action name already exists in this scope")
@@ -949,13 +948,6 @@ func (h *Handler) getCurrentUser(r *http.Request) string {
 	return ""
 }
 
-// attributionUser returns the username to persist in created_by/updated_by.
-// It differs from getCurrentUser: API keys authenticate as a synthetic
-// principal with no users row, and those columns are foreign keys.
-func (h *Handler) attributionUser(r *http.Request) string {
-	return auth.AttributionUsername(r.Context())
-}
-
 // getUserObj extracts the full user object from the request context.
 func (h *Handler) getUserObj(r *http.Request) *storage.User {
 	if user, ok := r.Context().Value("user").(*storage.User); ok {
@@ -1072,7 +1064,7 @@ func (h *Handler) HandleDuplicateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	alert, err := h.manager.DuplicateAlert(r.Context(), alertID, h.attributionUser(r))
+	alert, err := h.manager.DuplicateAlert(r.Context(), alertID, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Alerts] Failed to duplicate alert: %v", err)
 		h.respondError(w, http.StatusBadRequest, "Failed to duplicate alert")
@@ -1136,7 +1128,7 @@ func (h *Handler) HandleBatchToggleFeedAlerts(w http.ResponseWriter, r *http.Req
 			FeedID:    unset(req.Filter.FeedID),
 			Severity:  unset(req.Filter.Severity),
 			Label:     unset(req.Filter.Label),
-		}, req.Enabled, h.attributionUser(r))
+		}, req.Enabled, storage.AttributionUser(r.Context()))
 	case len(req.AlertIDs) == 0:
 		h.respondError(w, http.StatusBadRequest, "alert_ids or filter required")
 		return
@@ -1144,7 +1136,7 @@ func (h *Handler) HandleBatchToggleFeedAlerts(w http.ResponseWriter, r *http.Req
 		h.respondError(w, http.StatusBadRequest, "too many alert IDs (max 5000)")
 		return
 	default:
-		count, err = h.manager.BatchToggleFeedAlerts(r.Context(), req.AlertIDs, fractalID, prismID, req.Enabled, h.attributionUser(r))
+		count, err = h.manager.BatchToggleFeedAlerts(r.Context(), req.AlertIDs, fractalID, prismID, req.Enabled, storage.AttributionUser(r.Context()))
 	}
 	if err != nil {
 		log.Printf("[Alerts] Failed to batch toggle feed alerts: %v", err)
@@ -1185,7 +1177,7 @@ func (h *Handler) HandleBatchToggleAlerts(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	count, err := h.manager.BatchToggleAlerts(r.Context(), req.AlertIDs, fractalID, prismID, req.Enabled, h.attributionUser(r))
+	count, err := h.manager.BatchToggleAlerts(r.Context(), req.AlertIDs, fractalID, prismID, req.Enabled, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Alerts] Failed to batch toggle alerts: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to update alerts")
@@ -1226,7 +1218,7 @@ func (h *Handler) HandleToggleFeedAlert(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := h.manager.ToggleFeedAlert(r.Context(), alertID, req.Enabled, h.attributionUser(r)); err != nil {
+	if err := h.manager.ToggleFeedAlert(r.Context(), alertID, req.Enabled, storage.AttributionUser(r.Context())); err != nil {
 		log.Printf("[Alerts] Failed to toggle feed alert: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to update feed alerts")
 		return
@@ -1269,7 +1261,7 @@ func (h *Handler) HandleCreateEmailAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	action, err := h.manager.CreateEmailAction(r.Context(), req, h.attributionUser(r), fractalID, prismID)
+	action, err := h.manager.CreateEmailAction(r.Context(), req, storage.AttributionUser(r.Context()), fractalID, prismID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "already exists") {
 			h.respondError(w, http.StatusConflict, "Email action name already exists in this scope")

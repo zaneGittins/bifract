@@ -10,6 +10,7 @@ import (
 
 	"bifract/pkg/api"
 	"bifract/pkg/rbac"
+	"bifract/pkg/storage"
 )
 
 // SaveDraftRequest is an autosave from the editor. ID is empty for the first save of a
@@ -30,7 +31,7 @@ func (h *Handler) HandleListDrafts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, err := h.manager.ListDrafts(r.Context(), fractalID, prismID, h.attributionUser(r))
+	list, err := h.manager.ListDrafts(r.Context(), fractalID, prismID, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Alerts] Failed to list drafts: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to load drafts")
@@ -46,7 +47,7 @@ func (h *Handler) HandleDraftForAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	draft, err := h.manager.DraftForAlert(r.Context(), alertID, h.attributionUser(r))
+	draft, err := h.manager.DraftForAlert(r.Context(), alertID, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Alerts] Failed to find draft: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to load draft")
@@ -69,7 +70,7 @@ func (h *Handler) HandleSaveDraft(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := ChangeRequestInput{AlertID: req.AlertID, Title: req.Title, Summary: req.Summary, Content: req.Content, Tests: req.Tests}
-	draft, err := h.manager.SaveDraft(r.Context(), req.ID, fractalID, prismID, in, h.attributionUser(r))
+	draft, err := h.manager.SaveDraft(r.Context(), req.ID, fractalID, prismID, in, storage.AttributionUser(r.Context()))
 	if err != nil {
 		h.changeRequestError(w, err)
 		return
@@ -83,7 +84,7 @@ func (h *Handler) HandleSubmitDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cr, err := h.manager.SubmitDraft(r.Context(), chi.URLParam(r, "id"), h.attributionUser(r))
+	cr, err := h.manager.SubmitDraft(r.Context(), chi.URLParam(r, "id"), storage.AttributionUser(r.Context()))
 	if err != nil {
 		h.changeRequestError(w, err)
 		return
@@ -97,7 +98,7 @@ func (h *Handler) HandleDeleteDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.manager.DeleteDraft(r.Context(), chi.URLParam(r, "id"), h.attributionUser(r)); err != nil {
+	if err := h.manager.DeleteDraft(r.Context(), chi.URLParam(r, "id"), storage.AttributionUser(r.Context())); err != nil {
 		if errors.Is(err, ErrChangeRequestNotFound) {
 			h.respondError(w, http.StatusNotFound, "Draft not found")
 			return

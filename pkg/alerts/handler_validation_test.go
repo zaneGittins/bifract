@@ -38,6 +38,9 @@ func (c caller) request(method, body string, params map[string]string) *http.Req
 	ctx := r.Context()
 	if c.user != nil {
 		ctx = context.WithValue(ctx, "user", c.user)
+		if !c.apiKey {
+			ctx = context.WithValue(ctx, storage.AttributionUserKey, c.user.Username)
+		}
 	}
 	if c.fractalRole != "" {
 		ctx = context.WithValue(ctx, "fractal_role", c.fractalRole)

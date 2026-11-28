@@ -18,11 +18,11 @@ import (
 type scope map[string]interface{}
 
 var (
-	analystInFractal = scope{"user": &storage.User{Username: "ana"}, "fractal_role": "analyst", "selected_fractal": "f1"}
-	viewerInFractal  = scope{"user": &storage.User{Username: "vic"}, "fractal_role": "viewer", "selected_fractal": "f1"}
-	adminInFractal   = scope{"user": &storage.User{Username: "adm", IsAdmin: true}, "selected_fractal": "f1"}
-	analystInPrism   = scope{"user": &storage.User{Username: "ana"}, "prism_role": "analyst", "selected_prism": "p1"}
-	analystNoScope   = scope{"user": &storage.User{Username: "ana"}, "fractal_role": "analyst"}
+	analystInFractal = scope{"user": &storage.User{Username: "ana"}, storage.AttributionUserKey: "ana", "fractal_role": "analyst", "selected_fractal": "f1"}
+	viewerInFractal  = scope{"user": &storage.User{Username: "vic"}, storage.AttributionUserKey: "vic", "fractal_role": "viewer", "selected_fractal": "f1"}
+	adminInFractal   = scope{"user": &storage.User{Username: "adm", IsAdmin: true}, storage.AttributionUserKey: "adm", "selected_fractal": "f1"}
+	analystInPrism   = scope{"user": &storage.User{Username: "ana"}, storage.AttributionUserKey: "ana", "prism_role": "analyst", "selected_prism": "p1"}
+	analystNoScope   = scope{"user": &storage.User{Username: "ana"}, storage.AttributionUserKey: "ana", "fractal_role": "analyst"}
 )
 
 type apiResponse struct {

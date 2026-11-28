@@ -398,7 +398,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO saved_queries (name, query_text, description, tags, variables, visibility, fractal_id, prism_id, created_by, time_range, custom_start, custom_end, relative_n, relative_unit)
 		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(variables, '[]'), COALESCE(visibility, 'shared'), COALESCE(use_count, 0), COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`,
-		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), variables, visibility, fractalIDPtr, prismIDPtr, storage.NullableUser(auth.AttributionUsername(r.Context())), trArg, csArg, ceArg, rnArg, ruArg,
+		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), variables, visibility, fractalIDPtr, prismIDPtr, storage.NullableUser(storage.AttributionUser(r.Context())), trArg, csArg, ceArg, rnArg, ruArg,
 	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Variables, &sq.Visibility, &sq.UseCount,
 		&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt)
 

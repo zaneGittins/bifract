@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 
-	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
@@ -141,7 +140,7 @@ func (h *Handler) HandleEnsureDefaultLibrary(w http.ResponseWriter, r *http.Requ
 		h.respond(w, http.StatusBadRequest, nil, "no fractal or prism selected")
 		return
 	}
-	createdBy := auth.AttributionUsername(r.Context())
+	createdBy := storage.AttributionUser(r.Context())
 	lib, err := h.manager.EnsureDefaultLibrary(r.Context(), fractalID, prismID, createdBy, h.hasRole(r, rbac.RoleAnalyst))
 	if err != nil {
 		log.Printf("[Instructions] Failed to ensure default library: %v", err)
@@ -251,7 +250,7 @@ func (h *Handler) HandleCreateFolder(w http.ResponseWriter, r *http.Request) {
 		h.respond(w, http.StatusBadRequest, nil, "invalid request body")
 		return
 	}
-	folder, err := h.manager.CreateFolder(r.Context(), libraryID, req.Name, auth.AttributionUsername(r.Context()))
+	folder, err := h.manager.CreateFolder(r.Context(), libraryID, req.Name, storage.AttributionUser(r.Context()))
 	if err != nil {
 		h.respond(w, http.StatusBadRequest, nil, err.Error())
 		return
@@ -350,7 +349,7 @@ func (h *Handler) HandleCreateLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	lib, err := h.manager.CreateLibrary(r.Context(), req, fractalID, prismID, auth.AttributionUsername(r.Context()))
+	lib, err := h.manager.CreateLibrary(r.Context(), req, fractalID, prismID, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Instructions] Failed to create library: %v", err)
 		h.respond(w, http.StatusBadRequest, nil, err.Error())
@@ -476,7 +475,7 @@ func (h *Handler) HandleCreatePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page, err := h.manager.CreatePage(r.Context(), libraryID, req, auth.AttributionUsername(r.Context()))
+	page, err := h.manager.CreatePage(r.Context(), libraryID, req, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Instructions] Failed to create page in library %s: %v", libraryID, err)
 		h.respond(w, http.StatusBadRequest, nil, err.Error())

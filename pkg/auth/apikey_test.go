@@ -225,16 +225,29 @@ func TestAuthMiddlewareFractalScopedKey(t *testing.T) {
 	}
 	// Writes attribute to the person who made the key, never the synthetic
 	// principal, which has no users row.
-	if got := AttributionUsername(ctx); got != "alice" {
-		t.Errorf("AttributionUsername = %q, want alice", got)
-	}
-	if got, _ := ctx.Value(storage.AttributionUserKey).(string); got != "alice" {
-		t.Errorf("storage attribution = %q, want alice", got)
+	if got := storage.AttributionUser(ctx); got != "alice" {
+		t.Errorf("AttributionUser = %q, want alice", got)
 	}
 	// The resolver honours the key's grant on its own fractal only.
 	r := rbac.NewResolver(nil)
 	if got := r.ResolveRole(ctx, user, testScopeID); got != rbac.RoleAnalyst {
 		t.Errorf("ResolveRole on the key's fractal = %q, want analyst", got)
+	}
+}
+
+// A key whose creator was deleted credits nobody: created_by is a foreign key into
+// users, and the synthetic apikey_<id> principal has no row there.
+func TestAuthMiddlewareKeyWithoutCreatorAttributesNobody(t *testing.T) {
+	key := &ValidatedAPIKey{KeyID: "k1", Name: "ci", FractalID: testScopeID, Role: "analyst"}
+	h, _ := newTestHandler()
+	h.apiKeyValidator = &fakeValidator{keys: map[string]*ValidatedAPIKey{testKey: key}}
+
+	rec, next := serveWithKey(h, http.MethodGet, "/api/v1/query", map[string]string{"Authorization": "Bearer " + testKey})
+	if !next.called {
+		t.Fatalf("request refused: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := storage.AttributionUser(next.ctx); got != "" {
+		t.Errorf("AttributionUser = %q, want empty", got)
 	}
 }
 

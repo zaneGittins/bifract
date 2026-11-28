@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"bifract/pkg/rbac"
+	"bifract/pkg/storage"
 )
 
 // RunTestsRequest asks for a test run against an arbitrary query.
@@ -81,7 +82,7 @@ func (h *Handler) HandleRunTests(w http.ResponseWriter, r *http.Request) {
 
 	// Namespaced by principal so one user's session id cannot address another's
 	// loaded events.
-	sessionKey := h.attributionUser(r) + ":" + req.SessionID
+	sessionKey := storage.AttributionUser(r.Context()) + ":" + req.SessionID
 
 	result, err := h.testRunner.Run(r.Context(), sessionKey, req.QueryString, req.Tests, fractalID, prismID)
 	if err != nil {
@@ -113,6 +114,6 @@ func (h *Handler) HandleReleaseTestSession(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	h.testRunner.Release(r.Context(), h.attributionUser(r)+":"+sessionID)
+	h.testRunner.Release(r.Context(), storage.AttributionUser(r.Context())+":"+sessionID)
 	h.respondSuccess(w, map[string]bool{"released": true})
 }

@@ -22,7 +22,7 @@ var ownershipChecks = []string{
 // TestOwnershipIsCheckedAgainstTheIdentityThatWroteTheRow keeps the two halves of
 // "author only" in agreement.
 //
-// A comment is written with auth.AttributionUsername, which for an API key is the
+// A comment is written with storage.AttributionUser, which for an API key is the
 // person who created it. Checking ownership against the session principal instead
 // compares that to the synthetic apikey_<id>, which never matches: a key could
 // create a comment and then never edit or delete it.
@@ -52,7 +52,7 @@ func TestOwnershipIsCheckedAgainstTheIdentityThatWroteTheRow(t *testing.T) {
 		attributed := false
 		for _, arg := range call.Args {
 			switch render(arg) {
-			case "auth.AttributionUsername(":
+			case "storage.AttributionUser(":
 				attributed = true
 			case "user.Username":
 				t.Errorf("%s at %s matches ownership on the session principal, which for an API "+
@@ -61,7 +61,7 @@ func TestOwnershipIsCheckedAgainstTheIdentityThatWroteTheRow(t *testing.T) {
 			}
 		}
 		if !attributed {
-			t.Errorf("%s at %s does not match ownership on auth.AttributionUsername",
+			t.Errorf("%s at %s does not match ownership on storage.AttributionUser",
 				name, fset.Position(call.Pos()))
 		}
 		return true

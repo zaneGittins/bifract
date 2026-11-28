@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/parser"
 	"bifract/pkg/rbac"
@@ -136,7 +135,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		req.AlertMode = "none"
 	}
 
-	createdBy := auth.AttributionUsername(r.Context())
+	createdBy := storage.AttributionUser(r.Context())
 	model, err := h.manager.Create(r.Context(), fractalID, req, createdBy)
 	if err != nil {
 		log.Printf("[Models] create: %v", err)
@@ -572,7 +571,7 @@ func (h *Handler) HandleImport(w http.ResponseWriter, r *http.Request) {
 		Definition:  exp.Definition,
 		AlertMode:   "none",
 	}
-	model, err := h.manager.Create(r.Context(), fractalID, req, auth.AttributionUsername(r.Context()))
+	model, err := h.manager.Create(r.Context(), fractalID, req, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Models] import: %v", err)
 		h.respondSaveError(w, "import", err)
