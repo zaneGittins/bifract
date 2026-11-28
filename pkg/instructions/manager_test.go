@@ -193,7 +193,7 @@ func TestConversationLibraryReadsKeepConversationScope(t *testing.T) {
 	if _, err := m.GetConversationLibraries(ctx, "c1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.ResolveLibraryIDs(ctx, "c1", "f1"); err != nil {
+	if _, err := m.ResolveLibraryIDs(ctx, "c1", "f1", ""); err != nil {
 		t.Fatal(err)
 	}
 	reads := fake.Matching("FROM conversation_libraries")
@@ -204,5 +204,31 @@ func TestConversationLibraryReadsKeepConversationScope(t *testing.T) {
 		if !strings.Contains(c.Query, conversationScopeJoin) {
 			t.Errorf("read does not keep the conversation's scope:\n%s", c.Query)
 		}
+	}
+}
+
+// A conversation with no attached libraries uses its own scope's default, so a
+// prism chat must read the prism default rather than a fractal one.
+func TestResolveLibraryIDsFallsBackToScopeDefault(t *testing.T) {
+	tests := []struct{ name, fractal, prism, query, scope string }{
+		{"fractal", "f1", "", "WHERE l.fractal_id = $1 AND l.is_default", "f1"},
+		{"prism", "", "p1", "WHERE l.prism_id = $1 AND l.is_default", "p1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, fake := newTestManager(t)
+			fake.On(tt.query, fakedb.Row(libraryRow("lib-default", "", "")...))
+			ids, err := m.ResolveLibraryIDs(context.Background(), "c1", tt.fractal, tt.prism)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ids) != 1 || ids[0] != "lib-default" {
+				t.Errorf("ids = %v, want [lib-default]", ids)
+			}
+			reads := fake.Matching("AND l.is_default = true")
+			if len(reads) != 1 || !strings.Contains(reads[0].Query, tt.query) || reads[0].Args[0] != tt.scope {
+				t.Errorf("default reads = %+v, want one %q with %s", reads, tt.query, tt.scope)
+			}
+		})
 	}
 }

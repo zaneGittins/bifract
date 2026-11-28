@@ -142,18 +142,21 @@ func (m *Manager) GetDefaultPrismLibrary(ctx context.Context, prismID string) (*
 	return lib, err
 }
 
+// scopeDefaultLibrary returns the prism's default library when prismID is set,
+// otherwise the fractal's, or nil.
+func (m *Manager) scopeDefaultLibrary(ctx context.Context, fractalID, prismID string) (*Library, error) {
+	if prismID != "" {
+		return m.GetDefaultPrismLibrary(ctx, prismID)
+	}
+	return m.GetDefaultLibrary(ctx, fractalID)
+}
+
 // EnsureDefaultLibrary returns the scope's single default library, creating or
 // promoting one as needed. The product model is exactly one library per
 // fractal/prism, created by default. canCreate gates brand-new creation
 // (analyst+); a viewer with no existing library gets nil.
 func (m *Manager) EnsureDefaultLibrary(ctx context.Context, fractalID, prismID, createdBy string, canCreate bool) (*Library, error) {
-	var def *Library
-	var err error
-	if prismID != "" {
-		def, err = m.GetDefaultPrismLibrary(ctx, prismID)
-	} else {
-		def, err = m.GetDefaultLibrary(ctx, fractalID)
-	}
+	def, err := m.scopeDefaultLibrary(ctx, fractalID, prismID)
 	if err != nil {
 		return nil, err
 	}
@@ -787,8 +790,9 @@ func uniqueIDs(ids []string) []string {
 // --- AI Context Resolution ---
 
 // ResolveLibraryIDs returns the library IDs that should be used for a conversation.
-// Uses conversation-explicit libraries if set, otherwise falls back to the fractal default.
-func (m *Manager) ResolveLibraryIDs(ctx context.Context, conversationID, fractalID string) ([]string, error) {
+// Uses conversation-explicit libraries if set, otherwise falls back to the
+// default of the conversation's fractal or prism.
+func (m *Manager) ResolveLibraryIDs(ctx context.Context, conversationID, fractalID, prismID string) ([]string, error) {
 	ids, err := m.GetConversationLibraryIDs(ctx, conversationID)
 	if err != nil {
 		return nil, err
@@ -797,8 +801,7 @@ func (m *Manager) ResolveLibraryIDs(ctx context.Context, conversationID, fractal
 		return ids, nil
 	}
 
-	// Fall back to default library
-	lib, err := m.GetDefaultLibrary(ctx, fractalID)
+	lib, err := m.scopeDefaultLibrary(ctx, fractalID, prismID)
 	if err != nil {
 		return nil, err
 	}
